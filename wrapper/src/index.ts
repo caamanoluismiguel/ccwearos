@@ -226,6 +226,7 @@ async function runDaemon(): Promise<void> {
     } finally {
       activeRunner = null;
       await setActivity(null);
+      await setTask(null);
       await setPermissionPrompt(null);
       await setStatus("IDLE");
       await clearPrompt();

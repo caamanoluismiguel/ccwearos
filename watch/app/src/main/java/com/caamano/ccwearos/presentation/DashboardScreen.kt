@@ -37,17 +37,34 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.wear.compose.foundation.pager.HorizontalPager
+import androidx.wear.compose.foundation.pager.rememberPagerState
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
+import androidx.wear.compose.material3.HorizontalPagerScaffold
 import androidx.wear.compose.material3.Text
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.WrapperStatus
 import java.text.NumberFormat
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DASHBOARD — 3-page horizontal Pager IA
+//
+// Page 0 — COMMAND: glanceable status + primary action (ask button).
+//           This is what you see every time you raise your wrist. Zero scroll.
+// Page 1 — METRICS: daily token counter + session/weekly/cost data.
+// Page 2 — RESPONSE: last Claude reply, scrollable. Only exists when there
+//           is a response to read — keeps the indicator at 2 dots otherwise.
+//
+// HorizontalPagerScaffold handles HorizontalPageIndicator (dots, BottomCenter)
+// automatically without any additional composables.
+// ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
 fun DashboardScreen(
@@ -59,93 +76,190 @@ fun DashboardScreen(
     claudeStatus: ClaudeStatus? = null,
     onAsk: (String) -> Unit = {},
 ) {
-    val scroll = rememberScrollState()
+    // KAI: Page count is reactive — response page only appears when there's
+    // something to read. The pager state key on pageCount ensures it recomposes
+    // correctly when the count changes (e.g. response arrives mid-session).
+    val hasResponse = !response.isNullOrBlank()
+    val pageCount = if (hasResponse) 3 else 2
 
-    // ARIA: Outer Box centers the inscribed-square content column on the round display.
-    // The gradient overlay at the bottom signals scrollability without any interactive
-    // element — a purely visual affordance that costs nothing in touch target space.
+    val pagerState = rememberPagerState(initialPage = 0) { pageCount }
+
+    // ARIA: HorizontalPagerScaffold is the Wear Material3 scaffold that places
+    // HorizontalPageIndicator at BottomCenter and coordinates its show/hide
+    // with paging transitions. We get the dots for free.
+    HorizontalPagerScaffold(pagerState = pagerState) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            when (page) {
+                0 -> CommandPage(
+                    status = status,
+                    activity = activity,
+                    task = task,
+                    onAsk = onAsk,
+                )
+                1 -> MetricsPage(
+                    metrics = metrics,
+                    claudeStatus = claudeStatus,
+                )
+                2 -> ResponsePage(response = response ?: "")
+                else -> Box(Modifier.fillMaxSize())
+            }
+        }
+    }
+}
+
+// ─── PAGE 0: COMMAND ─────────────────────────────────────────────────────────
+// Full screen = glance + action. Everything visible at once, zero scroll.
+// Layout: top-safe spacer → header → status → activity/task → spacer → button → bottom-safe
+//
+// NOVA: The ask button sits at a fixed bottom position inside a fillMaxSize Column
+// with verticalArrangement = SpaceBetween, so the status cluster floats top-left
+// (terminal feel) and the CTA anchors bottom-center. No FAB layering needed
+// because there's no scroll to fight against.
+
+@Composable
+private fun CommandPage(
+    status: WrapperStatus,
+    activity: String?,
+    task: String?,
+    onAsk: (String) -> Unit,
+) {
+    // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
-            modifier = Modifier
-                .fillMaxSize(fraction = 0.72f)
-                .verticalScroll(scroll),
-            // ARIA: 8dp spacing grid — consistent vertical rhythm between all sections.
-            verticalArrangement = Arrangement.spacedBy(0.dp),
+            modifier = Modifier.fillMaxSize(fraction = 0.72f),
+            verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.Start,
         ) {
-            // Top safe padding: round bezel clips heavily at the very top edge.
-            Spacer(Modifier.height(16.dp))
-            ClaudeHeader()
-            Spacer(Modifier.height(8.dp))
-            StatusPrompt(status)
-            if (status == WrapperStatus.RUNNING && !activity.isNullOrBlank()) {
-                Spacer(Modifier.height(4.dp))
-                ActivityLine(activity)
+            // ── Top cluster: brand + status + live activity ──────────────────
+            Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                Spacer(Modifier.height(14.dp))
+                ClaudeHeader()
+                Spacer(Modifier.height(8.dp))
+                StatusPrompt(status)
+
+                // NOVA: AnimatedContent on activity fades old → new verb in 220ms.
+                // Task shows below when available, single line + ellipsis so it
+                // never pushes the button off screen.
+                if (status == WrapperStatus.RUNNING && !activity.isNullOrBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    ActivityLine(activity)
+                }
+                if (!task.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    TaskLine(task)
+                }
             }
-            if (!task.isNullOrBlank()) {
-                Spacer(Modifier.height(2.dp))
-                TaskLine(task)
+
+            // ── Bottom cluster: ask button (IDLE only) ───────────────────────
+            // ARIA: SpaceBetween pushes the button to the bottom of the column,
+            // giving it a stable home regardless of how many status lines appear.
+            // When not IDLE, an empty box holds the space so the top cluster
+            // doesn't reflow on status change.
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (status == WrapperStatus.IDLE) {
+                    AskRow(onAsk = onAsk)
+                } else {
+                    // KAI: Placeholder preserves button-zone height so the status
+                    // cluster doesn't jump when transitioning IDLE ↔ RUNNING.
+                    Spacer(Modifier.height(48.dp))
+                }
+                Spacer(Modifier.height(20.dp))
             }
-            // ARIA: 16dp before the focal "big number" — creates a visual pause
-            // that anchors the eye to the token count as the primary glanceable.
-            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+// ─── PAGE 1: METRICS ─────────────────────────────────────────────────────────
+// The numbers. Daily token count (big), claude status line (detail).
+// No scroll — fits comfortably in the inscribed square.
+
+@Composable
+private fun MetricsPage(
+    metrics: Metrics,
+    claudeStatus: ClaudeStatus?,
+) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.fillMaxSize(fraction = 0.72f),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.Start,
+        ) {
+            // ARIA: Small coral label orients the user ("you're on the metrics page").
+            Text(
+                text = "$ metrics",
+                color = ClaudeCoral.copy(alpha = 0.65f),
+                fontFamily = MonoFamily,
+                fontSize = 9.sp,
+                letterSpacing = 0.8.sp,
+            )
+            Spacer(Modifier.height(10.dp))
             BigTokens(metrics.dailyTokens)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             DividerLine()
-            Spacer(Modifier.height(6.dp))
-            // When Claude is actively running, show Claude's own status-line
-            // numbers (session %, weekly %, monthly $) — that's what the user
-            // sees in the terminal. Falls back to our rolling-window tokens
-            // when claudeStatus is absent (idle, or hasn't surfaced yet).
+            Spacer(Modifier.height(8.dp))
             if (claudeStatus != null && hasAnyData(claudeStatus)) {
                 ClaudeStatusSection(claudeStatus)
             } else {
                 StatusLine(metrics)
             }
-
-            if (!response.isNullOrBlank()) {
-                // ARIA: 16dp gap before response section creates a clear zone break —
-                // "above = status, below = content I need to read".
-                Spacer(Modifier.height(16.dp))
-                DividerLine()
-                Spacer(Modifier.height(8.dp))
-                ResponseSection(response)
-            }
-            // "Ask Claude" mic button — only when idle, so it doesn't disrupt
-            // someone reading the response. Center it to invite the tap.
-            if (status == WrapperStatus.IDLE) {
-                Spacer(Modifier.height(14.dp))
-                AskRow(onAsk = onAsk)
-            }
-            // Bottom safe padding: matches top, prevents last line from clipping at bezel.
-            Spacer(Modifier.height(24.dp))
-        }
-
-        // NOVA: Scroll affordance — a 32dp fade from black at the bottom edge.
-        // GPU-composited (Brush draws as a single layer), zero touch interception.
-        // Only shown when there IS a response to scroll through.
-        if (!response.isNullOrBlank()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colorStops = arrayOf(
-                                0.0f to Color.Transparent,
-                                0.82f to Color.Transparent,
-                                1.0f to Color.Black,
-                            ),
-                        ),
-                    ),
-            )
         }
     }
 }
 
+// ─── PAGE 2: RESPONSE ────────────────────────────────────────────────────────
+// Dedicated scrollable reading surface. Scroll fade gradient at bottom signals
+// that there's more to read. This page is the only place that scrolls.
+
+@Composable
+private fun ResponsePage(response: String) {
+    val scroll = rememberScrollState()
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize(fraction = 0.72f)
+                .verticalScroll(scroll),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            Spacer(Modifier.height(14.dp))
+            ResponseSection(response)
+            // ZERO: Bottom padding so the last line of text clears the page
+            // indicator dots (which sit at BottomCenter, roughly 24dp from edge).
+            Spacer(Modifier.height(32.dp))
+        }
+
+        // NOVA: Scroll fade gradient. Masks text behind the page indicator zone
+        // and signals "more below" when content is long. GPU-composited overlay.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0.0f to Color.Transparent,
+                            0.75f to Color.Transparent,
+                            0.90f to Color.Black,
+                            1.0f to Color.Black,
+                        ),
+                    ),
+                ),
+        )
+    }
+}
+
+// ─── SHARED COMPOSABLES ───────────────────────────────────────────────────────
+
 @Composable
 private fun ClaudeHeader() {
-    // ARIA: Header row unchanged — mascot + "claude code" mono label is the brand anchor.
-    // 10sp mono with letter spacing reads correctly at the top of the inscribed square.
+    // Brand anchor: mascot + "claude code" mono label — present on every page
+    // that needs identity (Command page). 10sp keeps it small and unobtrusive.
     Row(verticalAlignment = Alignment.CenterVertically) {
         ClaudeMascot(width = 18.dp)
         Spacer(Modifier.padding(horizontal = 4.dp))
@@ -181,6 +295,9 @@ private fun StatusPrompt(status: WrapperStatus) {
 
 @Composable
 private fun ActivityLine(activity: String) {
+    // NOVA: Fade-crossfade on content change (220ms in / 180ms out).
+    // 12sp up from 10sp — now the dominant text on the Command page since
+    // BigTokens has been moved to its own Metrics page.
     AnimatedContent(
         targetState = activity,
         transitionSpec = {
@@ -193,7 +310,7 @@ private fun ActivityLine(activity: String) {
             text = "✻ $value",
             color = ClaudeCoral.copy(alpha = 0.85f),
             fontFamily = MonoFamily,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -207,7 +324,7 @@ private fun TaskLine(task: String) {
         color = Color.White.copy(alpha = 0.62f),
         fontFamily = MonoFamily,
         fontSize = 9.sp,
-        maxLines = 1,
+        maxLines = 2,
         overflow = TextOverflow.Ellipsis,
     )
 }
@@ -220,9 +337,7 @@ private fun BigTokens(value: Long) {
         animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
         label = "today-tokens",
     )
-    // ARIA: BigTokens is the primary glanceable — 24sp Bold makes it the undisputed
-    // focal point. FontWeight.Light was invisible on AMOLED at arm's length.
-    // The "tokens · today" label stays small to not compete with the number.
+    // ARIA: BigTokens is the focal element on the Metrics page — 24sp Bold.
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = NumberFormat.getIntegerInstance().format(animated),
@@ -262,23 +377,13 @@ private fun StatusLine(metrics: Metrics) {
 
 @Composable
 private fun ResponseSection(response: String) {
-    // ARIA: ResponseSection is the most information-dense area. Design goals:
-    //  1. "$ OUTPUT" label reads as a section header, not inline text — uppercase + tracking.
-    //  2. Body text is 12sp Normal (NOT Light) — FontWeight.Light at small sizes on AMOLED
-    //     disappears. Normal is the minimum legible weight at arm's length.
-    //  3. 18sp lineHeight on 12sp text = 1.5× ratio. Canonical readable body line-height.
-    //  4. Paragraphs split on double-newline get 8dp vertical spacing between them —
-    //     this breaks the "wall of text" problem without adding markdown complexity.
-    //  5. Sans-serif (FontFamily.Default) over mono for prose — the system font on Wear OS
-    //     (Roboto Condensed) is specifically tuned for small round displays.
-    //  6. Left-aligned: reading direction, not center-aligned which creates ragged left edge.
-    //  7. No horizontal padding reduction — maintain the full inscribed-square width budget.
+    // ARIA: Same design as v1 — "$ OUTPUT" label as section header, 12sp body,
+    // 1.5× line-height, paragraphs split on double-newline.
     val paragraphs = response.split(Regex("\\n{2,}")).filter { it.isNotBlank() }
 
     Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        // Section label: mono, uppercase, coral, tracked — reads as a divider label.
         Text(
-            text = "$ OUTPUT",
+            text = "$ output",
             color = ClaudeCoral.copy(alpha = 0.75f),
             fontFamily = MonoFamily,
             fontSize = 9.sp,
@@ -314,9 +419,7 @@ private fun ResponseSection(response: String) {
     }
 }
 
-// Minimal inline markdown renderer for the response section. Handles **bold**,
-// *italic*, and `code`. Keeps everything else as plain text — no block-level
-// markdown on a watch.
+// Minimal inline markdown: **bold**, *italic*, `code`. Block-level ignored.
 private fun renderMarkdownInline(text: String): AnnotatedString = buildAnnotatedString {
     val pattern = Regex("""(\*\*([^*]+?)\*\*|\*([^*\n]+?)\*|`([^`\n]+?)`)""")
     var cursor = 0
@@ -403,7 +506,6 @@ private fun hasAnyData(s: ClaudeStatus): Boolean =
 @Composable
 private fun ClaudeStatusSection(s: ClaudeStatus) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        // Model + context size — top row, coral, small mono header style.
         val modelLine = buildString {
             if (s.model != null) append(s.model.lowercase())
             if (s.contextSize != null) {
@@ -422,7 +524,6 @@ private fun ClaudeStatusSection(s: ClaudeStatus) {
             )
         }
 
-        // Session + weekly usage on one line if both available.
         val usageParts = buildList {
             if (s.sessionPct != null) add("session ${formatPct(s.sessionPct)}")
             if (s.weeklyPct != null) add("weekly ${formatPct(s.weeklyPct)}")
@@ -436,7 +537,6 @@ private fun ClaudeStatusSection(s: ClaudeStatus) {
             )
         }
 
-        // Monthly cost + reset date.
         if (s.monthlyCost != null) {
             val tail = if (!s.monthlyResets.isNullOrBlank()) {
                 " · resets ${s.monthlyResets}"
