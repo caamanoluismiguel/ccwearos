@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.log
+
+# Env
+.env
+.env.local
+
+# Firebase service-account keys — everything in secrets/ except the .gitkeep
+secrets/*
+!secrets/.gitkeep
+
+# Runtime state (metrics rolling-window persistence)
+.metrics-state.json
+
+# Claude Code's per-directory permission cache, created when claude runs in
+# this folder via `npm run dev` / `npm start`. Local to each user.
+.claude/
+
+# Real Claude Code output captures for parser tuning — keep synthetic fixtures
+# checked in but never the user's real session traces.
+fixtures/captures/

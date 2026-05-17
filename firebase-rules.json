@@ -1,0 +1,54 @@
+{
+  "rules": {
+    "_comment_general": "Wrapper uses Admin SDK and bypasses these rules. Watch clients authenticate via Anonymous Auth — each device has a stable UID. Reads + /command and /prompt writes are pinned to a known list of UIDs. To add a new device: launch the app on it, then grep logcat for 'Notifying id token listeners about user ( <UID> )' and add that UID to the lists below, then republish.",
+
+    "_comment_uids": "Replace the two placeholder UIDs below with your own. The first slot is your Wear OS emulator's anonymous UID, the second is your real Galaxy Watch 8's UID. Both come from the watch's logcat the first time the app launches.",
+
+    ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+    ".write": false,
+
+    "status": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+    "metrics": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+    "permissionPrompt": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+    "activity": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+    "task": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+    "response": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+    "claudeStatus": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
+
+    "fcmToken": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')"
+    },
+
+    "command": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && (!newData.exists() || (newData.hasChildren(['text', 'issuedAt']) && newData.child('text').isString() && newData.child('issuedAt').isNumber()))"
+    },
+
+    "prompt": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && (!newData.exists() || (newData.hasChildren(['text', 'issuedAt']) && newData.child('text').isString() && newData.child('issuedAt').isNumber()))"
+    }
+  }
+}

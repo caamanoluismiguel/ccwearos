@@ -1,0 +1,8 @@
+Reading config from project root...
+Sent 1,240 input tokens, got 312 output tokens
+Tokens used: 1552
+Analyzing src/index.ts
+Do you want to allow web fetch to https://api.example.com? [Y/n]
+Continuing...
+Usage: 80 tkns
+Done.

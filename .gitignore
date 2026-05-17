@@ -1,0 +1,30 @@
+.DS_Store
+*.log
+
+# Node
+node_modules/
+dist/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Android / Gradle (watch module will populate these once scaffolded)
+.gradle/
+local.properties
+build/
+captures/
+.cxx/
+*.apk
+*.aab
+
+# Firebase Android config — pull this from Console after registering the
+# Android app under packageName com.caamano.ccwearos. It contains client IDs
+# but is not a secret on its own; still, easier to gitignore by default.
+watch/app/google-services.json
