@@ -279,19 +279,24 @@ async function main(): Promise<void> {
   // /command. Map to the hook's decision vocabulary.
   const head = reply!.trim().charAt(0);
   if (head === "1" || head === "2" || head === "y" || head === "Y") {
-    emit({
-      decision: "approve",
-      reason: "approved via CCWEAROS watch",
-      hookSpecificOutput: { permissionDecision: "allow" },
-      systemMessage: "approved via CCWEAROS watch",
-    });
+    // ALLOW path: per Claude Code docs and observed CLI v2.1.143 behaviour,
+    // `exit 0` with NO stdout is interpreted as "proceed without prompting"
+    // — the most reliable way to skip the user's Terminal permission UI.
+    // Emitting JSON with permissionDecision=allow was being treated as a
+    // hint that did NOT skip the prompt; bare exit 0 does.
+    dlog("emit: bare exit 0 (allow)");
+    process.exit(0);
   }
-  emit({
-    decision: "block",
-    reason: "denied via CCWEAROS watch",
-    hookSpecificOutput: { permissionDecision: "deny" },
-    systemMessage: "denied via CCWEAROS watch",
-  });
+  // DENY path: stderr JSON + exit 2 — the canonical "block" signal from
+  // Claude Code hook docs.
+  dlog("emit: stderr JSON + exit 2 (deny)");
+  process.stderr.write(
+    JSON.stringify({
+      decision: "block",
+      reason: "denied via CCWEAROS watch",
+    }) + "\n",
+  );
+  process.exit(2);
 }
 
 main().catch((err) => {
