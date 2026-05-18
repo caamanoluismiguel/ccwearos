@@ -285,3 +285,59 @@ export function extractActivity(chunk: string): string | null {
   }
   return last;
 }
+
+// ─── Tool invocation tracking ────────────────────────────────────────────────
+// Claude Code TUI emits "⏺ ToolName(args)" lines when invoking tools. After
+// ANSI strip, these survive in the cleaned chunk text. We surface them so the
+// watch can classify the run (action vs info) and show real progress copy
+// ("Editing parser.ts") instead of the whimsical generic verb.
+
+export interface ToolEvent {
+  tool: string; // "Bash" | "Edit" | "Read" | "Write" | "WebFetch" | "WebSearch" | "Grep" | "Glob" | "Task" | string
+  arg: string | null; // first-line argument summary, capped at 60 chars
+  ts: number; // unix epoch ms when observed
+}
+
+// "⏺ Bash(for dir in ...)" / "⏺ Web Search(query)" / "⏺ Edit(path)".
+// The tool name allows a single internal space (e.g. "Web Search") which
+// Claude renders for compound tool names.
+const TOOL_LINE_RE =
+  /⏺\s+([A-Z][A-Za-z]+(?:\s[A-Z][a-z]+)?)\s*\(([^)\n]{0,200})/g;
+
+export function extractToolEvents(chunk: string): ToolEvent[] {
+  const text = clean(chunk);
+  const out: ToolEvent[] = [];
+  const fresh = new RegExp(TOOL_LINE_RE.source, TOOL_LINE_RE.flags);
+  let m: RegExpExecArray | null;
+  const now = Date.now();
+  while ((m = fresh.exec(text)) !== null) {
+    const tool = m[1]?.trim();
+    if (!tool) continue;
+    const rawArg = m[2]?.trim() ?? "";
+    const arg = rawArg.length > 0 ? rawArg.slice(0, 60) : null;
+    // Dedupe consecutive identical (tool, arg) — the TUI repeats on redraws.
+    const prev = out[out.length - 1];
+    if (prev && prev.tool === tool && prev.arg === arg) continue;
+    out.push({ tool, arg, ts: now });
+  }
+  return out;
+}
+
+export function extractLatestToolEvent(chunk: string): ToolEvent | null {
+  const events = extractToolEvents(chunk);
+  return events.length > 0 ? (events[events.length - 1] ?? null) : null;
+}
+
+// Extracts a TL;DR line written by Claude in response to the daemon's prompt
+// prefix. Matches Markdown variants: "**TL;DR:** ...", "TL;DR: ...",
+// "*TL;DR* ...", with or without the trailing colon, case-insensitive,
+// possibly leading whitespace. Returns the captured text trimmed to 120 chars.
+const TLDR_RE = /^\s*\*{0,2}TL;?DR:?\*{0,2}\s*[:—-]?\s*(.+?)\s*$/im;
+
+export function extractTldr(buffer: string): string | null {
+  const text = clean(buffer);
+  const m = text.match(TLDR_RE);
+  const raw = m?.[1]?.trim();
+  if (!raw || raw.length === 0) return null;
+  return raw.length > 120 ? raw.slice(0, 120).trimEnd() + "…" : raw;
+}

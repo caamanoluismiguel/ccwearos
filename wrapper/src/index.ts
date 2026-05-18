@@ -6,14 +6,19 @@ import {
   sendFcmWake,
   setActivity,
   setClaudeStatus,
+  setHeadline,
   setPermissionPrompt,
   setResponse,
   setStatus,
   setTask,
+  setTaskKind,
+  setToolEvents,
   watchCommands,
   watchPrompts,
   writeMetrics,
 } from "./firebase.js";
+import { extractTldr } from "./parser.js";
+import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
 
@@ -27,8 +32,39 @@ async function clearStaleState(): Promise<void> {
     setActivity(null),
     setTask(null),
     setResponse(null),
+    setTaskKind(null),
+    setToolEvents(null),
+    setHeadline(null),
   ]);
   await setStatus("IDLE");
+}
+
+// Tells Claude to start informational answers with `**TL;DR:** xxx` so the
+// watch can render a glanceable headline. Bilingual heuristic — pick the
+// prefix language from the user's voice text so Claude doesn't switch tone.
+function buildPromptPrefix(userText: string): string {
+  const spanishStems =
+    /\b(qu[éeè]|c[óo]mo|por qu[éeè]|explica|d[íi]me|qu[éeè] es|cu[áa]l|cu[áa]ndo|d[óo]nde|resume|res[úu]meme)\b/i;
+  const isSpanish = spanishStems.test(userText);
+  return isSpanish
+    ? "Responde así (solo si NO necesitas usar herramientas para esta tarea): primera línea con `**TL;DR:**` (máximo 18 palabras), luego detalles si quieres."
+    : "Reply like this (only if NO tools are needed for this task): first line `**TL;DR:**` with at most 18 words, then details if you want.";
+}
+
+// Read-only tools that produce info-like responses. If only these ran AND the
+// response is long, classify the run as info, not action.
+const READ_ONLY_TOOLS = /^(Read|Grep|Glob|WebFetch|WebSearch)$/i;
+
+function classifyTaskKind(
+  toolEventsObserved: ToolEvent[],
+  finalResponseLength: number,
+): "action" | "info" {
+  if (toolEventsObserved.length === 0) return "info";
+  const allReadOnly = toolEventsObserved.every((t) =>
+    READ_ONLY_TOOLS.test(t.tool.replace(/\s+/g, "")),
+  );
+  if (allReadOnly && finalResponseLength >= 200) return "info";
+  return "action";
 }
 
 async function runInteractive(): Promise<void> {
@@ -181,12 +217,19 @@ async function runDaemon(): Promise<void> {
       return;
     }
     busy = true;
+    // Per-run accumulators — closed over by callbacks below, reset on each
+    // new prompt so taskKind classification is correct on every voice tap.
+    let observedTools: ToolEvent[] = [];
+    let lastResponseSeen = "";
     try {
       console.log("[ccwearos] Handling prompt:", JSON.stringify(p.text));
       await setStatus("RUNNING");
       await setTask(p.text.slice(0, 60));
       await setActivity("Thinking…");
       await setResponse(null);
+      await setToolEvents(null);
+      await setTaskKind(null);
+      await setHeadline(null);
 
       const shouldContinue = hasPriorSession && !isResetPrompt(p.text);
       if (!shouldContinue && hasPriorSession) {
@@ -195,8 +238,12 @@ async function runDaemon(): Promise<void> {
         );
       }
 
+      // Wrap the user prompt so Claude opens info answers with **TL;DR:**.
+      // Tool-using runs naturally skip the directive (tools come first).
+      const wrappedPrompt = `${buildPromptPrefix(p.text)}\n\n${p.text}`;
+
       activeRunner = runClaudeForVoice(
-        p.text,
+        wrappedPrompt,
         {
           onStatus: (s) => void setStatus(s),
           onMetrics: (m) => void writeMetrics(m),
@@ -207,8 +254,15 @@ async function runDaemon(): Promise<void> {
           },
           onActivity: (a) => void setActivity(a),
           onTask: (t) => void setTask(t),
-          onResponse: (r) => void setResponse(r),
+          onResponse: (r) => {
+            lastResponseSeen = r;
+            void setResponse(r);
+          },
           onClaudeStatus: (s) => void setClaudeStatus(s),
+          onToolEvents: (e) => {
+            observedTools = e;
+            void setToolEvents(e);
+          },
         },
         { continueSession: shouldContinue },
       );
@@ -218,8 +272,17 @@ async function runDaemon(): Promise<void> {
 
       if (result.exitCode === 0) hasPriorSession = true;
 
+      // Classify the run and surface either a TL;DR headline (info) or leave
+      // the tool chips alone (action). Race-safe: only set after done.
+      const kind = classifyTaskKind(observedTools, lastResponseSeen.length);
+      await setTaskKind(kind);
+      if (kind === "info") {
+        const tldr = extractTldr(lastResponseSeen);
+        if (tldr) await setHeadline(tldr);
+      }
+
       console.log(
-        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} continue-next=${hasPriorSession}`,
+        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} kind=${kind} tools=${observedTools.length} continue-next=${hasPriorSession}`,
       );
     } catch (e) {
       console.error("[ccwearos] Voice run failed:", e);

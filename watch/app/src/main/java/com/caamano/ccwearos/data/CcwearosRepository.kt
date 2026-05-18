@@ -46,6 +46,22 @@ class CcwearosRepository(
         snap.getValue(ClaudeStatus::class.java)
     }
 
+    val taskKind: Flow<TaskKind?> = pathFlow("taskKind") { snap ->
+        TaskKind.fromRaw(snap.getValue(String::class.java))
+    }
+
+    val headline: Flow<String?> = pathFlow("headline") { snap ->
+        snap.getValue(String::class.java)
+    }
+
+    val toolEvents: Flow<List<ToolEvent>> = pathFlow("toolEvents") { snap ->
+        val list = mutableListOf<ToolEvent>()
+        for (child in snap.children) {
+            child.getValue(ToolEvent::class.java)?.let { list.add(it) }
+        }
+        list
+    }
+
     suspend fun sendCommand(text: String) {
         // Use Firebase server timestamp (not System.currentTimeMillis) so a
         // skewed device clock — including Wear OS emulators with drifted time —

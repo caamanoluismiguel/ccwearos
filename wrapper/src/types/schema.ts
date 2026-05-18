@@ -42,12 +42,34 @@ export interface RtdbRoot {
   // Watch-registered FCM token. The wrapper reads this when it needs to wake
   // the watch out of ambient (e.g. permission prompt arrived).
   fcmToken: string | null;
+  // Computed at the end of each voice run — action (tools used) vs info (just
+  // a textual answer). Drives the watch's ResponsePage layout branching.
+  taskKind: TaskKind | null;
+  // Up to 12 tool invocations observed during the current run, in order. Null
+  // when no tools have been seen yet this run.
+  toolEvents: ToolEvent[] | null;
+  // One-line summary for informational answers, extracted from Claude's
+  // "**TL;DR:** ..." line. Null for action tasks.
+  headline: string | null;
 }
 
 export interface PendingPrompt {
   text: string;
   issuedAt: number;
 }
+
+// Surfaced from claude-voice TUI parsing — one entry per tool invocation we
+// see in Claude's "⏺ ToolName(args)" output. The watch uses these to classify
+// the task (action vs informational) and to render breadcrumbs / progress.
+export interface ToolEvent {
+  tool: string; // "Bash" | "Edit" | "Read" | "Write" | "WebFetch" | "WebSearch" | "Grep" | "Glob" | "Task" | string
+  arg: string | null; // first-line argument summary, capped at 60 chars
+  ts: number; // unix epoch ms when observed
+}
+
+// Whether the most recent voice prompt resolved as an action (Claude used
+// tools to change something) or an informational answer. Decided at finish.
+export type TaskKind = "action" | "info";
 
 // Parsed equivalent of Claude Code's TUI status line. Optional fields stay
 // null until Claude actually surfaces them.
@@ -74,4 +96,7 @@ export const RTDB_PATHS = {
   prompt: "/prompt",
   claudeStatus: "/claudeStatus",
   fcmToken: "/fcmToken",
+  taskKind: "/taskKind",
+  toolEvents: "/toolEvents",
+  headline: "/headline",
 } as const;

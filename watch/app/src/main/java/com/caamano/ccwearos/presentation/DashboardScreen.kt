@@ -48,8 +48,19 @@ import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.HorizontalPagerScaffold
 import androidx.wear.compose.material3.Text
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.remember
+import androidx.wear.compose.material3.Card
+import androidx.wear.compose.material3.CardDefaults
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.TaskKind
+import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WrapperStatus
 import java.text.NumberFormat
 
@@ -74,19 +85,20 @@ fun DashboardScreen(
     task: String? = null,
     response: String? = null,
     claudeStatus: ClaudeStatus? = null,
+    taskKind: TaskKind? = null,
+    headline: String? = null,
+    toolEvents: List<ToolEvent> = emptyList(),
     onAsk: (String) -> Unit = {},
 ) {
-    // KAI: Page count is reactive — response page only appears when there's
-    // something to read. The pager state key on pageCount ensures it recomposes
-    // correctly when the count changes (e.g. response arrives mid-session).
+    // Page 3 shows up whenever there's anything worth showing — response text
+    // OR a settled taskKind (an action task with no body text still needs its
+    // ✓/✗ confirmation card).
     val hasResponse = !response.isNullOrBlank()
-    val pageCount = if (hasResponse) 3 else 2
+    val hasResult = hasResponse || taskKind != null
+    val pageCount = if (hasResult) 3 else 2
 
     val pagerState = rememberPagerState(initialPage = 0) { pageCount }
 
-    // ARIA: HorizontalPagerScaffold is the Wear Material3 scaffold that places
-    // HorizontalPageIndicator at BottomCenter and coordinates its show/hide
-    // with paging transitions. We get the dots for free.
     HorizontalPagerScaffold(pagerState = pagerState) {
         HorizontalPager(
             state = pagerState,
@@ -97,13 +109,19 @@ fun DashboardScreen(
                     status = status,
                     activity = activity,
                     task = task,
+                    toolEvents = toolEvents,
                     onAsk = onAsk,
                 )
                 1 -> MetricsPage(
                     metrics = metrics,
                     claudeStatus = claudeStatus,
                 )
-                2 -> ResponsePage(response = response ?: "")
+                2 -> ResponsePage(
+                    response = response,
+                    taskKind = taskKind,
+                    headline = headline,
+                    toolEvents = toolEvents,
+                )
                 else -> Box(Modifier.fillMaxSize())
             }
         }
@@ -124,6 +142,7 @@ private fun CommandPage(
     status: WrapperStatus,
     activity: String?,
     task: String?,
+    toolEvents: List<ToolEvent>,
     onAsk: (String) -> Unit,
 ) {
     // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
@@ -140,12 +159,25 @@ private fun CommandPage(
                 Spacer(Modifier.height(8.dp))
                 StatusPrompt(status)
 
-                // NOVA: AnimatedContent on activity fades old → new verb in 220ms.
-                // Task shows below when available, single line + ellipsis so it
-                // never pushes the button off screen.
+                // When a tool is actively running, prefer the tool-derived
+                // activity verb (already synthesized in the daemon — comes
+                // through `activity`) and show the tool's arg below as a
+                // concrete progress hint ("parser.ts", "for dir in /tmp …").
+                val latestTool = toolEvents.lastOrNull()
                 if (status == WrapperStatus.RUNNING && !activity.isNullOrBlank()) {
                     Spacer(Modifier.height(4.dp))
-                    ActivityLine(activity)
+                    ActivityLine(activity, leadingGlyph = latestTool?.toolGlyph())
+                    if (!latestTool?.arg.isNullOrBlank()) {
+                        Spacer(Modifier.height(1.dp))
+                        Text(
+                            text = latestTool.arg!!.take(36),
+                            color = ClaudeDim.copy(alpha = 0.6f),
+                            fontFamily = MonoFamily,
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 if (!task.isNullOrBlank()) {
                     Spacer(Modifier.height(2.dp))
@@ -190,16 +222,8 @@ private fun MetricsPage(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.Start,
         ) {
-            // ARIA: Small coral label orients the user ("you're on the metrics page").
-            Text(
-                text = "$ metrics",
-                color = ClaudeCoral.copy(alpha = 0.65f),
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
-                letterSpacing = 0.8.sp,
-            )
-            Spacer(Modifier.height(10.dp))
-            BigTokens(metrics.dailyTokens)
+            // Big focal number — 28sp to claim the page's attention budget.
+            BigTokens(metrics.dailyTokens, fontSize = 28.sp)
             Spacer(Modifier.height(10.dp))
             DividerLine()
             Spacer(Modifier.height(8.dp))
@@ -208,6 +232,16 @@ private fun MetricsPage(
             } else {
                 StatusLine(metrics)
             }
+            Spacer(Modifier.height(10.dp))
+            // "$ metrics" demoted to a footer label — keeps the focal number
+            // at the top and clarifies which page you're on without competing.
+            Text(
+                text = "$ metrics",
+                color = ClaudeCoral.copy(alpha = 0.55f),
+                fontFamily = MonoFamily,
+                fontSize = 9.sp,
+                letterSpacing = 0.8.sp,
+            )
         }
     }
 }
@@ -217,8 +251,151 @@ private fun MetricsPage(
 // that there's more to read. This page is the only place that scrolls.
 
 @Composable
-private fun ResponsePage(response: String) {
+private fun ResponsePage(
+    response: String?,
+    taskKind: TaskKind?,
+    headline: String?,
+    toolEvents: List<ToolEvent>,
+) {
+    when (taskKind) {
+        TaskKind.ACTION -> ActionResultLayout(response, toolEvents)
+        TaskKind.INFO -> InfoResultLayout(response, headline)
+        null -> {
+            // Pre-classification or no-result state: show what we have.
+            if (response.isNullOrBlank()) {
+                EmptyResultLayout()
+            } else {
+                InfoResultLayout(response, headline)
+            }
+        }
+    }
+}
+
+// ─── ACTION VARIANT ──────────────────────────────────────────────────────────
+// "Did it work?" focal layout: large ✓ or ✗ + 1-line outcome + tool chips.
+// No scrolling body — the user just needs to know the action settled.
+
+@Composable
+private fun ActionResultLayout(
+    response: String?,
+    toolEvents: List<ToolEvent>,
+) {
+    val failed = remember(response) {
+        response?.let { r ->
+            Regex("\\b(error|failed|canceled|cancelled|denied|aborted)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(r)
+        } ?: false
+    }
+    val outcomeLine = remember(response) {
+        response
+            ?.split(Regex("\\n{2,}"))
+            ?.map { it.trim() }
+            ?.lastOrNull { it.isNotBlank() }
+            ?.replace(Regex("^\\*?\\*?TL;?DR:?\\*?\\*?\\s*[:—-]?\\s*", RegexOption.IGNORE_CASE), "")
+            ?.take(140)
+    }
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.fillMaxSize(fraction = 0.72f),
+            verticalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = if (failed) "✗" else "✓",
+                color = if (failed) ClaudeRed else ClaudeGreen,
+                fontFamily = MonoFamily,
+                fontSize = 44.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (!outcomeLine.isNullOrBlank()) {
+                Text(
+                    text = renderMarkdownInline(outcomeLine),
+                    color = Color.White.copy(alpha = 0.92f),
+                    fontFamily = FontFamily.Default,
+                    fontSize = 13.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.Normal,
+                    textAlign = TextAlign.Center,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+            if (toolEvents.isNotEmpty()) {
+                ToolChipRow(toolEvents)
+                Spacer(Modifier.height(20.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolChipRow(events: List<ToolEvent>) {
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        contentPadding = PaddingValues(horizontal = 4.dp),
+    ) {
+        items(events.size) { i ->
+            val ev = events[i]
+            Card(
+                onClick = { /* no-op for now; chip is decorative */ },
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color.Transparent,
+                    contentColor = ClaudeCoral,
+                ),
+                border = BorderStroke(1.dp, ClaudeCoral.copy(alpha = 0.55f)),
+                modifier = Modifier.heightIn(min = 22.dp),
+            ) {
+                Text(
+                    text = "${ev.toolGlyph()} ${ev.shortLabel()}",
+                    color = ClaudeCoral.copy(alpha = 0.92f),
+                    fontFamily = MonoFamily,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+        }
+    }
+}
+
+// ─── INFO VARIANT ────────────────────────────────────────────────────────────
+// TL;DR-first layout. Big headline up top, scrollable details below.
+
+@Composable
+private fun InfoResultLayout(response: String?, headline: String?) {
     val scroll = rememberScrollState()
+    // Compute headline + body once per response change.
+    val finalHeadline = remember(headline, response) {
+        when {
+            !headline.isNullOrBlank() -> headline.take(120)
+            response.isNullOrBlank() -> null
+            else -> {
+                // Fallback: first sentence of the response.
+                val cleaned = response.replace(
+                    Regex("^\\s*\\*{0,2}TL;?DR:?\\*{0,2}\\s*[:—-]?\\s*", RegexOption.IGNORE_CASE),
+                    "",
+                )
+                cleaned.split(Regex("\\.\\s+|\\n\\n")).firstOrNull()?.trim()?.take(120)
+            }
+        }
+    }
+    val body = remember(response, finalHeadline) {
+        response
+            ?.replace(
+                Regex(
+                    "^\\s*\\*{0,2}TL;?DR:?\\*{0,2}\\s*[:—-]?\\s*[^\\n]+\\n?",
+                    RegexOption.IGNORE_CASE,
+                ),
+                "",
+            )
+            ?.trim()
+            .orEmpty()
+    }
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
@@ -229,14 +406,44 @@ private fun ResponsePage(response: String) {
             horizontalAlignment = Alignment.Start,
         ) {
             Spacer(Modifier.height(14.dp))
-            ResponseSection(response)
-            // ZERO: Bottom padding so the last line of text clears the page
-            // indicator dots (which sit at BottomCenter, roughly 24dp from edge).
+            Text(
+                text = "$ tl;dr",
+                color = ClaudeCoral.copy(alpha = 0.75f),
+                fontFamily = MonoFamily,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 1.2.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (!finalHeadline.isNullOrBlank()) {
+                Text(
+                    text = finalHeadline,
+                    color = Color.White,
+                    fontFamily = FontFamily.Default,
+                    fontSize = 18.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(10.dp))
+                DividerLine()
+                Spacer(Modifier.height(8.dp))
+            }
+            if (body.isNotBlank()) {
+                Text(
+                    text = renderMarkdownInline(body),
+                    color = Color.White.copy(alpha = 0.88f),
+                    fontFamily = FontFamily.Default,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    fontWeight = FontWeight.Normal,
+                )
+            }
             Spacer(Modifier.height(32.dp))
         }
 
-        // NOVA: Scroll fade gradient. Masks text behind the page indicator zone
-        // and signals "more below" when content is long. GPU-composited overlay.
+        // Scroll fade — masks text behind the indicator dots.
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -251,6 +458,24 @@ private fun ResponsePage(response: String) {
                     ),
                 ),
         )
+    }
+}
+
+@Composable
+private fun EmptyResultLayout() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.fillMaxSize(fraction = 0.72f),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = "$ no output yet",
+                color = ClaudeDim.copy(alpha = 0.5f),
+                fontFamily = MonoFamily,
+                fontSize = 11.sp,
+            )
+        }
     }
 }
 
@@ -294,12 +519,13 @@ private fun StatusPrompt(status: WrapperStatus) {
 }
 
 @Composable
-private fun ActivityLine(activity: String) {
+private fun ActivityLine(activity: String, leadingGlyph: String? = null) {
     // NOVA: Fade-crossfade on content change (220ms in / 180ms out).
     // 12sp up from 10sp — now the dominant text on the Command page since
     // BigTokens has been moved to its own Metrics page.
+    val glyph = leadingGlyph ?: "✻"
     AnimatedContent(
-        targetState = activity,
+        targetState = "$glyph $activity",
         transitionSpec = {
             fadeIn(animationSpec = tween(220)) togetherWith
                 fadeOut(animationSpec = tween(180))
@@ -307,7 +533,7 @@ private fun ActivityLine(activity: String) {
         label = "activity",
     ) { value ->
         Text(
-            text = "✻ $value",
+            text = value,
             color = ClaudeCoral.copy(alpha = 0.85f),
             fontFamily = MonoFamily,
             fontSize = 12.sp,
@@ -315,6 +541,33 @@ private fun ActivityLine(activity: String) {
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+// Map a tool name to a single-char glyph that fits the terminal aesthetic.
+// Used on both the Command page (activity verb prefix) and the Action result
+// page (chip leaders).
+private fun ToolEvent.toolGlyph(): String = when (tool.replace("\\s+".toRegex(), "")) {
+    "Bash" -> "⌘"
+    "Edit", "Write" -> "✎"
+    "Read" -> "▤"
+    "Grep" -> "⌕"
+    "Glob" -> "⌕"
+    "WebFetch", "WebSearch" -> "⊕"
+    "Task" -> "▦"
+    else -> "▪"
+}
+
+private fun ToolEvent.shortLabel(): String = when (tool.replace("\\s+".toRegex(), "")) {
+    "Bash" -> "bash"
+    "Edit" -> "edit"
+    "Write" -> "write"
+    "Read" -> "read"
+    "Grep" -> "grep"
+    "Glob" -> "glob"
+    "WebFetch" -> "fetch"
+    "WebSearch" -> "search"
+    "Task" -> "task"
+    else -> tool.lowercase()
 }
 
 @Composable
@@ -330,20 +583,20 @@ private fun TaskLine(task: String) {
 }
 
 @Composable
-private fun BigTokens(value: Long) {
+private fun BigTokens(value: Long, fontSize: androidx.compose.ui.unit.TextUnit = 24.sp) {
     val target = value.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val animated by animateIntAsState(
         targetValue = target,
         animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
         label = "today-tokens",
     )
-    // ARIA: BigTokens is the focal element on the Metrics page — 24sp Bold.
+    // ARIA: BigTokens is the focal element on the Metrics page — Bold + large.
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = NumberFormat.getIntegerInstance().format(animated),
             color = Color.White,
             fontFamily = MonoFamily,
-            fontSize = 24.sp,
+            fontSize = fontSize,
             fontWeight = FontWeight.Bold,
         )
         Text(

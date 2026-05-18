@@ -12,6 +12,7 @@
 import { spawn as ptySpawn, type IPty } from "node-pty";
 import { config } from "./config.js";
 import { createMetricsStore } from "./metrics-store.js";
+import { basename } from "node:path";
 import {
   extractActivity,
   extractClaudeStatus,
@@ -20,8 +21,14 @@ import {
   extractResponseLines,
   extractSessionCumulative,
   extractTokenCounts,
+  extractToolEvents,
 } from "./parser.js";
-import type { ClaudeStatus, Metrics, WrapperStatus } from "./types/schema.js";
+import type {
+  ClaudeStatus,
+  Metrics,
+  ToolEvent,
+  WrapperStatus,
+} from "./types/schema.js";
 
 export interface VoiceCallbacks {
   onStatus: (s: WrapperStatus) => void;
@@ -31,6 +38,35 @@ export interface VoiceCallbacks {
   onTask: (t: string | null) => void;
   onResponse: (r: string) => void;
   onClaudeStatus: (s: ClaudeStatus) => void;
+  onToolEvents: (events: ToolEvent[]) => void;
+}
+
+// Pretty activity string for the Command page when a tool is the most recent
+// thing Claude did. Concrete > whimsical: "Editing parser.ts" beats "Crunching…"
+function synthesizeActivityFromTool(ev: ToolEvent): string {
+  const arg = ev.arg ?? "";
+  const short = arg.length > 0 ? basename(arg).slice(0, 36) : null;
+  switch (ev.tool.replace(/\s+/g, "")) {
+    case "Bash":
+      return "Running bash";
+    case "Edit":
+      return short ? `Editing ${short}` : "Editing";
+    case "Write":
+      return short ? `Writing ${short}` : "Writing";
+    case "Read":
+      return short ? `Reading ${short}` : "Reading";
+    case "Grep":
+      return "Searching files";
+    case "Glob":
+      return "Finding files";
+    case "WebSearch":
+    case "WebFetch":
+      return "Searching the web";
+    case "Task":
+      return arg ? `Sub-agent: ${arg.slice(0, 36)}` : "Running sub-agent";
+    default:
+      return `Using ${ev.tool}`;
+  }
 }
 
 export interface VoiceRunner {
@@ -90,6 +126,13 @@ export function runClaudeForVoice(
   };
   let lastStatusJson = "";
 
+  // Tool events accumulator + dedupe — capped at 12 (kept on the watch as
+  // chips, more than that just clutters). 600ms flush is lighter than
+  // response (1.5s) because tool events change state quickly.
+  const toolEvents: ToolEvent[] = [];
+  let lastToolEventsJson = "";
+  let toolEventsTimer: NodeJS.Timeout | null = null;
+
   let lastDataTime = Date.now();
   let totalBytes = 0;
   let promptSent = false;
@@ -118,6 +161,18 @@ export function runClaudeForVoice(
         cb.onResponse(extracted);
       }
     }, 1500);
+  };
+
+  const flushToolEvents = (): void => {
+    toolEventsTimer = null;
+    const json = JSON.stringify(toolEvents);
+    if (json !== lastToolEventsJson) {
+      lastToolEventsJson = json;
+      cb.onToolEvents([...toolEvents]);
+    }
+  };
+  const scheduleToolEventsFlush = (): void => {
+    if (!toolEventsTimer) toolEventsTimer = setTimeout(flushToolEvents, 600);
   };
 
   // Send prompt as first stdin input after Claude has had time to render.
@@ -182,10 +237,35 @@ export function runClaudeForVoice(
       cb.onPermission(promptText);
     }
 
-    const activity = extractActivity(data);
-    if (activity && activity !== lastActivity) {
-      lastActivity = activity;
-      cb.onActivity(activity);
+    // Tool events first — they yield concrete activity strings ("Editing
+    // parser.ts") that we prefer over Claude's whimsical "Crunching…".
+    const newEvents = extractToolEvents(data);
+    if (newEvents.length > 0) {
+      for (const ev of newEvents) {
+        const prev = toolEvents[toolEvents.length - 1];
+        if (prev && prev.tool === ev.tool && prev.arg === ev.arg) continue;
+        toolEvents.push(ev);
+      }
+      // Cap at 12 — keep the most recent.
+      if (toolEvents.length > 12) {
+        toolEvents.splice(0, toolEvents.length - 12);
+      }
+      scheduleToolEventsFlush();
+      // Use the latest tool to drive a concrete activity verb on Page 1.
+      const latest = toolEvents[toolEvents.length - 1];
+      if (latest) {
+        const synth = synthesizeActivityFromTool(latest);
+        if (synth !== lastActivity) {
+          lastActivity = synth;
+          cb.onActivity(synth);
+        }
+      }
+    } else {
+      const activity = extractActivity(data);
+      if (activity && activity !== lastActivity) {
+        lastActivity = activity;
+        cb.onActivity(activity);
+      }
     }
 
     const task = extractCurrentTask(data);
@@ -231,6 +311,10 @@ export function runClaudeForVoice(
     clearInterval(idleCheck);
     if (metricsTimer) clearTimeout(metricsTimer);
     if (responseTimer) clearTimeout(responseTimer);
+    if (toolEventsTimer) {
+      clearTimeout(toolEventsTimer);
+      flushToolEvents();
+    }
     // Final flush.
     const finalResponse = extractResponseLines(responseBuffer);
     if (finalResponse && finalResponse !== lastResponseEmitted) {

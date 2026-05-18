@@ -5,6 +5,8 @@ import type {
   Metrics,
   PendingCommand,
   PendingPrompt,
+  TaskKind,
+  ToolEvent,
   WrapperStatus,
 } from "./types/schema.js";
 
@@ -51,6 +53,18 @@ export async function setResponse(text: string | null): Promise<void> {
 
 export async function setClaudeStatus(s: ClaudeStatus | null): Promise<void> {
   await db().ref("/claudeStatus").set(s);
+}
+
+export async function setTaskKind(kind: TaskKind | null): Promise<void> {
+  await db().ref("/taskKind").set(kind);
+}
+
+export async function setToolEvents(events: ToolEvent[] | null): Promise<void> {
+  await db().ref("/toolEvents").set(events);
+}
+
+export async function setHeadline(text: string | null): Promise<void> {
+  await db().ref("/headline").set(text);
 }
 
 // FCM wake-up: when the wrapper needs the watch out of ambient (e.g. a

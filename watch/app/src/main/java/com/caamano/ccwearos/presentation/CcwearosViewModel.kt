@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.caamano.ccwearos.data.CcwearosRepository
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.TaskKind
+import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WrapperStatus
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +37,15 @@ class CcwearosViewModel(
 
     val claudeStatus: StateFlow<ClaudeStatus?> = repo.claudeStatus
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val taskKind: StateFlow<TaskKind?> = repo.taskKind
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val headline: StateFlow<String?> = repo.headline
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val toolEvents: StateFlow<List<ToolEvent>> = repo.toolEvents
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     // Claude Code TUI permission prompts use numbered selection ("1. Yes",
     // "2. Yes, ...", "3. No"). Typing the digit + Enter is the most reliable

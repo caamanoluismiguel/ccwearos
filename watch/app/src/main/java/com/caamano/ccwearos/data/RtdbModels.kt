@@ -35,3 +35,24 @@ data class ClaudeStatus(
     val monthlyCost: String? = null,
     val monthlyResets: String? = null,
 )
+
+// Single tool invocation surfaced from claude-voice TUI parsing.
+@IgnoreExtraProperties
+data class ToolEvent(
+    val tool: String = "",
+    val arg: String? = null,
+    val ts: Long = 0,
+)
+
+// Whether the most recent voice run resolved as an "action" (Claude used
+// tools — Bash, Edit, Write, etc.) or an "info" textual answer. Used by the
+// dashboard to pick the right Page 3 layout.
+enum class TaskKind { ACTION, INFO;
+    companion object {
+        fun fromRaw(raw: String?): TaskKind? = when (raw?.lowercase()) {
+            "action" -> ACTION
+            "info" -> INFO
+            else -> null
+        }
+    }
+}
