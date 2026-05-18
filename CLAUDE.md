@@ -30,6 +30,10 @@ Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `wat
 | `/activity`         | wrapper    | watch            | Spinner verb ("Crunching…", "Worked for 33s")                           |
 | `/task`             | wrapper    | watch            | Current task description (from OSC title)                               |
 | `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                             |
+| `/headline`         | wrapper    | watch            | TL;DR one-liner extracted from response (info runs)                     |
+| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (Page 4)       |
+| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives Page 3 layout branch                      |
+| `/toolEvents`       | wrapper    | watch            | Up to 12 tool invocations observed during the run                       |
 | `/claudeStatus`     | wrapper    | watch            | Parsed Claude status line: model, contextSize, monthlyCost, reset times |
 | `/fcmToken`         | watch      | wrapper          | Watch's FCM registration token (for wake-ups)                           |
 
@@ -45,7 +49,9 @@ Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt
 - [x] Sprint 4b — Daemon mode + LaunchAgent
 - [x] Sprint 4c — RTDB rules pinned to watch UIDs
 - [x] Sprint 4d — FCM wake-up (code shipped; tested on real watch when deployed)
-- [ ] Sprint 4e — Deploy to physical Galaxy Watch 8 (see "Real watch deploy" below)
+- [x] Sprint 4e — Deployed to physical Galaxy Watch 8 (real watch UID pinned in `firebase-rules.json`; user must publish rules in Firebase Console)
+- [x] Sprint 4f — Page 3 response cleanup (Camino B): marker-slice extraction + ANSI hardening + post-answer noise filters
+- [x] Sprint 4g — Page 4 "¿Y ahora qué?" + dual-label CTA (Camino C-bis): Claude-suggested follow-up chips + explicit reset button + per-app-session freshness flag
 
 ## Wrapper modes
 
@@ -173,12 +179,25 @@ After adding a new UID to rules, paste the JSON into Firebase Console → Realti
 - `node-pty/prebuilds/<arch>/spawn-helper` loses its +x bit during npm install → handled by `package.json` postinstall hook
 - Watch writes `issuedAt` as `ServerValue.TIMESTAMP` (not `System.currentTimeMillis()`) to immunise against device clock skew
 
+## Conversation continuity (Camino C-bis)
+
+Voice prompts auto-continue across runs: the daemon tracks `hasPriorSession` in memory and passes `--continue` to `claude` on every prompt after the first, unless the user's voice text matches a `RESET_PHRASES` entry ("nueva conversación", "olvida todo", `/new`, etc. — see `wrapper/src/index.ts`).
+
+Page 0's CTA reflects this:
+
+- Cold app open / post-reset → **"ask claude"** (sentInSession=false in the watch ViewModel)
+- After a normal `sendPrompt` round-trip → **"continuar"** (sentInSession=true)
+
+Page 4 surfaces 2-3 contextual chips that Claude itself generates at the end of every textual answer (the `Sugerencias:` / `Followups:` bullet block, parsed by `extractFollowups`). Tap a chip = sends that exact text as the next prompt; wrapper continues the thread.
+
+The explicit reset path is the `↻ nueva conversación` button on Page 4 — the watch's `askWithReset()` prepends "nueva conversación, " before writing `/prompt`, which trips the wrapper's `isResetPrompt` detection.
+
 ## Known limitations
 
-- Daemon's `-p` mode is one-shot — Claude doesn't keep session state between voice prompts. For continued conversation, run interactive mode.
-- Permission prompts are interactive-mode only (`-p` auto-allows). Voice prompts that need permission will run with default permissions.
+- Permission prompts are interactive-mode only (daemon's `-p` auto-allows). Voice prompts that need permission will run with default permissions.
 - Markdown rendering on watch is inline only (bold/italic/code). Block markdown (lists, headings, code blocks) renders as plain text.
 - Tables are flattened to `cell1 · cell2 · cell3` rows — multi-line table cells lose column association.
+- Action runs (tool-heavy) often skip the `Followups:` block — Page 4 falls back to just the reset button. Fix idea: hardcode generic chips ("Más detalles", "Deshacer", "Otra acción") when `/followups` is null but a response exists.
 
 ## Toolchain on this Mac
 

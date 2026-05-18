@@ -67,6 +67,12 @@ export async function setHeadline(text: string | null): Promise<void> {
   await db().ref("/headline").set(text);
 }
 
+export async function setFollowups(items: string[] | null): Promise<void> {
+  await db()
+    .ref("/followups")
+    .set(items && items.length > 0 ? items : null);
+}
+
 // FCM wake-up: when the wrapper needs the watch out of ambient (e.g. a
 // permission prompt just appeared in an interactive Claude session), send a
 // high-priority data message to the watch's registered FCM token.

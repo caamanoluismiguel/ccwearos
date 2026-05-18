@@ -51,6 +51,11 @@ export interface RtdbRoot {
   // One-line summary for informational answers, extracted from Claude's
   // "**TL;DR:** ..." line. Null for action tasks.
   headline: string | null;
+  // 2-3 contextual follow-up suggestions Claude generated at the end of its
+  // response (parsed from a "Followups:" / "Sugerencias:" bullet block).
+  // Surfaced as tappable chips on the watch's Page 4. Null when Claude didn't
+  // include the block (e.g. tool-heavy action runs).
+  followups: string[] | null;
 }
 
 export interface PendingPrompt {
@@ -99,4 +104,5 @@ export const RTDB_PATHS = {
   taskKind: "/taskKind",
   toolEvents: "/toolEvents",
   headline: "/headline",
+  followups: "/followups",
 } as const;

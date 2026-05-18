@@ -62,6 +62,15 @@ class CcwearosRepository(
         list
     }
 
+    val followups: Flow<List<String>> = pathFlow("followups") { snap ->
+        val list = mutableListOf<String>()
+        for (child in snap.children) {
+            child.getValue(String::class.java)?.takeIf { it.isNotBlank() }?.let(list::add)
+            if (list.size >= 3) break
+        }
+        list
+    }
+
     suspend fun sendCommand(text: String) {
         // Use Firebase server timestamp (not System.currentTimeMillis) so a
         // skewed device clock — including Wear OS emulators with drifted time —

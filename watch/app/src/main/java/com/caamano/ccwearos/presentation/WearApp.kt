@@ -29,6 +29,8 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
     val taskKind by vm.taskKind.collectAsState()
     val headline by vm.headline.collectAsState()
     val toolEvents by vm.toolEvents.collectAsState()
+    val followups by vm.followups.collectAsState()
+    val sentInSession by vm.sentInSession.collectAsState()
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AnimatedContent(
@@ -64,7 +66,10 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                     taskKind = taskKind,
                     headline = headline,
                     toolEvents = toolEvents,
+                    followups = followups,
+                    sentInSession = sentInSession,
                     onAsk = vm::sendPrompt,
+                    onAskWithReset = vm::askWithReset,
                 )
             }
         }

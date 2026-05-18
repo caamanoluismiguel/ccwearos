@@ -74,14 +74,25 @@ export interface VoiceRunner {
   done: Promise<{ exitCode: number | null; rawBytes: number }>;
 }
 
-const SPAWN_WARMUP_MS = 2500;
-const IDLE_DETECT_MS = 10_000;
+// Cold-start Claude needs ~5s before its input field is ready to accept a
+// submission keystroke (auth check + welcome banner render). Below this, the
+// pty.write() lands in the field but \r is treated as an in-box newline, not
+// submit, so Claude sits idle and we eventually kill it.
+const SPAWN_WARMUP_MS = 5000;
+// Voice queries can have long silent thinking gaps between prompt send and
+// first token output. 30s gives Claude room to think AND still reaps within a
+// reasonable window once output stops.
+const IDLE_DETECT_MS = 30_000;
+// Gap between typing the prompt text and sending the submit-Enter. The TUI
+// input editor needs this pause to flush the typed chunk before it recognises
+// the trailing \r as submit (vs. just another newline in the buffer).
+const SUBMIT_DELAY_MS = 300;
 const RESPONSE_BUFFER_MAX = 16 * 1024;
 
 export function runClaudeForVoice(
   prompt: string,
   cb: VoiceCallbacks,
-  opts: { continueSession?: boolean } = {},
+  opts: { continueSession?: boolean; userEcho?: string } = {},
 ): VoiceRunner {
   const continueArg = opts.continueSession ? " --continue" : "";
   const cmd = `${config.claudeCliCommand}${continueArg}`;
@@ -155,7 +166,10 @@ export function runClaudeForVoice(
     if (responseTimer) return;
     responseTimer = setTimeout(() => {
       responseTimer = null;
-      const extracted = extractResponseLines(responseBuffer);
+      const extracted = extractResponseLines(
+        responseBuffer,
+        opts.userEcho ? { userEcho: opts.userEcho } : {},
+      );
       if (extracted && extracted !== lastResponseEmitted) {
         lastResponseEmitted = extracted;
         cb.onResponse(extracted);
@@ -176,16 +190,25 @@ export function runClaudeForVoice(
   };
 
   // Send prompt as first stdin input after Claude has had time to render.
+  // Two-phase write: type the text first, wait for the TUI to flush, then
+  // send a bare \r to submit. Bundling text+\r in one write made the TUI
+  // treat \r as an in-box newline and the prompt sat unsubmitted.
   setTimeout(() => {
-    if (!promptSent) {
+    if (promptSent) return;
+    try {
+      pty.write(prompt);
+      promptSent = true;
+      cb.onActivity("Thinking…");
+    } catch {
+      /* ignore */
+    }
+    setTimeout(() => {
       try {
-        pty.write(prompt + "\r");
-        promptSent = true;
-        cb.onActivity("Thinking…");
+        pty.write("\r");
       } catch {
         /* ignore */
       }
-    }
+    }, SUBMIT_DELAY_MS);
   }, SPAWN_WARMUP_MS);
 
   // Idle-detection: if Claude's output has been silent for IDLE_DETECT_MS
@@ -316,7 +339,10 @@ export function runClaudeForVoice(
       flushToolEvents();
     }
     // Final flush.
-    const finalResponse = extractResponseLines(responseBuffer);
+    const finalResponse = extractResponseLines(
+      responseBuffer,
+      opts.userEcho ? { userEcho: opts.userEcho } : {},
+    );
     if (finalResponse && finalResponse !== lastResponseEmitted) {
       cb.onResponse(finalResponse);
     }

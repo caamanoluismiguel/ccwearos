@@ -65,13 +65,17 @@ import com.caamano.ccwearos.data.WrapperStatus
 import java.text.NumberFormat
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DASHBOARD — 3-page horizontal Pager IA
+// DASHBOARD — up to 4-page horizontal Pager IA
 //
 // Page 0 — COMMAND: glanceable status + primary action (ask button).
-//           This is what you see every time you raise your wrist. Zero scroll.
+//           Button label is dynamic: "ask claude" cold, "continuar" when a
+//           prior response exists and we're IDLE (the wrapper auto-continues
+//           the session, so the same button extends the conversation).
 // Page 1 — METRICS: daily token counter + session/weekly/cost data.
 // Page 2 — RESPONSE: last Claude reply, scrollable. Only exists when there
-//           is a response to read — keeps the indicator at 2 dots otherwise.
+//           is a response to read.
+// Page 3 — FOLLOWUP: contextual "what next?" chips Claude suggested + a reset
+//           button. Same trigger as Page 2 (hasResult).
 //
 // HorizontalPagerScaffold handles HorizontalPageIndicator (dots, BottomCenter)
 // automatically without any additional composables.
@@ -88,14 +92,26 @@ fun DashboardScreen(
     taskKind: TaskKind? = null,
     headline: String? = null,
     toolEvents: List<ToolEvent> = emptyList(),
+    followups: List<String> = emptyList(),
+    sentInSession: Boolean = false,
     onAsk: (String) -> Unit = {},
+    onAskWithReset: (String) -> Unit = {},
 ) {
-    // Page 3 shows up whenever there's anything worth showing — response text
-    // OR a settled taskKind (an action task with no body text still needs its
-    // ✓/✗ confirmation card).
+    // Pages 2 + 3 show up whenever there's anything worth showing — response
+    // text OR a settled taskKind (an action task with no body text still needs
+    // its ✓/✗ confirmation card and a "¿y ahora qué?" follow-up surface).
     val hasResponse = !response.isNullOrBlank()
     val hasResult = hasResponse || taskKind != null
-    val pageCount = if (hasResult) 3 else 2
+    val pageCount = if (hasResult) 4 else 2
+
+    // "Continuar" label only when ALL three are true:
+    //   1. THIS app session sent a regular prompt (sentInSession) — so app
+    //      reopens feel fresh ("ask claude") even if /response still in RTDB.
+    //   2. A response actually came back (hasResponse).
+    //   3. Wrapper is at rest (IDLE) — mid-run hides the button anyway.
+    // askWithReset() flips sentInSession=false explicitly, so right after a
+    // user-initiated reset the CTA also reverts to "ask claude".
+    val inConversation = sentInSession && hasResponse && status == WrapperStatus.IDLE
 
     val pagerState = rememberPagerState(initialPage = 0) { pageCount }
 
@@ -110,6 +126,7 @@ fun DashboardScreen(
                     activity = activity,
                     task = task,
                     toolEvents = toolEvents,
+                    inConversation = inConversation,
                     onAsk = onAsk,
                 )
                 1 -> MetricsPage(
@@ -121,6 +138,11 @@ fun DashboardScreen(
                     taskKind = taskKind,
                     headline = headline,
                     toolEvents = toolEvents,
+                )
+                3 -> FollowupPage(
+                    followups = followups,
+                    onAsk = onAsk,
+                    onAskWithReset = onAskWithReset,
                 )
                 else -> Box(Modifier.fillMaxSize())
             }
@@ -143,6 +165,7 @@ private fun CommandPage(
     activity: String?,
     task: String?,
     toolEvents: List<ToolEvent>,
+    inConversation: Boolean,
     onAsk: (String) -> Unit,
 ) {
     // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
@@ -195,7 +218,7 @@ private fun CommandPage(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (status == WrapperStatus.IDLE) {
-                    AskRow(onAsk = onAsk)
+                    AskRow(inConversation = inConversation, onAsk = onAsk)
                 } else {
                     // KAI: Placeholder preserves button-zone height so the status
                     // cluster doesn't jump when transitioning IDLE ↔ RUNNING.
@@ -249,6 +272,126 @@ private fun MetricsPage(
 // ─── PAGE 2: RESPONSE ────────────────────────────────────────────────────────
 // Dedicated scrollable reading surface. Scroll fade gradient at bottom signals
 // that there's more to read. This page is the only place that scrolls.
+
+// ─── PAGE 3: FOLLOWUP — "¿Y ahora qué?" ──────────────────────────────────────
+// Contextual next-actions surface. Shows up after a response settles. Two
+// tiers of options:
+//   1. Claude-suggested chips (from /followups) — tap = send that text as the
+//      next prompt; wrapper auto-continues the session via --continue.
+//   2. A single fixed "↻ nueva conversación" button — explicit reset path
+//      without having to remember the voice phrase. Routes to onAskWithReset
+//      which prepends "nueva conversación, " before sending /prompt.
+// Note: there is NO "continuar" button here. Page 0's CTA already plays that
+// role (it re-labels to "continuar" when inConversation = true).
+
+@Composable
+private fun FollowupPage(
+    followups: List<String>,
+    onAsk: (String) -> Unit,
+    onAskWithReset: (String) -> Unit,
+) {
+    val resetLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val text = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!text.isNullOrBlank()) onAskWithReset(text)
+        }
+    }
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize(fraction = 0.78f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(14.dp))
+            Text(
+                text = "¿y ahora qué?",
+                color = ClaudeDim,
+                fontFamily = MonoFamily,
+                fontSize = 11.sp,
+                letterSpacing = 0.8.sp,
+            )
+            Spacer(Modifier.height(10.dp))
+
+            if (followups.isNotEmpty()) {
+                followups.forEach { suggestion ->
+                    FollowupChip(text = suggestion, onTap = { onAsk(suggestion) })
+                    Spacer(Modifier.height(6.dp))
+                }
+                Spacer(Modifier.height(4.dp))
+                DividerLine()
+                Spacer(Modifier.height(10.dp))
+            }
+
+            // Reset is always available — explicit way to start fresh without
+            // remembering "nueva conversación" as a voice phrase.
+            Button(
+                onClick = {
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(
+                            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                        )
+                        putExtra(RecognizerIntent.EXTRA_PROMPT, "Nueva conversación")
+                    }
+                    resetLauncher.launch(intent)
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = ClaudeAmber,
+                ),
+                border = BorderStroke(1.dp, ClaudeAmber.copy(alpha = 0.55f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 40.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = "↻ nueva conversación",
+                    fontFamily = MonoFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun FollowupChip(text: String, onTap: () -> Unit) {
+    Button(
+        onClick = onTap,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.White.copy(alpha = 0.07f),
+            contentColor = Color.White,
+        ),
+        border = BorderStroke(1.dp, ClaudeCoral.copy(alpha = 0.45f)),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 38.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = text,
+            fontFamily = FontFamily.Default,
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
+            fontWeight = FontWeight.Normal,
+            color = Color.White.copy(alpha = 0.92f),
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
 
 @Composable
 private fun ResponsePage(
@@ -707,7 +850,10 @@ private fun renderMarkdownInline(text: String): AnnotatedString = buildAnnotated
 }
 
 @Composable
-private fun AskRow(onAsk: (String) -> Unit) {
+private fun AskRow(
+    inConversation: Boolean = false,
+    onAsk: (String) -> Unit,
+) {
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -718,6 +864,11 @@ private fun AskRow(onAsk: (String) -> Unit) {
             if (!text.isNullOrBlank()) onAsk(text)
         }
     }
+    // Dual-label CTA: cold-start says "ask claude"; once a response exists and
+    // we're IDLE, the wrapper will auto-continue via `claude --continue`, so we
+    // re-label to "continuar" to signal "this is a thread, not a fresh ask".
+    val label = if (inConversation) "continuar" else "ask claude"
+    val voicePrompt = if (inConversation) "Continuar conversación" else "Ask Claude"
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
@@ -729,7 +880,7 @@ private fun AskRow(onAsk: (String) -> Unit) {
                         RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                         RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
                     )
-                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Ask Claude")
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, voicePrompt)
                 }
                 launcher.launch(intent)
             },
@@ -737,10 +888,10 @@ private fun AskRow(onAsk: (String) -> Unit) {
                 containerColor = ClaudeCoral,
                 contentColor = Color.Black,
             ),
-            modifier = Modifier.size(width = 120.dp, height = 48.dp),
+            modifier = Modifier.size(width = 140.dp, height = 48.dp),
         ) {
             Text(
-                text = "ask claude",
+                text = label,
                 fontFamily = MonoFamily,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,

@@ -5,11 +5,26 @@
 // (colors, cursor moves, clear-line). Strip those before applying any regex
 // or "Tokens used:" gets fragmented across color spans and never matches.
 const ESC = String.fromCharCode(0x1b);
-const ANSI_RE = new RegExp(`${ESC}\\[[0-9;?]*[ -\\/]*[@-~]`, "g");
+// Standard CSI: ESC [ <private-prefix?> <params> <intermediate> <final-byte>.
+// Including <=>? as optional private-prefix so sequences like \x1b[>4m and
+// \x1b[<u (xterm DECSET / mode-toggle variants Claude emits at exit) parse.
+const ANSI_RE = new RegExp(`${ESC}\\[[<=>?]?[0-9;]*[ -\\/]*[@-~]`, "g");
 const OSC_RE = new RegExp(`${ESC}\\][^${ESC}\\x07]*(?:${ESC}\\\\|\\x07)`, "g");
+// Bare 2-char ESC sequences: ESC 7 / ESC 8 (save/restore cursor), ESC =, etc.
+// These don't have a [ — they slip past CSI/OSC strippers and leak into out.
+const SHORT_ESC_RE = new RegExp(`${ESC}[78=>]`, "g");
+// Cursor-forward N columns — Claude Code's TUI uses this to space words
+// instead of literal spaces. If we strip it raw the spaces vanish and the
+// response collapses to "relojdelsistema". Cap N at 16 so a runaway escape
+// doesn't blow up a line; that's far more than any real word gap.
+const CUF_RE = new RegExp(`${ESC}\\[(\\d+)C`, "g");
 
 function clean(chunk: string): string {
-  return chunk.replace(ANSI_RE, "").replace(OSC_RE, "");
+  return chunk
+    .replace(CUF_RE, (_, n: string) => " ".repeat(Math.min(Number(n) || 0, 16)))
+    .replace(OSC_RE, "")
+    .replace(ANSI_RE, "")
+    .replace(SHORT_ESC_RE, "");
 }
 
 // Per-chunk increments, e.g. Claude Code 2.1.x streaming:
@@ -169,7 +184,73 @@ const NOISE_PATTERNS: RegExp[] = [
   /^\s*Tip:/i,
   /^\s*\(\d+s\s*·/, // "(15s · ↓ 378 tokens)"
   /^\s*⎿\s*Tip:/i,
+  // ─── Round 2: TUI welcome / chrome that survives line-by-line filter ───────
+  /^Welcome back\b/i,
+  /\bRun \/init\b/i,
+  /^What's new$/i,
+  /^Added projected/i,
+  /Tips for getting started/i,
+  /^❯ Try /,
+  /^❯ /, // softer catch-all for any quick-start hint
+  /'s Organization\b/i,
+  /^~\/[\w./-]+$/, // path footer like "~/projects/CCWEAROS/wrapper"
+  /^(Reply like this|Responde así)/i, // echoed PROMPT_PREFIX
+  /^Opus 4\.\d+ \(.*context\) · Claude (Max|Pro|Free)/i, // model/plan banner
+  // ─── Round 3: post-answer chrome (status footer, resume hint, etc.) ───────
+  /^[✽✻✶✳✢·]\s/, // any spinner-prefixed sub-line
+  /^[✽✻✶✳✢]\s*[A-Z][a-z]+(?:zz)?ing/i, // "✽ Julienning"
+  /^Baked\s+for\s+\d+s/i, // "Baked for 2s"
+  /^●+\s*\d+%/, // "●●●●41% resets ..."
+  /^\d+\s+resets\s/i, // "4 resets may 24 ..."
+  /^Resume\s+this\s+session\s+with/i,
+  /^claude\s+--resume\b/i,
+  /^\d+\s*MCP\s+server/i, // "1 MCP server needs auth"
+  /^[ᗧ–]/, // status bar prefix chars
+  /^Opus\s+\d.*?·.*?wrapper/i, // "Opus 4.7 (1M context) · wrapper · ..."
+  // Anchor on the literal word "wrapper" anywhere on the line, with a status
+  // circle later in the row — Claude Code's status bar pastes the current
+  // task title into this same row, so we can't anchor on a specific verb.
+  /\bwrapper\b.*[○●]/, // task-title + status carousel
+  // Stray 2-3 char fragments left over from spinner letter-by-letter renders
+  // ("o n", "k g", "✻u" — once the spinner glyph is stripped). Anchored
+  // lengths only, so a real two-letter answer like "OK" still survives because
+  // it'll be ≥3 chars after the trim or part of a longer line.
+  /^[A-Za-z]{1,2}\s+[A-Za-z]{1,2}$/, // "o n", "ng oo"
+  /^[A-Za-z]\s*[…⋯·.]+$/, // "i …", "o ·"
+  /^[A-Za-z]{2,12}\s+\d{1,3}$/, // "Roostin 7" partial-verb + counter
+  /·\s*out\s+\d+/i, // "· out 53" output-token counter
+  /^[\d\s]+·\s*out\s+\d+/, // "8 4 3 · out 53"
+  /^[\d\s.]+$/, // pure digits + spaces (counter remnants)
 ];
+
+// ─── Marker-based response slicing ────────────────────────────────────────────
+// The daemon appends PROMPT_END_MARKER to the end of every wrapped voice
+// prompt before piping it into Claude's TUI. The TUI echoes the marker as the
+// trailing line of the input area, so the parser can slice on the LAST
+// occurrence to discard ALL pre-response chrome (welcome banner, prompt
+// prefix, user-text echo). Fallback: legacy line-by-line filter when the
+// marker is absent (Claude crashed before echoing, cold start, etc.).
+//
+// Plain ASCII. We tried zero-width joiner flanks but Claude Code's TUI input
+// editor strips the leading joiner, breaking lastIndexOf. The bare ASCII
+// token is astronomically unlikely to appear in any natural Claude response.
+export const PROMPT_END_MARKER = "__CCWEAROS_PROMPT_END__";
+
+export function extractResponseAfterMarker(
+  buffer: string,
+  marker: string = PROMPT_END_MARKER,
+): string | null {
+  const idx = buffer.lastIndexOf(marker);
+  if (idx < 0) return null;
+  return buffer.slice(idx + marker.length);
+}
+
+// Normalize for echo comparison: lowercase, strip everything that isn't a
+// letter or digit. So "Qué hora es" and "qué hora es?" both collapse to
+// "quéhoraes" — coincidental punctuation/whitespace differences don't matter.
+function normalizeEcho(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
 
 // Lines that look like ASCII table rows (│ cell │ cell │) get flattened into
 // "cell · cell · cell" — much more legible on a 320dp wide round display
@@ -197,10 +278,22 @@ function cleanForWatch(s: string): string {
     .trim();
 }
 
-export function extractResponseLines(buffer: string): string {
-  const text = clean(buffer);
+export function extractResponseLines(
+  buffer: string,
+  opts: { userEcho?: string } = {},
+): string {
+  // Marker slice first: when the daemon appended PROMPT_END_MARKER to the
+  // wrapped prompt, everything before the LAST occurrence is TUI chrome +
+  // user-input echo and can be thrown away wholesale.
+  const sliced = extractResponseAfterMarker(buffer);
+  const source = sliced ?? buffer;
+
+  const text = clean(source);
   const out: string[] = [];
-  for (const rawLine of text.split(/\r?\n/)) {
+  // Split on either \n or \r — Claude Code's TUI uses bare \r to overwrite
+  // status-bar lines, and if we only split on \n the whole status carousel
+  // collapses into one long mega-line that no NOISE_PATTERN can match.
+  for (const rawLine of text.split(/[\r\n]+/)) {
     const line = rawLine.trim();
     if (line.length < 2) continue;
     if (NOISE_PATTERNS.some((re) => re.test(line))) continue;
@@ -209,6 +302,17 @@ export function extractResponseLines(buffer: string): string {
     if (cleaned.length < 2) continue;
     out.push(cleaned);
   }
+
+  // Drop user-text echo as the first non-empty line — ONLY when the marker
+  // hit (so the fallback path never eats a Claude answer that coincidentally
+  // shares a word with the prompt).
+  if (sliced !== null && opts.userEcho && out.length > 0) {
+    const echo = normalizeEcho(opts.userEcho);
+    if (echo.length > 0 && normalizeEcho(out[0]!) === echo) {
+      out.shift();
+    }
+  }
+
   const tail = out.slice(-40).join("\n");
   return tail.length > 1500 ? tail.slice(-1500) : tail;
 }
@@ -332,7 +436,9 @@ export function extractLatestToolEvent(chunk: string): ToolEvent | null {
 // prefix. Matches Markdown variants: "**TL;DR:** ...", "TL;DR: ...",
 // "*TL;DR* ...", with or without the trailing colon, case-insensitive,
 // possibly leading whitespace. Returns the captured text trimmed to 120 chars.
-const TLDR_RE = /^\s*\*{0,2}TL;?DR:?\*{0,2}\s*[:—-]?\s*(.+?)\s*$/im;
+// Allow a leading non-letter prefix (Claude Code TUI uses "⏺ " before its
+// own response lines, and emoji/quote-style intros are common).
+const TLDR_RE = /^[^A-Za-z\n]*\*{0,2}TL;?DR:?\*{0,2}\s*[:—-]?\s*(.+?)\s*$/im;
 
 export function extractTldr(buffer: string): string | null {
   const text = clean(buffer);
@@ -340,4 +446,48 @@ export function extractTldr(buffer: string): string | null {
   const raw = m?.[1]?.trim();
   if (!raw || raw.length === 0) return null;
   return raw.length > 120 ? raw.slice(0, 120).trimEnd() + "…" : raw;
+}
+
+// ─── Followups: extracted from a "Followups:"/"Sugerencias:" bullet block ────
+// The wrapper asks Claude (via the prompt prefix) to end every response with
+// 2-3 short suggestions for what to ask/do next. The watch renders them as
+// tappable chips on Page 4. Pattern is loose: header line (case-insensitive,
+// bilingual) followed by bullet/numbered list items. Stops at first 3 hits or
+// at the first blank line after seeing at least one bullet.
+const FOLLOWUPS_HEADER_RE =
+  /(?:^|\n)[^\S\n]*\*{0,2}(?:Followups?|Sugerencias|Sigamos|What\s+next)[\s*:]*(?:\n|$)/i;
+const BULLET_LINE_RE = /^[^\S\n]*(?:[-*•·]|\d+[.)])\s+(.+?)\s*$/gm;
+
+export function extractFollowups(buffer: string): string[] {
+  const text = clean(buffer);
+  const headerMatch = FOLLOWUPS_HEADER_RE.exec(text);
+  if (!headerMatch || headerMatch.index === undefined) return [];
+  const after = text.slice(headerMatch.index + headerMatch[0].length);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const fresh = new RegExp(BULLET_LINE_RE.source, BULLET_LINE_RE.flags);
+  let m: RegExpExecArray | null;
+  let seenBullet = false;
+  while ((m = fresh.exec(after)) !== null && out.length < 3) {
+    const raw = m[1]?.trim();
+    if (!raw) continue;
+    // Strip surrounding emphasis (`**item**`, `*item*`) and stray quotes.
+    const item = raw
+      .replace(/^\*+/, "")
+      .replace(/\*+$/, "")
+      .replace(/^["'`]+|["'`]+$/g, "")
+      .trim();
+    if (!item) continue;
+    // Dedupe (case-insensitive) — Claude sometimes repeats a suggestion.
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item.length > 40 ? item.slice(0, 40).trimEnd() + "…" : item);
+    seenBullet = true;
+    // Bail on the first blank-line gap after seeing at least one bullet — keeps
+    // the parser from sweeping into a later unrelated bullet list (footer).
+    const next = after.slice(fresh.lastIndex, fresh.lastIndex + 200);
+    if (seenBullet && /^\s*\n\s*\n/.test(next)) break;
+  }
+  return out;
 }

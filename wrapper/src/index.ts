@@ -6,6 +6,7 @@ import {
   sendFcmWake,
   setActivity,
   setClaudeStatus,
+  setFollowups,
   setHeadline,
   setPermissionPrompt,
   setResponse,
@@ -17,7 +18,7 @@ import {
   watchPrompts,
   writeMetrics,
 } from "./firebase.js";
-import { extractTldr } from "./parser.js";
+import { extractFollowups, extractTldr, PROMPT_END_MARKER } from "./parser.js";
 import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
@@ -35,6 +36,7 @@ async function clearStaleState(): Promise<void> {
     setTaskKind(null),
     setToolEvents(null),
     setHeadline(null),
+    setFollowups(null),
   ]);
   await setStatus("IDLE");
 }
@@ -47,8 +49,8 @@ function buildPromptPrefix(userText: string): string {
     /\b(qu[éeè]|c[óo]mo|por qu[éeè]|explica|d[íi]me|qu[éeè] es|cu[áa]l|cu[áa]ndo|d[óo]nde|resume|res[úu]meme)\b/i;
   const isSpanish = spanishStems.test(userText);
   return isSpanish
-    ? "Responde así (solo si NO necesitas usar herramientas para esta tarea): primera línea con `**TL;DR:**` (máximo 18 palabras), luego detalles si quieres."
-    : "Reply like this (only if NO tools are needed for this task): first line `**TL;DR:**` with at most 18 words, then details if you want.";
+    ? "Responde así (solo si NO necesitas usar herramientas para esta tarea): primera línea con `**TL;DR:**` (máximo 18 palabras), luego detalles si quieres. Termina SIEMPRE con un bloque corto en una nueva línea: `Sugerencias:` seguido de 2-3 viñetas con `-`, cada una de máximo 6 palabras, sugiriendo qué preguntar o hacer a continuación."
+    : "Reply like this (only if NO tools are needed for this task): first line `**TL;DR:**` with at most 18 words, then details if you want. ALWAYS end with a short block on a new line: `Followups:` followed by 2-3 bullets with `-`, each at most 6 words, suggesting what to ask or do next.";
 }
 
 // Read-only tools that produce info-like responses. If only these ran AND the
@@ -230,6 +232,7 @@ async function runDaemon(): Promise<void> {
       await setToolEvents(null);
       await setTaskKind(null);
       await setHeadline(null);
+      await setFollowups(null);
 
       const shouldContinue = hasPriorSession && !isResetPrompt(p.text);
       if (!shouldContinue && hasPriorSession) {
@@ -240,7 +243,12 @@ async function runDaemon(): Promise<void> {
 
       // Wrap the user prompt so Claude opens info answers with **TL;DR:**.
       // Tool-using runs naturally skip the directive (tools come first).
-      const wrappedPrompt = `${buildPromptPrefix(p.text)}\n\n${p.text}`;
+      // PROMPT_END_MARKER lets the parser slice the response away from the
+      // TUI welcome banner + prompt-prefix echo + user-text echo cleanly.
+      // CRITICAL: Claude Code's TUI treats embedded `\n` as in-box line
+      // breaks, NOT submit — so the wrap is flattened to a single line
+      // (joined with " · ") and the runner appends a trailing `\r` to submit.
+      const wrappedPrompt = `${buildPromptPrefix(p.text)} · ${p.text} · ${PROMPT_END_MARKER}`;
 
       activeRunner = runClaudeForVoice(
         wrappedPrompt,
@@ -264,7 +272,7 @@ async function runDaemon(): Promise<void> {
             void setToolEvents(e);
           },
         },
-        { continueSession: shouldContinue },
+        { continueSession: shouldContinue, userEcho: p.text },
       );
 
       const result = await activeRunner.done;
@@ -281,8 +289,15 @@ async function runDaemon(): Promise<void> {
         if (tldr) await setHeadline(tldr);
       }
 
+      // Followups: contextual suggestions Claude appended to the response.
+      // The watch's Page 4 renders these as tappable chips. Falls back to
+      // null when Claude didn't include the block (tool-heavy runs usually
+      // skip it, by design of the prompt prefix).
+      const followups = extractFollowups(lastResponseSeen);
+      await setFollowups(followups.length > 0 ? followups : null);
+
       console.log(
-        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} kind=${kind} tools=${observedTools.length} continue-next=${hasPriorSession}`,
+        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} kind=${kind} tools=${observedTools.length} followups=${followups.length} continue-next=${hasPriorSession}`,
       );
     } catch (e) {
       console.error("[ccwearos] Voice run failed:", e);
