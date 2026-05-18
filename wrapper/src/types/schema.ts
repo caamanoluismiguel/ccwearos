@@ -71,8 +71,16 @@ export interface RtdbRoot {
 export interface SharedSessionMeta {
   sessionId: string; // UUID of the Claude session (filled once Claude emits one)
   pid: number; // PID of the wrapper script (NOT the Claude pty child)
-  cwd: string; // working directory where `cc` was launched
+  cwd: string; // working directory where the session is anchored
   startedAt: number; // unix epoch ms
+  // How the bridge is wired:
+  //   "wrapper-pty" — the wrapper script (cc / scripts/share.ts) owns Claude's
+  //     pty, can pipe Allow/Deny via runner.send(). Voice prompts disabled.
+  //   "hook"        — the user's own Terminal owns Claude's pty. A PreToolUse
+  //     hook publishes permission prompts to RTDB and waits on /command for
+  //     the watch's reply. Voice prompts also disabled (only one shared
+  //     session at a time).
+  kind: "wrapper-pty" | "hook";
 }
 
 export interface RecentSession {

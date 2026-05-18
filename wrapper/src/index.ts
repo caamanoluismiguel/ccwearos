@@ -212,6 +212,16 @@ async function runDaemon(): Promise<void> {
   // Permission responses from the watch: only forwarded if there's an active
   // runner. /command is otherwise unused in daemon mode.
   const stopCmdWatching = watchCommands(async (cmd) => {
+    // E-2 (hook-mode share): the user's standalone Claude session has a
+    // PreToolUse hook polling /command for the watch's Allow/Deny. The
+    // daemon must NOT consume that write — yield ownership while a hook
+    // share is active.
+    if (sharedSession?.kind === "hook") {
+      console.log(
+        `[ccwearos] /command ignored (hook share active for ${sharedSession.cwd}): ${cmd.text}`,
+      );
+      return;
+    }
     if (!activeRunner) {
       await clearCommand();
       return;

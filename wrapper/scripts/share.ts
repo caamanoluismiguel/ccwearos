@@ -77,6 +77,7 @@ async function main(): Promise<void> {
     pid: process.pid,
     cwd,
     startedAt: Date.now(),
+    kind: "wrapper-pty",
   };
   await setSharedSession(meta);
   await clearCommand();

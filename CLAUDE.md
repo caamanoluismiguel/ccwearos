@@ -56,6 +56,7 @@ Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt
 - [x] Sprint 4g — Page 4 "¿Y ahora qué?" + dual-label CTA (Camino C-bis): Claude-suggested follow-up chips + explicit reset button + per-app-session freshness flag
 - [x] Sprint 4h — Polish round (real-watch testing): hide stale `/task` on Page 0 when wrapper is IDLE, filter Claude's meta-formatting OSC titles ("Setup response template format" etc.), and add macOS-context note to prompt prefix so Claude actually runs `open -a <app>` instead of refusing with "I have no desktop access"
 - [x] Sprint 4i — Page 5 "Sesiones del Mac" + shared sessions (Camino D): wrapper publishes `/recentSessions` (scan of `~/.claude/sessions` + `~/.claude/projects`) every 15s; new `cc` alias script (`scripts/share.ts`) lets the user start a Claude session from any Terminal directory while the watch sees state and can answer permissions; daemon refuses voice prompts while `/sharedSession` is alive; Page 5 lists sessions grouped by project (read-only V1)
+- [x] Sprint 4j — `/ccwearos` slash command + PreToolUse hook (Camino E-2): mid-session handoff for Claude Code sessions already running in any Terminal. User runs `/ccwearos` to mark the current session as bridged; from then on every tool call goes through a PreToolUse hook that publishes the pending tool to `/permissionPrompt` and blocks waiting on `/command` (Allow/Deny from the watch). Terminal stays alive throughout. Installer at `wrapper/scripts/install-hooks.ts` (re-runnable). Daemon yields `/command` ownership when `sharedSession.kind === "hook"`.
 
 ## Wrapper modes
 
@@ -212,6 +213,25 @@ Two ways the watch sees Mac sessions:
    While `cc` is running, `/sharedSession` is non-null. The daemon refuses voice prompts (Page 0's CTA hides behind a "📟 sesión compartida" block) to avoid two pty's clobbering RTDB. On clean exit (Ctrl+C / `/exit`) `/sharedSession` is cleared.
 
 2. **Read-only via sessions scanner.** Every 15s the wrapper scans `~/.claude/sessions/*.json` (active PIDs) + `~/.claude/projects/*/*.jsonl` (recent transcripts by mtime) and publishes a snapshot to `/recentSessions`. Page 5 lists them grouped by project, marking active processes with a green dot and the `cc`-shared one with a coral dot. No tap actions in V1 — claiming or resuming arbitrary sessions from the watch is Tier 2.
+
+3. **Mid-session handoff via `/ccwearos` + PreToolUse hook (Camino E-2).** For when you started Claude normally and only now decide you need watch monitoring. One-time setup:
+
+   ```bash
+   cd ~/projects/CCWEAROS/wrapper
+   npx tsx scripts/install-hooks.ts
+   ```
+
+   This writes a PreToolUse hook to `~/.claude/settings.json` and copies the `/ccwearos` + `/ccwearos-off` slash commands into `~/.claude/commands/`. The hook self-skips unless `/sharedSession.kind === "hook"` matches the current session.
+
+   Usage inside any Claude Code session:
+   - `/ccwearos` — marks this session as bridged. The hook now publishes every pending tool to `/permissionPrompt` and waits up to 55s for the watch's Allow/Deny. If the watch doesn't answer, the hook returns `ask` and Claude falls back to its normal Terminal permission prompt.
+   - `/ccwearos-off` — clears the bridge. Subsequent tool calls go through Claude's default flow.
+
+   While `kind="hook"` is active, the daemon's `watchCommands` handler YIELDS — it sees the watch's `/command` write but doesn't consume it, so the hook gets the reply. Voice prompts (Page 1 of the watch) are still gated off.
+
+   Watch's Page 0 SharedSessionBlock text differentiates the two kinds:
+   - `kind="wrapper-pty"` (cc) → "📟 sesión compartida · activa en tu Mac · cc"
+   - `kind="hook"` (/ccwearos) → "📟 puente activo · permisos vienen al reloj"
 
 ## Known limitations
 

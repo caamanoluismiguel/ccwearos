@@ -66,6 +66,10 @@ data class SharedSessionMeta(
     val pid: Long = 0,
     val cwd: String = "",
     val startedAt: Long = 0,
+    // "wrapper-pty" → cc-spawned, wrapper owns the pty.
+    // "hook"        → user's Terminal, hook bridges permission prompts via RTDB.
+    // Empty string for legacy entries written before Camino E.
+    val kind: String = "",
 )
 
 // Snapshot of one Claude Code session on the Mac. Scanned every ~15s from

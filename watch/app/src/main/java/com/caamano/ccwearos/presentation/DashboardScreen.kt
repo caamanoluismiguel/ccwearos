@@ -267,9 +267,18 @@ private fun CommandPage(
 
 @Composable
 private fun SharedSessionBlock(meta: SharedSessionMeta) {
+    // cc (wrapper-pty) sessions: user is in the Terminal — we can't send
+    // prompts but the watch already receives permissions via the wrapper.
+    // hook (/ccwearos): user's standalone Claude — the PreToolUse hook will
+    // route permissions to the watch, so we proactively say "ready to answer".
+    val (header, hint) = when (meta.kind) {
+        "hook" -> "📟 puente activo" to "permisos vienen al reloj"
+        "wrapper-pty" -> "📟 sesión compartida" to "activa en tu Mac · cc"
+        else -> "📟 sesión compartida" to "activa en tu Mac"
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            text = "📟 sesión compartida",
+            text = header,
             color = ClaudeAmber,
             fontFamily = MonoFamily,
             fontSize = 11.sp,
@@ -286,7 +295,7 @@ private fun SharedSessionBlock(meta: SharedSessionMeta) {
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            text = "activa en tu Mac · usa la Terminal",
+            text = hint,
             color = ClaudeDim.copy(alpha = 0.55f),
             fontFamily = MonoFamily,
             fontSize = 8.sp,
