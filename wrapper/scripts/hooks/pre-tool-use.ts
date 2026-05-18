@@ -197,6 +197,20 @@ async function main(): Promise<void> {
       `[ccwearos-hook] matched session, publishing prompt\n`,
     );
   }
+  // CRITICAL ordering: clear /command BEFORE publishing /permissionPrompt.
+  // If we publish first and clear later, this race fires:
+  //   T+0   /permissionPrompt = "..." → watch wakes
+  //   T+0.5 user taps Allow → /command = "1\r"
+  //   T+1   we clear /command = null → user's tap is wiped
+  //   T+1   start polling, never see it, time out → Claude prompts in Term
+  // Clearing first means the watch only ever writes to a fresh /command
+  // AFTER the prompt is live, and our poll catches it on the next tick.
+  try {
+    await db().ref("/command").set(null);
+  } catch {
+    // best-effort
+  }
+
   const promptText = describeToolCall(toolName!, toolInput);
   try {
     await setPermissionPrompt(promptText);
@@ -207,14 +221,6 @@ async function main(): Promise<void> {
       `[ccwearos-hook] publish failed: ${(e as Error).message} — falling through to ask\n`,
     );
     emit({ hookSpecificOutput: { permissionDecision: "ask" } });
-  }
-
-  // Clear any stale /command before polling so we don't immediately consume
-  // a leftover Allow from a previous run.
-  try {
-    await db().ref("/command").set(null);
-  } catch {
-    // best-effort
   }
 
   const debug = !!process.env["CCWEAROS_HOOK_DEBUG"];
