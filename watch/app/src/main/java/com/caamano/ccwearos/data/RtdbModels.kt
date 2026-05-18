@@ -56,3 +56,28 @@ enum class TaskKind { ACTION, INFO;
         }
     }
 }
+
+// Metadata about a Claude session currently bridged to the watch via the
+// `cc` shell alias / scripts/share.ts. While non-null, the daemon refuses
+// voice prompts and Page 0's button is disabled.
+@IgnoreExtraProperties
+data class SharedSessionMeta(
+    val sessionId: String = "",
+    val pid: Long = 0,
+    val cwd: String = "",
+    val startedAt: Long = 0,
+)
+
+// Snapshot of one Claude Code session on the Mac. Scanned every ~15s from
+// ~/.claude/sessions/*.json (active PIDs) + ~/.claude/projects/*/*.jsonl
+// (recent transcripts by mtime). Page 5 lists these grouped by projectName.
+@IgnoreExtraProperties
+data class RecentSession(
+    val sessionId: String = "",
+    val cwd: String = "",
+    val projectName: String = "",
+    val mtime: Long = 0,
+    val active: Boolean = false,
+    val shared: Boolean = false,
+    val lastUserMessage: String? = null,
+)

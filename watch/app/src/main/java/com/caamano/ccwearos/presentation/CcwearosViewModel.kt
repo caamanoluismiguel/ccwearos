@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.caamano.ccwearos.data.CcwearosRepository
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.RecentSession
+import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WrapperStatus
@@ -50,6 +52,12 @@ class CcwearosViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val followups: StateFlow<List<String>> = repo.followups
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val sharedSession: StateFlow<SharedSessionMeta?> = repo.sharedSession
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val recentSessions: StateFlow<List<RecentSession>> = repo.recentSessions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     // Per-app-session flag: did THIS app launch / ViewModel instance send a

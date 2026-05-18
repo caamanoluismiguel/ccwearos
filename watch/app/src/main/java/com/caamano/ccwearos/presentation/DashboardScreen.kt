@@ -59,23 +59,28 @@ import androidx.wear.compose.material3.Card
 import androidx.wear.compose.material3.CardDefaults
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.RecentSession
+import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WrapperStatus
 import java.text.NumberFormat
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DASHBOARD — up to 4-page horizontal Pager IA
+// DASHBOARD — up to 5-page horizontal Pager IA
 //
 // Page 0 — COMMAND: glanceable status + primary action (ask button).
 //           Button label is dynamic: "ask claude" cold, "continuar" when a
-//           prior response exists and we're IDLE (the wrapper auto-continues
-//           the session, so the same button extends the conversation).
+//           prior response exists and we're IDLE. Disabled when /sharedSession
+//           is alive (`cc` script owns the pty — two would clobber RTDB).
 // Page 1 — METRICS: daily token counter + session/weekly/cost data.
 // Page 2 — RESPONSE: last Claude reply, scrollable. Only exists when there
 //           is a response to read.
 // Page 3 — FOLLOWUP: contextual "what next?" chips Claude suggested + a reset
 //           button. Same trigger as Page 2 (hasResult).
+// Page 4 — SESSIONS: read-only list of Claude sessions on the Mac, grouped
+//           by project. Shows /recentSessions populated by the wrapper's
+//           sessions-scanner. No tap actions in V1.
 //
 // HorizontalPagerScaffold handles HorizontalPageIndicator (dots, BottomCenter)
 // automatically without any additional composables.
@@ -94,15 +99,25 @@ fun DashboardScreen(
     toolEvents: List<ToolEvent> = emptyList(),
     followups: List<String> = emptyList(),
     sentInSession: Boolean = false,
+    sharedSession: SharedSessionMeta? = null,
+    recentSessions: List<RecentSession> = emptyList(),
     onAsk: (String) -> Unit = {},
     onAskWithReset: (String) -> Unit = {},
 ) {
     // Pages 2 + 3 show up whenever there's anything worth showing — response
     // text OR a settled taskKind (an action task with no body text still needs
     // its ✓/✗ confirmation card and a "¿y ahora qué?" follow-up surface).
+    // Page 4 shows up whenever the wrapper has surfaced any recent sessions
+    // from disk (almost always true on a Mac that's been using Claude Code).
     val hasResponse = !response.isNullOrBlank()
     val hasResult = hasResponse || taskKind != null
-    val pageCount = if (hasResult) 4 else 2
+    val hasSessions = recentSessions.isNotEmpty()
+    val pageCount = when {
+        hasResult && hasSessions -> 5
+        hasResult -> 4
+        hasSessions -> 3 // Command + Metrics + Sessions, skip Response/Followup
+        else -> 2
+    }
 
     // "Continuar" label only when ALL three are true:
     //   1. THIS app session sent a regular prompt (sentInSession) — so app
@@ -120,6 +135,10 @@ fun DashboardScreen(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
         ) { page ->
+            // When there's no response yet but recent sessions exist, the
+            // Sessions page slides into slot 2 (right after Metrics) instead
+            // of slot 4 — keeps the indicator from showing dead pages.
+            val sessionsIndex = if (hasResult) 4 else 2
             when (page) {
                 0 -> CommandPage(
                     status = status,
@@ -127,11 +146,16 @@ fun DashboardScreen(
                     task = task,
                     toolEvents = toolEvents,
                     inConversation = inConversation,
+                    sharedSession = sharedSession,
                     onAsk = onAsk,
                 )
                 1 -> MetricsPage(
                     metrics = metrics,
                     claudeStatus = claudeStatus,
+                )
+                sessionsIndex -> SessionsPage(
+                    sessions = recentSessions,
+                    sharedSession = sharedSession,
                 )
                 2 -> ResponsePage(
                     response = response,
@@ -166,6 +190,7 @@ private fun CommandPage(
     task: String?,
     toolEvents: List<ToolEvent>,
     inConversation: Boolean,
+    sharedSession: SharedSessionMeta?,
     onAsk: (String) -> Unit,
 ) {
     // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
@@ -222,16 +247,51 @@ private fun CommandPage(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (status == WrapperStatus.IDLE) {
-                    AskRow(inConversation = inConversation, onAsk = onAsk)
-                } else {
-                    // KAI: Placeholder preserves button-zone height so the status
-                    // cluster doesn't jump when transitioning IDLE ↔ RUNNING.
-                    Spacer(Modifier.height(48.dp))
+                when {
+                    // Shared session active → ask button would clobber the
+                    // wrapper's pty. Show a disabled placeholder + hint.
+                    sharedSession != null -> SharedSessionBlock(sharedSession)
+                    status == WrapperStatus.IDLE ->
+                        AskRow(inConversation = inConversation, onAsk = onAsk)
+                    else -> {
+                        // KAI: Placeholder preserves button-zone height so the
+                        // status cluster doesn't jump on IDLE ↔ RUNNING.
+                        Spacer(Modifier.height(48.dp))
+                    }
                 }
                 Spacer(Modifier.height(20.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun SharedSessionBlock(meta: SharedSessionMeta) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = "📟 sesión compartida",
+            color = ClaudeAmber,
+            fontFamily = MonoFamily,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = meta.cwd.substringAfterLast("/").ifBlank { meta.cwd },
+            color = ClaudeDim.copy(alpha = 0.75f),
+            fontFamily = MonoFamily,
+            fontSize = 9.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "activa en tu Mac · usa la Terminal",
+            color = ClaudeDim.copy(alpha = 0.55f),
+            fontFamily = MonoFamily,
+            fontSize = 8.sp,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -395,6 +455,120 @@ private fun FollowupChip(text: String, onTap: () -> Unit) {
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+// ─── PAGE 5: SESSIONS — read-only Mac session list ───────────────────────────
+// Lists every Claude Code session the wrapper scanner found, grouped by
+// project. Active processes get a green dot, the currently `cc`-shared one
+// gets a coral dot, the rest are dim. No tap actions in V1 — claiming /
+// resuming sessions from the watch is a Tier 2 follow-up.
+
+@Composable
+private fun SessionsPage(
+    sessions: List<RecentSession>,
+    sharedSession: SharedSessionMeta?,
+) {
+    val grouped = sessions.groupBy { it.projectName }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize(fraction = 0.82f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.Start,
+        ) {
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "sesiones",
+                    color = ClaudeCoral,
+                    fontFamily = MonoFamily,
+                    fontSize = 11.sp,
+                    letterSpacing = 0.8.sp,
+                )
+                Spacer(Modifier.padding(horizontal = 4.dp))
+                Text(
+                    text = "· ${sessions.size}",
+                    color = ClaudeDim.copy(alpha = 0.6f),
+                    fontFamily = MonoFamily,
+                    fontSize = 9.sp,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            for ((projectName, projectSessions) in grouped) {
+                Text(
+                    text = projectName,
+                    color = ClaudeDim,
+                    fontFamily = MonoFamily,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(4.dp))
+                for (sess in projectSessions) {
+                    SessionRow(
+                        session = sess,
+                        isShared = sess.sessionId == sharedSession?.sessionId,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun SessionRow(session: RecentSession, isShared: Boolean) {
+    val dotColor = when {
+        isShared -> ClaudeCoral
+        session.active -> ClaudeGreen
+        else -> ClaudeDim.copy(alpha = 0.35f)
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .size(6.dp)
+                .background(dotColor, shape = RoundedCornerShape(3.dp)),
+        )
+        Spacer(Modifier.padding(horizontal = 4.dp))
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = timeAgoShort(session.mtime),
+                color = ClaudeDim.copy(alpha = 0.65f),
+                fontFamily = MonoFamily,
+                fontSize = 9.sp,
+            )
+            session.lastUserMessage?.let { msg ->
+                Text(
+                    text = msg,
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontFamily = FontFamily.Default,
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+// "hace 2m", "hace 1h", "ayer", "hace 3d" — tight format for the round screen.
+private fun timeAgoShort(mtime: Long): String {
+    val nowMs = System.currentTimeMillis()
+    val diffSec = ((nowMs - mtime) / 1000L).coerceAtLeast(0)
+    return when {
+        diffSec < 60 -> "ahora"
+        diffSec < 3600 -> "hace ${diffSec / 60}m"
+        diffSec < 86_400 -> "hace ${diffSec / 3600}h"
+        diffSec < 172_800 -> "ayer"
+        else -> "hace ${diffSec / 86_400}d"
     }
 }
 

@@ -19,6 +19,9 @@ import {
   writeMetrics,
 } from "./firebase.js";
 import { extractFollowups, extractTldr, PROMPT_END_MARKER } from "./parser.js";
+import { startSessionScanner } from "./sessions-scanner.js";
+import { watchSharedSession } from "./firebase.js";
+import type { SharedSessionMeta } from "./types/schema.js";
 import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
@@ -162,6 +165,27 @@ async function runDaemon(): Promise<void> {
   // Active runner for the current voice task. Permission responses from the
   // watch (via /command) get routed into runner.send() while it's alive.
   let activeRunner: VoiceRunner | null = null;
+  // Currently-shared session (from `cc` / scripts/share.ts), if any. While
+  // non-null we refuse voice prompts to avoid two pty's writing to the same
+  // RTDB paths and clobbering each other. The watch's Page 0 button is also
+  // disabled visually based on the same /sharedSession value.
+  let sharedSession: SharedSessionMeta | null = null;
+  const stopWatchingShared = watchSharedSession((meta) => {
+    sharedSession = meta;
+    if (meta) {
+      console.log(
+        `[ccwearos] /sharedSession active (pid=${meta.pid}, cwd=${meta.cwd}) — voice prompts paused.`,
+      );
+    } else {
+      console.log("[ccwearos] /sharedSession cleared — voice prompts resumed.");
+    }
+  });
+
+  // Periodically scan ~/.claude/sessions + projects and publish /recentSessions
+  // so the watch's Page 5 shows what's happening across all projects on the Mac.
+  const stopSessionScanner = startSessionScanner({
+    getSharedSessionId: () => sharedSession?.sessionId || null,
+  });
 
   // Voice phrases that signal "start a fresh conversation, ignore previous
   // turns". Spanish + English, case-insensitive substring match.
@@ -214,6 +238,17 @@ async function runDaemon(): Promise<void> {
   const stopPromptWatching = watchPrompts(async (p) => {
     if (busy) {
       console.log("[ccwearos] Busy — ignoring overlapping prompt:", p.text);
+      return;
+    }
+    // Refuse voice prompts while a shared session (cc / share.ts) is alive
+    // — both would spawn Claude in pty and clobber the same RTDB paths. The
+    // watch UI also disables Page 0's button based on the same signal, but
+    // this is a defensive double-check in case stale UI state slips through.
+    if (sharedSession) {
+      console.log(
+        `[ccwearos] /sharedSession active in ${sharedSession.cwd} — voice prompt dropped: ${p.text}`,
+      );
+      await clearPrompt();
       return;
     }
     const ageSec = (Date.now() - p.issuedAt) / 1000;
@@ -323,6 +358,8 @@ async function runDaemon(): Promise<void> {
     console.log(`[ccwearos] ${signal} received — daemon shutting down.`);
     stopPromptWatching();
     stopCmdWatching();
+    stopWatchingShared();
+    stopSessionScanner();
     try {
       await setStatus("OFFLINE");
     } catch (e) {

@@ -71,6 +71,18 @@ class CcwearosRepository(
         list
     }
 
+    val sharedSession: Flow<SharedSessionMeta?> = pathFlow("sharedSession") { snap ->
+        snap.getValue(SharedSessionMeta::class.java)
+    }
+
+    val recentSessions: Flow<List<RecentSession>> = pathFlow("recentSessions") { snap ->
+        val list = mutableListOf<RecentSession>()
+        for (child in snap.children) {
+            child.getValue(RecentSession::class.java)?.let(list::add)
+        }
+        list
+    }
+
     suspend fun sendCommand(text: String) {
         // Use Firebase server timestamp (not System.currentTimeMillis) so a
         // skewed device clock — including Wear OS emulators with drifted time —

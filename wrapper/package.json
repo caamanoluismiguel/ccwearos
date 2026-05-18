@@ -11,6 +11,7 @@
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true; chmod +x node_modules/node-pty/prebuilds/darwin-x64/spawn-helper 2>/dev/null || true",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "cc": "tsx scripts/share.ts",
     "verify": "tsx scripts/verify-bridge.ts",
     "replay": "tsx scripts/replay-fixture.ts",
     "demo": "tsx scripts/demo-loop.ts",

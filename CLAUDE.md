@@ -20,22 +20,24 @@ The watch shows live status / activity / task / token usage / Claude's response,
 
 Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `watch/.../data/RtdbModels.kt`.
 
-| Path                | Who writes | Who reads        | Notes                                                                   |
-| ------------------- | ---------- | ---------------- | ----------------------------------------------------------------------- |
-| `/status`           | wrapper    | watch            | `"IDLE" \| "RUNNING" \| "AWAITING_PERMISSION" \| "OFFLINE"`             |
-| `/metrics`          | wrapper    | watch            | Rolling-window token totals (day/week/month)                            |
-| `/command`          | watch      | wrapper          | `{text, issuedAt}` — permission responses (`"1\r"` / `""`)              |
-| `/prompt`           | watch      | wrapper (daemon) | `{text, issuedAt}` — new voice prompt to run                            |
-| `/permissionPrompt` | wrapper    | watch            | Human-readable prompt text                                              |
-| `/activity`         | wrapper    | watch            | Spinner verb ("Crunching…", "Worked for 33s")                           |
-| `/task`             | wrapper    | watch            | Current task description (from OSC title)                               |
-| `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                             |
-| `/headline`         | wrapper    | watch            | TL;DR one-liner extracted from response (info runs)                     |
-| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (Page 4)       |
-| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives Page 3 layout branch                      |
-| `/toolEvents`       | wrapper    | watch            | Up to 12 tool invocations observed during the run                       |
-| `/claudeStatus`     | wrapper    | watch            | Parsed Claude status line: model, contextSize, monthlyCost, reset times |
-| `/fcmToken`         | watch      | wrapper          | Watch's FCM registration token (for wake-ups)                           |
+| Path                | Who writes | Who reads        | Notes                                                                    |
+| ------------------- | ---------- | ---------------- | ------------------------------------------------------------------------ |
+| `/status`           | wrapper    | watch            | `"IDLE" \| "RUNNING" \| "AWAITING_PERMISSION" \| "OFFLINE"`              |
+| `/metrics`          | wrapper    | watch            | Rolling-window token totals (day/week/month)                             |
+| `/command`          | watch      | wrapper          | `{text, issuedAt}` — permission responses (`"1\r"` / `""`)               |
+| `/prompt`           | watch      | wrapper (daemon) | `{text, issuedAt}` — new voice prompt to run                             |
+| `/permissionPrompt` | wrapper    | watch            | Human-readable prompt text                                               |
+| `/activity`         | wrapper    | watch            | Spinner verb ("Crunching…", "Worked for 33s")                            |
+| `/task`             | wrapper    | watch            | Current task description (from OSC title)                                |
+| `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                              |
+| `/headline`         | wrapper    | watch            | TL;DR one-liner extracted from response (info runs)                      |
+| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (Page 4)        |
+| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives Page 3 layout branch                       |
+| `/toolEvents`       | wrapper    | watch            | Up to 12 tool invocations observed during the run                        |
+| `/claudeStatus`     | wrapper    | watch            | Parsed Claude status line: model, contextSize, monthlyCost, reset times  |
+| `/sharedSession`    | wrapper    | watch            | Active `cc`/share.ts session metadata. Gates voice prompts + Page 0 CTA. |
+| `/recentSessions`   | wrapper    | watch            | Mac-wide Claude session snapshot. Drives Page 5 grouped-by-project list. |
+| `/fcmToken`         | watch      | wrapper          | Watch's FCM registration token (for wake-ups)                            |
 
 Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt` to avoid clock-skew bugs on emulators.
 
@@ -53,6 +55,7 @@ Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt
 - [x] Sprint 4f — Page 3 response cleanup (Camino B): marker-slice extraction + ANSI hardening + post-answer noise filters
 - [x] Sprint 4g — Page 4 "¿Y ahora qué?" + dual-label CTA (Camino C-bis): Claude-suggested follow-up chips + explicit reset button + per-app-session freshness flag
 - [x] Sprint 4h — Polish round (real-watch testing): hide stale `/task` on Page 0 when wrapper is IDLE, filter Claude's meta-formatting OSC titles ("Setup response template format" etc.), and add macOS-context note to prompt prefix so Claude actually runs `open -a <app>` instead of refusing with "I have no desktop access"
+- [x] Sprint 4i — Page 5 "Sesiones del Mac" + shared sessions (Camino D): wrapper publishes `/recentSessions` (scan of `~/.claude/sessions` + `~/.claude/projects`) every 15s; new `cc` alias script (`scripts/share.ts`) lets the user start a Claude session from any Terminal directory while the watch sees state and can answer permissions; daemon refuses voice prompts while `/sharedSession` is alive; Page 5 lists sessions grouped by project (read-only V1)
 
 ## Wrapper modes
 
@@ -192,6 +195,23 @@ Page 0's CTA reflects this:
 Page 4 surfaces 2-3 contextual chips that Claude itself generates at the end of every textual answer (the `Sugerencias:` / `Followups:` bullet block, parsed by `extractFollowups`). Tap a chip = sends that exact text as the next prompt; wrapper continues the thread.
 
 The explicit reset path is the `↻ nueva conversación` button on Page 4 — the watch's `askWithReset()` prepends "nueva conversación, " before writing `/prompt`, which trips the wrapper's `isResetPrompt` detection.
+
+## Shared sessions + Page 5 (Camino D)
+
+Two ways the watch sees Mac sessions:
+
+1. **Wrapper-bridged via `cc` alias** (you don't lose your Terminal). Install the alias:
+
+   ```bash
+   echo "alias cc='npx tsx ~/projects/CCWEAROS/wrapper/scripts/share.ts'" >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   Then in any directory, type `cc` instead of `claude`. The wrapper script spawns Claude in a pty, mirrors output to your Terminal AND to RTDB. The watch sees `/status`, `/permissionPrompt`, `/response` etc. live, and Allow/Deny taps route back into the pty via `/command`. Your Terminal stays alive; come back to your Mac and the conversation is right where you left it.
+
+   While `cc` is running, `/sharedSession` is non-null. The daemon refuses voice prompts (Page 0's CTA hides behind a "📟 sesión compartida" block) to avoid two pty's clobbering RTDB. On clean exit (Ctrl+C / `/exit`) `/sharedSession` is cleared.
+
+2. **Read-only via sessions scanner.** Every 15s the wrapper scans `~/.claude/sessions/*.json` (active PIDs) + `~/.claude/projects/*/*.jsonl` (recent transcripts by mtime) and publishes a snapshot to `/recentSessions`. Page 5 lists them grouped by project, marking active processes with a green dot and the `cc`-shared one with a coral dot. No tap actions in V1 — claiming or resuming arbitrary sessions from the watch is Tier 2.
 
 ## Known limitations
 

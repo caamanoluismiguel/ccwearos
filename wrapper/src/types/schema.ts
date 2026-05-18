@@ -56,6 +56,33 @@ export interface RtdbRoot {
   // Surfaced as tappable chips on the watch's Page 4. Null when Claude didn't
   // include the block (e.g. tool-heavy action runs).
   followups: string[] | null;
+  // Metadata about the currently-bridged Claude session — written by the
+  // `cc` shell alias / share.ts script while it runs. While non-null, the
+  // daemon refuses voice prompts (would conflict with the shared pty) and
+  // the watch's Page 0 button shows a disabled "shared session active" state.
+  // Cleared on script exit. See wrapper/scripts/share.ts.
+  sharedSession: SharedSessionMeta | null;
+  // Snapshot of Claude Code sessions on the Mac, scanned every ~15s from
+  // ~/.claude/sessions/*.json (active PIDs) and ~/.claude/projects/*/*.jsonl
+  // (recent transcripts by mtime). Surfaced as Page 5 on the watch.
+  recentSessions: RecentSession[] | null;
+}
+
+export interface SharedSessionMeta {
+  sessionId: string; // UUID of the Claude session (filled once Claude emits one)
+  pid: number; // PID of the wrapper script (NOT the Claude pty child)
+  cwd: string; // working directory where `cc` was launched
+  startedAt: number; // unix epoch ms
+}
+
+export interface RecentSession {
+  sessionId: string; // UUID, matches the .jsonl filename
+  cwd: string; // working directory the session was started in
+  projectName: string; // basename(cwd) — for grouping on the watch
+  mtime: number; // unix epoch ms of the .jsonl file's last modification
+  active: boolean; // true if a live PID owns this sessionId right now
+  shared: boolean; // true if currently under cc/share.ts wrapper control
+  lastUserMessage: string | null; // last user-turn text, capped at 60 chars
 }
 
 export interface PendingPrompt {
@@ -105,4 +132,6 @@ export const RTDB_PATHS = {
   toolEvents: "/toolEvents",
   headline: "/headline",
   followups: "/followups",
+  sharedSession: "/sharedSession",
+  recentSessions: "/recentSessions",
 } as const;

@@ -5,6 +5,8 @@ import type {
   Metrics,
   PendingCommand,
   PendingPrompt,
+  RecentSession,
+  SharedSessionMeta,
   TaskKind,
   ToolEvent,
   WrapperStatus,
@@ -71,6 +73,39 @@ export async function setFollowups(items: string[] | null): Promise<void> {
   await db()
     .ref("/followups")
     .set(items && items.length > 0 ? items : null);
+}
+
+export async function setSharedSession(
+  meta: SharedSessionMeta | null,
+): Promise<void> {
+  await db().ref("/sharedSession").set(meta);
+}
+
+// One-shot read of /sharedSession — used by share.ts to refuse a 2nd shared
+// session start, and to detect stale locks (PID no longer alive).
+export async function readSharedSession(): Promise<SharedSessionMeta | null> {
+  const snap = await db().ref("/sharedSession").get();
+  return (snap.val() as SharedSessionMeta | null) ?? null;
+}
+
+export async function setRecentSessions(
+  list: RecentSession[] | null,
+): Promise<void> {
+  await db()
+    .ref("/recentSessions")
+    .set(list && list.length > 0 ? list : null);
+}
+
+export function watchSharedSession(
+  onChange: (meta: SharedSessionMeta | null) => void,
+): () => void {
+  const ref = db().ref("/sharedSession");
+  const handler = (snap: admin.database.DataSnapshot) => {
+    const val = snap.val() as SharedSessionMeta | null;
+    onChange(val);
+  };
+  ref.on("value", handler);
+  return () => ref.off("value", handler);
 }
 
 // FCM wake-up: when the wrapper needs the watch out of ambient (e.g. a
