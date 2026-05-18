@@ -7,9 +7,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -39,74 +41,72 @@ fun PermissionScreen(
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
-            modifier = Modifier.fillMaxSize(fraction = 0.72f),
-            // ARIA: 6dp spacing base, centered vertically — tighter than dashboard
-            // because this screen must be fully scannable in one glance + action.
-            verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+            modifier = Modifier
+                .fillMaxSize(fraction = 0.78f)
+                .verticalScroll(rememberScrollState()),
+            // Top-anchored + scrollable. Centered alignment used to push the
+            // deny button off the bottom of the round bezel when the prompt
+            // was 3-4 lines long. Top-aligned with scroll guarantees both
+            // buttons are reachable on any prompt length.
+            verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Top),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Tighter single-line header. The combined mascot + "permission"
+            // pip frees enough vertical space for allow + deny to fit on a
+            // round screen without scroll on typical (1-3 line) prompts.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ClaudeMascot(width = 18.dp)
+                ClaudeMascot(width = 14.dp)
                 Spacer(Modifier.padding(horizontal = 4.dp))
-                Text("claude code", color = ClaudeCoral, fontFamily = MonoFamily, fontSize = 10.sp)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "$ permission",
+                    text = "permission",
                     color = ClaudeAmber,
                     fontFamily = MonoFamily,
                     fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
                 )
-                Spacer(Modifier.padding(horizontal = 1.dp))
-                BlinkingCursor(color = ClaudeAmber, fontSize = 11.sp)
             }
-            // ARIA: Prompt text switches from MonoFamily to Default (sans-serif) for
-            // readability — the prompt is prose, not code. Normal weight instead of
-            // unspecified (which defaults to Light on some Wear OS versions).
-            // 4 lines max so long permission strings don't push buttons off-screen.
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = prompt ?: "Claude needs permission.",
                 color = Color.White.copy(alpha = 0.92f),
                 fontFamily = FontFamily.Default,
                 fontSize = 11.sp,
-                lineHeight = 15.sp,
+                lineHeight = 14.sp,
                 fontWeight = FontWeight.Normal,
                 textAlign = TextAlign.Center,
-                maxLines = 4,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = "[Y/n]",
-                color = ClaudeDim.copy(alpha = 0.6f),
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
-            )
             Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TerminalButton(label = "n", color = ClaudeRed, onClick = onDeny)
-                TerminalButton(label = "y", color = ClaudeGreen, onClick = onAllow)
-            }
+            // Pill-shaped, full-width buttons. On a round screen the corner
+            // crop makes small circular buttons hard to hit; capsules that
+            // span 80% of the inscribed width are forgiving even with a
+            // moving wrist. Text "allow"/"deny" is more discoverable than
+            // single-letter "y"/"n" especially in stressful moments.
+            TerminalButton(label = "allow", color = ClaudeGreen, onClick = onAllow)
+            Spacer(Modifier.height(4.dp))
+            TerminalButton(label = "deny", color = ClaudeRed, onClick = onDeny)
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
 
 @Composable
 private fun TerminalButton(label: String, color: Color, onClick: () -> Unit) {
-    // KAI: 48dp height is the Wear OS minimum touch target (Material Design for Wear).
-    // Previous 38dp height was a touch target violation — users on moving wrists miss it.
-    // Width stays 52dp (comfortably tappable, fits two buttons side-by-side in 0.72× width).
     Button(
         onClick = onClick,
         colors = ButtonDefaults.buttonColors(
             containerColor = color,
             contentColor = Color.Black,
         ),
-        modifier = Modifier.size(width = 52.dp, height = 48.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
     ) {
         Text(
             text = label,
             fontFamily = MonoFamily,
-            fontSize = 18.sp,
+            fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
             color = Color.Black,
         )
