@@ -48,9 +48,16 @@ function buildPromptPrefix(userText: string): string {
   const spanishStems =
     /\b(qu[éeè]|c[óo]mo|por qu[éeè]|explica|d[íi]me|qu[éeè] es|cu[áa]l|cu[áa]ndo|d[óo]nde|resume|res[úu]meme)\b/i;
   const isSpanish = spanishStems.test(userText);
+  // Context note that goes first: tell Claude he IS running on the user's
+  // macOS session with shell access, so "abre X" / "open X" / "ejecuta X"
+  // must trigger the Bash tool, not a "I can't do that" refusal.
+  const contextEs =
+    "Contexto: estás corriendo en el Mac del usuario vía pty. Tienes Bash. Si te dice 'abre/abrir <app>', ejecuta `open -a \"<app>\"`. Si te dice 'ejecuta/corre <comando>', córrelo. Si te dice 'borra/crea/mueve <archivo>', hazlo. NUNCA respondas 'no puedo abrir apps' o 'no tengo control de escritorio' — sí tienes, vía shell.";
+  const contextEn =
+    "Context: you are running on the user's macOS via pty. You have Bash. If they say 'open <app>', run `open -a \"<app>\"`. If they say 'run/exec <cmd>', do it. If they say 'delete/create/move <file>', do it. NEVER reply 'I can't open apps' or 'I have no desktop access' — you do, via the shell.";
   return isSpanish
-    ? "Responde así (solo si NO necesitas usar herramientas para esta tarea): primera línea con `**TL;DR:**` (máximo 18 palabras), luego detalles si quieres. Termina SIEMPRE con un bloque corto en una nueva línea: `Sugerencias:` seguido de 2-3 viñetas con `-`, cada una de máximo 6 palabras, sugiriendo qué preguntar o hacer a continuación."
-    : "Reply like this (only if NO tools are needed for this task): first line `**TL;DR:**` with at most 18 words, then details if you want. ALWAYS end with a short block on a new line: `Followups:` followed by 2-3 bullets with `-`, each at most 6 words, suggesting what to ask or do next.";
+    ? `${contextEs} Responde así (solo si NO necesitas usar herramientas para esta tarea): primera línea con \`**TL;DR:**\` (máximo 18 palabras), luego detalles si quieres. Termina SIEMPRE con un bloque corto en una nueva línea: \`Sugerencias:\` seguido de 2-3 viñetas con \`-\`, cada una de máximo 6 palabras, sugiriendo qué preguntar o hacer a continuación.`
+    : `${contextEn} Reply like this (only if NO tools are needed for this task): first line \`**TL;DR:**\` with at most 18 words, then details if you want. ALWAYS end with a short block on a new line: \`Followups:\` followed by 2-3 bullets with \`-\`, each at most 6 words, suggesting what to ask or do next.`;
 }
 
 // Read-only tools that produce info-like responses. If only these ran AND the
