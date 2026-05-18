@@ -149,6 +149,21 @@ export function isAwaitingPermission(chunk: string): boolean {
 // Extract the latest terminal title (OSC 0) — Claude embeds the current task
 // description here. Leading spinner glyph is trimmed. Operates on the RAW
 // chunk because the OSC sequence is what carries the data.
+//
+// Filters out meta-formatting titles like "Setup response template format" or
+// "Respond with TL;DR" — those are Claude reflecting on our prompt-prefix
+// machinery, not the user's actual task. The watch's initial task (set by
+// index.ts as the user's voice text) is more useful.
+const META_TASK_PATTERNS: RegExp[] = [
+  /\bTL;?DR\b/i,
+  /\b(respond|reply)\s+(with|to|using)\b/i,
+  /\b(setup|set\s+up|create|format)\s+.*\b(response|template|format)\b/i,
+  /\bresponse\s+(template|format)\b/i,
+  /\b(follow|use)\s+.*\b(response\s+format|template)\b/i,
+  /\bfollowups?\s+(format|template|block)\b/i,
+  /\b(provide|give)\s+.*(and|with)\s+follow\b/i,
+];
+
 export function extractCurrentTask(chunk: string): string | null {
   const re = new RegExp(OSC_TITLE_RE.source, OSC_TITLE_RE.flags);
   let m: RegExpExecArray | null;
@@ -162,6 +177,9 @@ export function extractCurrentTask(chunk: string): string | null {
   }
   // "Claude Code" is the default title when no task is active — treat as none.
   if (last && /^claude code$/i.test(last)) return null;
+  // Meta-formatting titles describe the prompt-prefix machinery, not the
+  // user's real task. Drop them so the initial task (user's voice text) wins.
+  if (last && META_TASK_PATTERNS.some((re) => re.test(last))) return null;
   return last;
 }
 
