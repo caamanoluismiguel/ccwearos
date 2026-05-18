@@ -202,7 +202,12 @@ private fun CommandPage(
                         )
                     }
                 }
-                if (!task.isNullOrBlank()) {
+                // Gate task on RUNNING — same as ActivityLine above. Without
+                // this gate, Wear OS freezing the app mid-run leaves the
+                // StateFlow's last emission stuck in memory; when the screen
+                // wakes up, the stale task ("explain photosynthesis") shows
+                // for a moment before Firebase reconnects and pushes null.
+                if (status == WrapperStatus.RUNNING && !task.isNullOrBlank()) {
                     Spacer(Modifier.height(2.dp))
                     TaskLine(task)
                 }
