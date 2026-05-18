@@ -30,7 +30,7 @@ console.log = (...args: unknown[]): void => {
 // Polling budget: 55s. Claude Code defaults to a 60s hook timeout; we leave
 // 5s buffer so the script can finish writing JSON before the host kills it.
 
-import { writeSync } from "node:fs";
+import { appendFileSync, writeSync } from "node:fs";
 import {
   initFirebase,
   readSharedSession,
@@ -42,6 +42,20 @@ import {
 import { db } from "../../src/firebase.js";
 import type { PendingCommand } from "../../src/types/schema.js";
 
+// Every hook invocation appends one line here so we can post-mortem when
+// things go wrong. Includes timestamp, what we decided, why. Append-only.
+const HOOK_LOG_PATH = "/tmp/ccwearos-hook.log";
+function dlog(msg: string): void {
+  try {
+    appendFileSync(
+      HOOK_LOG_PATH,
+      `${new Date().toISOString()} pid=${process.pid} ${msg}\n`,
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
 interface HookInput {
   session_id?: string;
   hook_event_name?: string;
@@ -51,9 +65,14 @@ interface HookInput {
 }
 
 interface HookOutput {
+  // New format (Claude Code SKILL docs).
   hookSpecificOutput?: {
     permissionDecision?: "allow" | "deny" | "ask";
   };
+  // Older top-level format some CLI versions still parse:
+  // "approve" / "block" / undefined-for-defer.
+  decision?: "approve" | "block";
+  reason?: string;
   systemMessage?: string;
 }
 
@@ -62,19 +81,17 @@ const POLL_BUDGET_MS = 55_000;
 const PROMPT_MAX_CHARS = 200;
 
 function emit(out: HookOutput): never {
+  const json = JSON.stringify(out);
+  dlog(`emit: ${json}`);
   // Write SYNCHRONOUSLY to fd 1 — process.stdout.write() buffers when stdout
   // is a pipe (which is how Claude Code invokes hooks), and process.exit()
   // truncates any pending writes. writeSync bypasses the libuv pipe buffer.
-  writeSync(1, JSON.stringify(out) + "\n");
+  writeSync(1, json + "\n");
   process.exit(0);
 }
 
 function passThrough(reason: string): never {
-  // When we're NOT taking responsibility for this tool call, returning "ask"
-  // tells Claude Code to fall back to its normal behaviour. For non-shared
-  // sessions we actually want allow-implicit (no decision), which is the
-  // semantics of emitting nothing — Claude Code treats absence as "no
-  // opinion" and proceeds with its built-in policy.
+  dlog(`pass-through: ${reason}`);
   if (process.env["CCWEAROS_HOOK_DEBUG"]) {
     process.stderr.write(`[ccwearos-hook] pass-through: ${reason}\n`);
   }
@@ -139,6 +156,7 @@ async function pollForCommand(deadline: number): Promise<string | null> {
 }
 
 async function main(): Promise<void> {
+  dlog("hook invoked");
   let raw: string;
   try {
     raw = await readStdin();
@@ -157,6 +175,7 @@ async function main(): Promise<void> {
   const sessionId = input.session_id;
   const toolName = input.tool_name;
   const toolInput = input.tool_input ?? {};
+  dlog(`stdin parsed: tool=${toolName} session=${sessionId?.slice(0, 8)}`);
   if (!sessionId || !toolName) passThrough("missing session_id or tool_name");
 
   // Initialize Firebase (uses the wrapper's service-account key). If this
@@ -261,11 +280,15 @@ async function main(): Promise<void> {
   const head = reply!.trim().charAt(0);
   if (head === "1" || head === "2" || head === "y" || head === "Y") {
     emit({
+      decision: "approve",
+      reason: "approved via CCWEAROS watch",
       hookSpecificOutput: { permissionDecision: "allow" },
       systemMessage: "approved via CCWEAROS watch",
     });
   }
   emit({
+    decision: "block",
+    reason: "denied via CCWEAROS watch",
     hookSpecificOutput: { permissionDecision: "deny" },
     systemMessage: "denied via CCWEAROS watch",
   });
