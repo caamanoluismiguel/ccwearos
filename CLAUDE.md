@@ -52,6 +52,7 @@ Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt
 - [x] Sprint 4e — Deployed to physical Galaxy Watch 8 (real watch UID pinned in `firebase-rules.json`; user must publish rules in Firebase Console)
 - [x] Sprint 4f — Page 3 response cleanup (Camino B): marker-slice extraction + ANSI hardening + post-answer noise filters
 - [x] Sprint 4g — Page 4 "¿Y ahora qué?" + dual-label CTA (Camino C-bis): Claude-suggested follow-up chips + explicit reset button + per-app-session freshness flag
+- [x] Sprint 4h — Polish round (real-watch testing): hide stale `/task` on Page 0 when wrapper is IDLE, filter Claude's meta-formatting OSC titles ("Setup response template format" etc.), and add macOS-context note to prompt prefix so Claude actually runs `open -a <app>` instead of refusing with "I have no desktop access"
 
 ## Wrapper modes
 
@@ -194,10 +195,20 @@ The explicit reset path is the `↻ nueva conversación` button on Page 4 — th
 
 ## Known limitations
 
-- Permission prompts are interactive-mode only (daemon's `-p` auto-allows). Voice prompts that need permission will run with default permissions.
 - Markdown rendering on watch is inline only (bold/italic/code). Block markdown (lists, headings, code blocks) renders as plain text.
 - Tables are flattened to `cell1 · cell2 · cell3` rows — multi-line table cells lose column association.
 - Action runs (tool-heavy) often skip the `Followups:` block — Page 4 falls back to just the reset button. Fix idea: hardcode generic chips ("Más detalles", "Deshacer", "Otra acción") when `/followups` is null but a response exists.
+- Watch's `WrapperStatus` initial value is `OFFLINE` with `SharingStarted.WhileSubscribed(5_000)` — after the screen sleeps for >5s the listener disconnects, so on wake the watch flashes "wrapper not reachable" for a few seconds until Firebase reconnects. Possible fix: switch to `SharingStarted.Eagerly` (battery trade-off) or introduce a `CONNECTING` state.
+
+## Prompt prefix (wrapper)
+
+`buildPromptPrefix` in `wrapper/src/index.ts` wraps every voice prompt with three concatenated chunks (joined by `·` on a single line — the Claude Code TUI treats embedded `\n` as in-box newlines, not submit):
+
+1. **Context note** — tells Claude he IS running on the user's macOS via pty with Bash. Without this, imperative voice commands like "abre Final Cut Pro" trigger a "I have no desktop access" refusal even though the Bash tool can run `open -a "Final Cut Pro"`. Bilingual (es/en) per the prompt language heuristic.
+2. **Response format directive** — primera línea `**TL;DR:**` (≤18 palabras) + opcionalmente detalles. Only when no tools are needed.
+3. **Followups directive** — ALWAYS end with `Sugerencias:` / `Followups:` + 2-3 short bullets. Parsed by `extractFollowups()` and surfaced as Page 4 chips.
+
+The prefix is appended with `PROMPT_END_MARKER` so the parser can slice off everything before Claude's actual response.
 
 ## Toolchain on this Mac
 
