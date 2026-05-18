@@ -1,6 +1,16 @@
-import "dotenv/config";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { config as loadDotenv } from "dotenv";
+
+// Resolve everything against the WRAPPER directory, not process.cwd(), so
+// scripts invoked from any other directory (notably the `/ccwearos` slash
+// command spawned from the user's project dir) still find the .env and the
+// firebase-admin key.
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const WRAPPER_ROOT = resolve(MODULE_DIR, ".."); // src → wrapper
+
+loadDotenv({ path: resolve(WRAPPER_ROOT, ".env") });
 
 function required(name: string): string {
   const v = process.env[name];
@@ -11,9 +21,8 @@ function required(name: string): string {
 export const config = {
   firebaseDbUrl: required("FIREBASE_DB_URL"),
   firebaseAdminKeyPath: resolve(
-    process.cwd(),
-    process.env["FIREBASE_ADMIN_KEY_PATH"] ??
-      "./secrets/firebase-admin-key.json",
+    WRAPPER_ROOT,
+    process.env["FIREBASE_ADMIN_KEY_PATH"] ?? "secrets/firebase-admin-key.json",
   ),
   claudeCliCommand: process.env["CLAUDE_CLI_COMMAND"] ?? "claude",
   metricsDebounceMs: Number(process.env["METRICS_DEBOUNCE_MS"] ?? 5000),
