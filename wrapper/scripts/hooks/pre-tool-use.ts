@@ -36,6 +36,7 @@ import {
   readSharedSession,
   sendFcmWake,
   setPermissionPrompt,
+  setSharedSession,
   setStatus,
 } from "../../src/firebase.js";
 import { db } from "../../src/firebase.js";
@@ -174,7 +175,17 @@ async function main(): Promise<void> {
   }
   if (!shared) passThrough("no /sharedSession");
   if (shared.kind !== "hook") passThrough(`kind=${shared.kind}, not hook`);
-  if (shared.sessionId !== sessionId) {
+  // Wildcard claim: enable-share.ts couldn't pin down the session ID at
+  // /ccwearos time (multiple sessions in cwd, etc.) so it wrote sessionId="".
+  // First hook fire grabs ownership using the session_id Claude Code passes
+  // in stdin (always correct), writes it back, and proceeds.
+  if (!shared.sessionId) {
+    try {
+      await setSharedSession({ ...shared, sessionId: sessionId! });
+    } catch (e) {
+      passThrough(`claim failed: ${(e as Error).message}`);
+    }
+  } else if (shared.sessionId !== sessionId) {
     passThrough(
       `sessionId mismatch (shared=${shared.sessionId}, mine=${sessionId})`,
     );

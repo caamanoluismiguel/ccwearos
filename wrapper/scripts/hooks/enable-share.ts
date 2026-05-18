@@ -107,25 +107,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const sessionId = detectSessionId(cwd);
-  if (!sessionId) {
-    console.log(
-      "[ccwearos] Could not detect your Claude session ID. Try /ccwearos again after Claude has run at least one tool.",
-    );
-    return;
-  }
+  // Detect this session's ID best-effort. If we can't pin it down precisely
+  // (multiple sessions in the same cwd, env var missing, etc.) leave it
+  // empty — the PreToolUse hook will claim the wildcard on its first fire
+  // using the session_id Claude Code passes in stdin (always correct there).
+  const guessedSessionId = detectSessionId(cwd);
+  const sessionId = guessedSessionId ?? "";
 
   const meta: SharedSessionMeta = {
     sessionId,
-    pid: process.ppid || process.pid, // parent (Claude) if available
+    pid: process.ppid || process.pid,
     cwd,
     startedAt: Date.now(),
     kind: "hook",
   };
   await setSharedSession(meta);
-  console.log(
-    `[ccwearos] ✓ Session bridged (sessionId=${sessionId.slice(0, 8)}…).`,
-  );
+  const idLabel = sessionId
+    ? `sessionId=${sessionId.slice(0, 8)}…`
+    : "wildcard (hook will claim on first tool call)";
+  console.log(`[ccwearos] ✓ Session bridged (${idLabel}).`);
   console.log(
     "[ccwearos] Permission prompts will now appear on your watch. Tap Allow/Deny from your wrist.",
   );
