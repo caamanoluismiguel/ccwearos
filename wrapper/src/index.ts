@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import {
+  appendAuditEntry,
   clearCommand,
   clearPrompt,
   initFirebase,
@@ -235,10 +236,37 @@ async function runDaemon(): Promise<void> {
       await clearCommand();
       return;
     }
+    // Cancel/Stop: watch sends \x03 (ETX, SIGINT) when the user taps the
+    // detener button on Page 0. Kill the runner — Claude exits cleanly.
+    if (cmd.text === "\x03") {
+      console.log("[ccwearos] SIGINT from watch — stopping current run");
+      void appendAuditEntry({
+        ts: Date.now(),
+        kind: "voice",
+        tool: "(cancel)",
+        args: "",
+        decision: "deny",
+        source: "watch",
+      });
+      activeRunner.kill();
+      await clearCommand();
+      await setPermissionPrompt(null);
+      await setActivity(null);
+      await setStatus("IDLE");
+      return;
+    }
     console.log(
       "[ccwearos] Permission response from watch:",
       JSON.stringify(cmd.text),
     );
+    void appendAuditEntry({
+      ts: Date.now(),
+      kind: "voice",
+      tool: "(voice-permission)",
+      args: cmd.text.slice(0, 60),
+      decision: cmd.text.trim().startsWith("1") ? "allow" : "deny",
+      source: "watch",
+    });
     activeRunner.send(cmd.text);
     await clearCommand();
     await setPermissionPrompt(null);

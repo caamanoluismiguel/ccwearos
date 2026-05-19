@@ -93,6 +93,18 @@ export interface RecentSession {
   lastUserMessage: string | null; // last user-turn text, capped at 60 chars
 }
 
+// Rolling audit of every Claude tool the wrapper saw a permission decision
+// for. Written across all three flows (voice/cc/hook). Capped at AUDIT_LOG_MAX
+// most-recent entries to keep RTDB cheap. Viewable via `scripts/audit.ts`.
+export interface AuditEntry {
+  ts: number; // unix epoch ms
+  kind: "voice" | "cc" | "hook"; // which flow handled it
+  tool: string; // "Bash" / "Edit" / "Read" / etc
+  args: string; // first line / key arg, capped at 60 chars
+  decision: "allow" | "deny" | "timeout" | "pre-approved"; // outcome
+  source: "watch" | "terminal" | "auto"; // who chose
+}
+
 export interface PendingPrompt {
   text: string;
   issuedAt: number;
@@ -142,4 +154,5 @@ export const RTDB_PATHS = {
   followups: "/followups",
   sharedSession: "/sharedSession",
   recentSessions: "/recentSessions",
+  auditLog: "/auditLog",
 } as const;

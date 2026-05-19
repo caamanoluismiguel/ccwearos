@@ -126,10 +126,50 @@ async function main(): Promise<void> {
     ? `sessionId=${sessionId.slice(0, 8)}…`
     : "wildcard (hook will claim on first tool call)";
   console.log(`[ccwearos] ✓ Session bridged (${idLabel}).`);
+
+  // Detect the Claude permission mode. If it's NOT dontAsk (or bypassPermissions),
+  // Claude will keep its Terminal prompt visible even after our hook returns
+  // "allow" — the watch effectively becomes a double-confirm. Warn the user up
+  // front so they know the alternative.
+  const mode = detectPermissionMode();
+  if (mode && mode !== "dontAsk" && mode !== "bypassPermissions") {
+    console.log("");
+    console.log(
+      `[ccwearos] ⚠️  Tu Claude está en modo '${mode}'. El reloj puede autorizar`,
+    );
+    console.log(
+      "[ccwearos]    PERO Claude también te preguntará en este Terminal (doble-confirm).",
+    );
+    console.log("[ccwearos]    Para reloj-only, cierra y reabre con:");
+    console.log("[ccwearos]      claude --permission-mode dontAsk");
+    console.log(
+      "[ccwearos]    O usá `cc` (alias) que ya está optimizado para 'me voy del Mac'.",
+    );
+  }
+  console.log("");
   console.log(
     "[ccwearos] Permission prompts will now appear on your watch. Tap Allow/Deny from your wrist.",
   );
   console.log("[ccwearos] Run /ccwearos-off to disable.");
+}
+
+function detectPermissionMode(): string | null {
+  // Read ~/.claude/settings.json + .local for permissions.defaultMode.
+  // The two files are merged by Claude at startup; check both, .local wins.
+  for (const fname of ["settings.local.json", "settings.json"]) {
+    try {
+      const path = join(homedir(), ".claude", fname);
+      const raw = readFileSync(path, "utf8");
+      const parsed = JSON.parse(raw) as {
+        permissions?: { defaultMode?: string };
+      };
+      const m = parsed.permissions?.defaultMode;
+      if (typeof m === "string" && m.length > 0) return m;
+    } catch {
+      // file missing or malformed — try the next one
+    }
+  }
+  return null;
 }
 
 main()

@@ -1,6 +1,7 @@
 import admin from "firebase-admin";
 import { config, loadServiceAccount } from "./config.js";
 import type {
+  AuditEntry,
   ClaudeStatus,
   Metrics,
   PendingCommand,
@@ -11,6 +12,8 @@ import type {
   ToolEvent,
   WrapperStatus,
 } from "./types/schema.js";
+
+const AUDIT_LOG_MAX = 20;
 
 let app: admin.app.App | null = null;
 
@@ -106,6 +109,21 @@ export function watchSharedSession(
   };
   ref.on("value", handler);
   return () => ref.off("value", handler);
+}
+
+// Append one entry to the rolling audit log. Caps at AUDIT_LOG_MAX
+// most-recent entries. Best-effort — never throws (audit is observability,
+// not load-bearing).
+export async function appendAuditEntry(entry: AuditEntry): Promise<void> {
+  try {
+    const ref = db().ref("/auditLog");
+    const snap = await ref.once("value");
+    const existing = (snap.val() as AuditEntry[] | null) ?? [];
+    const next = [...existing, entry].slice(-AUDIT_LOG_MAX);
+    await ref.set(next);
+  } catch (e) {
+    console.error("[audit] append failed:", (e as Error).message);
+  }
 }
 
 // FCM wake-up: when the wrapper needs the watch out of ambient (e.g. a

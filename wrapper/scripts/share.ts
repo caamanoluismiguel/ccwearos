@@ -20,6 +20,7 @@
 import { config } from "../src/config.js";
 import { startClaude } from "../src/claude-runner.js";
 import {
+  appendAuditEntry,
   clearCommand,
   initFirebase,
   readSharedSession,
@@ -149,6 +150,30 @@ async function main(): Promise<void> {
       await clearCommand();
       return;
     }
+    // SIGINT cancel from the watch: tear down the shared session cleanly.
+    if (cmd.text === "\x03") {
+      console.log("[cc] SIGINT from watch — closing shared session");
+      void appendAuditEntry({
+        ts: Date.now(),
+        kind: "cc",
+        tool: "(cancel)",
+        args: "",
+        decision: "deny",
+        source: "watch",
+      });
+      await clearCommand();
+      await setPermissionPrompt(null);
+      runner.kill();
+      return;
+    }
+    void appendAuditEntry({
+      ts: Date.now(),
+      kind: "cc",
+      tool: "(cc-permission)",
+      args: cmd.text.slice(0, 60),
+      decision: cmd.text.trim().startsWith("1") ? "allow" : "deny",
+      source: "watch",
+    });
     runner.send(cmd.text);
     await clearCommand();
     await setPermissionPrompt(null);

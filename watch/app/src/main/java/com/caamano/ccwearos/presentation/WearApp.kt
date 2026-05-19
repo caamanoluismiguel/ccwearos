@@ -74,6 +74,7 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                     recentSessions = recentSessions,
                     onAsk = vm::sendPrompt,
                     onAskWithReset = vm::askWithReset,
+                    onStop = vm::stop,
                 )
             }
         }

@@ -71,6 +71,7 @@ function synthesizeActivityFromTool(ev: ToolEvent): string {
 
 export interface VoiceRunner {
   send: (input: string) => void;
+  kill: () => void;
   done: Promise<{ exitCode: number | null; rawBytes: number }>;
 }
 
@@ -113,6 +114,7 @@ export function runClaudeForVoice(
     );
     return {
       send: () => {},
+      kill: () => {},
       done: Promise.resolve({ exitCode: null, rawBytes: 0 }),
     };
   }
@@ -358,6 +360,13 @@ export function runClaudeForVoice(
         pty.write(input);
       } catch {
         /* pty may be gone */
+      }
+    },
+    kill: () => {
+      try {
+        pty.kill();
+      } catch {
+        /* already gone */
       }
     },
     done,

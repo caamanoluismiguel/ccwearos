@@ -103,6 +103,7 @@ fun DashboardScreen(
     recentSessions: List<RecentSession> = emptyList(),
     onAsk: (String) -> Unit = {},
     onAskWithReset: (String) -> Unit = {},
+    onStop: () -> Unit = {},
 ) {
     // Pages 2 + 3 show up whenever there's anything worth showing — response
     // text OR a settled taskKind (an action task with no body text still needs
@@ -148,6 +149,7 @@ fun DashboardScreen(
                     inConversation = inConversation,
                     sharedSession = sharedSession,
                     onAsk = onAsk,
+                    onStop = onStop,
                 )
                 1 -> MetricsPage(
                     metrics = metrics,
@@ -165,6 +167,8 @@ fun DashboardScreen(
                 )
                 3 -> FollowupPage(
                     followups = followups,
+                    taskKind = taskKind,
+                    headline = headline,
                     onAsk = onAsk,
                     onAskWithReset = onAskWithReset,
                 )
@@ -192,6 +196,7 @@ private fun CommandPage(
     inConversation: Boolean,
     sharedSession: SharedSessionMeta?,
     onAsk: (String) -> Unit,
+    onStop: () -> Unit,
 ) {
     // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -253,14 +258,43 @@ private fun CommandPage(
                     sharedSession != null -> SharedSessionBlock(sharedSession)
                     status == WrapperStatus.IDLE ->
                         AskRow(inConversation = inConversation, onAsk = onAsk)
+                    status == WrapperStatus.RUNNING -> StopButton(onClick = onStop)
                     else -> {
-                        // KAI: Placeholder preserves button-zone height so the
-                        // status cluster doesn't jump on IDLE ↔ RUNNING.
+                        // Placeholder preserves button-zone height so the
+                        // status cluster doesn't jump on IDLE ↔ other states.
                         Spacer(Modifier.height(48.dp))
                     }
                 }
                 Spacer(Modifier.height(20.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun StopButton(onClick: () -> Unit) {
+    // Shown on Page 0 while status == RUNNING. Tap = send ETX () via
+    // /command, which the wrapper interprets as "kill the runner" — Claude
+    // exits cleanly. Audit log captures the cancellation.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Button(
+            onClick = onClick,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color.Transparent,
+                contentColor = ClaudeRed,
+            ),
+            border = BorderStroke(1.dp, ClaudeRed.copy(alpha = 0.65f)),
+            modifier = Modifier.size(width = 140.dp, height = 48.dp),
+        ) {
+            Text(
+                text = "✗ detener",
+                fontFamily = MonoFamily,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+            )
         }
     }
 }
@@ -361,9 +395,28 @@ private fun MetricsPage(
 @Composable
 private fun FollowupPage(
     followups: List<String>,
+    taskKind: TaskKind?,
+    headline: String?,
     onAsk: (String) -> Unit,
     onAskWithReset: (String) -> Unit,
 ) {
+    // Fallback chips when Claude didn't generate any (common for action runs
+    // where the prompt-prefix's "Followups:" block gets eaten by tool output).
+    // Choose language by sniffing the headline: contains ¿ or accent → Spanish.
+    val effectiveFollowups: List<String> = remember(followups, taskKind, headline) {
+        if (followups.isNotEmpty()) return@remember followups
+        val isSpanish = headline?.any { c -> c == '¿' || c == 'á' || c == 'é' || c == 'í' || c == 'ó' || c == 'ú' || c == 'ñ' } == true
+        when (taskKind) {
+            TaskKind.ACTION -> if (isSpanish)
+                listOf("Más detalles", "Otra cosa", "Deshacer")
+            else
+                listOf("More details", "Something else", "Undo")
+            else -> if (isSpanish)
+                listOf("Más detalles", "Otra cosa")
+            else
+                listOf("More details", "Something else")
+        }
+    }
     val resetLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -393,8 +446,8 @@ private fun FollowupPage(
             )
             Spacer(Modifier.height(10.dp))
 
-            if (followups.isNotEmpty()) {
-                followups.forEach { suggestion ->
+            if (effectiveFollowups.isNotEmpty()) {
+                effectiveFollowups.forEach { suggestion ->
                     FollowupChip(text = suggestion, onTap = { onAsk(suggestion) })
                     Spacer(Modifier.height(6.dp))
                 }

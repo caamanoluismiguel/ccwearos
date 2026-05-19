@@ -80,6 +80,11 @@ class CcwearosViewModel(
     // way to confirm — independent of which option happens to be highlighted.
     fun allow() { viewModelScope.launch { repo.sendCommand("1\r") } }
 
+    // Cancel/stop a running task. Wrapper's watchCommands handler treats
+    // ETX ( / SIGINT) specially: it calls runner.kill() instead of
+    // forwarding to the pty so Claude exits cleanly. Audit log captures it.
+    fun stop() { viewModelScope.launch { repo.sendCommand("\u0003") } }
+
     // ESC drops out of the prompt to the "No, and tell Claude what to do
     // differently" branch.
     fun deny() { viewModelScope.launch { repo.sendCommand("\u001B") } }

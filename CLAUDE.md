@@ -41,6 +41,31 @@ Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `wat
 
 Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt` to avoid clock-skew bugs on emulators.
 
+## ¿Cuál usar: `cc` o `/ccwearos`?
+
+Hay tres formas de que el reloj reciba permission prompts. Resumen rápido:
+
+| Si quieres...                                                                    | Usá                                | Por qué                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Empezar a trabajar y poder irte del Mac**                                      | `cc` (alias) en cualquier Terminal | Wrapper es dueño del pty. Tap watch = autoriza directo, sin Terminal prompt extra. **Path canónico.**                                                                                                        |
+| **Monitorear desde el reloj una sesión que ya empezaste** sin perder la Terminal | `/ccwearos` slash                  | Hook ya instalado en `~/.claude/settings.json`. **Requiere `claude --permission-mode dontAsk` o vivirás un double-confirm.** El propio `enable-share.ts` te lo advierte si tu `defaultMode` no es `dontAsk`. |
+| **Preguntar algo nuevo por voz desde el reloj**                                  | Page 0 botón "ask claude"          | Daemon spawn `claude -p` para esa pregunta.                                                                                                                                                                  |
+
+**Setup `cc` (una sola vez):**
+
+```bash
+echo "alias cc='npx tsx ~/projects/CCWEAROS/wrapper/scripts/share.ts'" >> ~/.zshrc
+source ~/.zshrc
+```
+
+Luego `cc` en lugar de `claude` cuando vas a salir del Mac.
+
+**Setup `/ccwearos` (una sola vez):**
+
+```bash
+cd ~/projects/CCWEAROS/wrapper && npx tsx scripts/install-hooks.ts
+```
+
 ## Sprint Tracker
 
 - [x] Sprint 0 — Scaffold
@@ -57,6 +82,7 @@ Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt
 - [x] Sprint 4h — Polish round (real-watch testing): hide stale `/task` on Page 0 when wrapper is IDLE, filter Claude's meta-formatting OSC titles ("Setup response template format" etc.), and add macOS-context note to prompt prefix so Claude actually runs `open -a <app>` instead of refusing with "I have no desktop access"
 - [x] Sprint 4i — Page 5 "Sesiones del Mac" + shared sessions (Camino D): wrapper publishes `/recentSessions` (scan of `~/.claude/sessions` + `~/.claude/projects`) every 15s; new `cc` alias script (`scripts/share.ts`) lets the user start a Claude session from any Terminal directory while the watch sees state and can answer permissions; daemon refuses voice prompts while `/sharedSession` is alive; Page 5 lists sessions grouped by project (read-only V1)
 - [x] Sprint 4j — `/ccwearos` slash command + PreToolUse hook (Camino E-2): mid-session handoff for Claude Code sessions already running in any Terminal. User runs `/ccwearos` to mark the current session as bridged; from then on every tool call goes through a PreToolUse hook that publishes the pending tool to `/permissionPrompt` and blocks waiting on `/command` (Allow/Deny from the watch). Terminal stays alive throughout. Installer at `wrapper/scripts/install-hooks.ts` (re-runnable). Daemon yields `/command` ownership when `sharedSession.kind === "hook"`.
+- [x] Sprint 4k — Tier 1 post-audit: `✗ detener` cancel button on Page 0 (SIGINT via `/command`), bilingual fallback chips on Page 3 when Claude omits `Followups:`, `defaultMode` warning in `enable-share.ts` for `acceptEdits` users, rolling `/auditLog` (20 entries) of every permission decision viewable via `scripts/audit.ts`, and `cc` vs `/ccwearos` canonical docs.
 
 ## Wrapper modes
 

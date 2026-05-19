@@ -32,6 +32,7 @@ console.log = (...args: unknown[]): void => {
 
 import { appendFileSync, writeSync } from "node:fs";
 import {
+  appendAuditEntry,
   initFirebase,
   readSharedSession,
   sendFcmWake,
@@ -267,6 +268,14 @@ async function main(): Promise<void> {
 
   if (reply === null) {
     // Watch never answered. Fall back to Claude's normal Terminal prompt.
+    void appendAuditEntry({
+      ts: Date.now(),
+      kind: "hook",
+      tool: toolName!,
+      args: promptText.slice(0, 60),
+      decision: "timeout",
+      source: "auto",
+    });
     emit({
       hookSpecificOutput: { permissionDecision: "ask" },
       systemMessage:
@@ -285,11 +294,27 @@ async function main(): Promise<void> {
     // Emitting JSON with permissionDecision=allow was being treated as a
     // hint that did NOT skip the prompt; bare exit 0 does.
     dlog("emit: bare exit 0 (allow)");
+    void appendAuditEntry({
+      ts: Date.now(),
+      kind: "hook",
+      tool: toolName!,
+      args: promptText.slice(0, 60),
+      decision: "allow",
+      source: "watch",
+    });
     process.exit(0);
   }
   // DENY path: stderr JSON + exit 2 — the canonical "block" signal from
   // Claude Code hook docs.
   dlog("emit: stderr JSON + exit 2 (deny)");
+  void appendAuditEntry({
+    ts: Date.now(),
+    kind: "hook",
+    tool: toolName!,
+    args: promptText.slice(0, 60),
+    decision: "deny",
+    source: "watch",
+  });
   process.stderr.write(
     JSON.stringify({
       decision: "block",
