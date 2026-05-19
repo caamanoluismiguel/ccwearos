@@ -48,13 +48,18 @@ import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.HorizontalPagerScaffold
 import androidx.wear.compose.material3.Text
+import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalView
 import androidx.wear.compose.material3.Card
 import androidx.wear.compose.material3.CardDefaults
 import com.caamano.ccwearos.data.ClaudeStatus
@@ -104,6 +109,7 @@ fun DashboardScreen(
     onAsk: (String) -> Unit = {},
     onAskWithReset: (String) -> Unit = {},
     onStop: () -> Unit = {},
+    onForceReset: () -> Unit = {},
 ) {
     // Pages 2 + 3 show up whenever there's anything worth showing — response
     // text OR a settled taskKind (an action task with no body text still needs
@@ -150,6 +156,7 @@ fun DashboardScreen(
                     sharedSession = sharedSession,
                     onAsk = onAsk,
                     onStop = onStop,
+                    onForceReset = onForceReset,
                 )
                 1 -> MetricsPage(
                     metrics = metrics,
@@ -197,6 +204,7 @@ private fun CommandPage(
     sharedSession: SharedSessionMeta?,
     onAsk: (String) -> Unit,
     onStop: () -> Unit,
+    onForceReset: () -> Unit,
 ) {
     // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -258,7 +266,8 @@ private fun CommandPage(
                     sharedSession != null -> SharedSessionBlock(sharedSession)
                     status == WrapperStatus.IDLE ->
                         AskRow(inConversation = inConversation, onAsk = onAsk)
-                    status == WrapperStatus.RUNNING -> StopButton(onClick = onStop)
+                    status == WrapperStatus.RUNNING ->
+                        StopButton(onClick = onStop, onLongClick = onForceReset)
                     else -> {
                         // Placeholder preserves button-zone height so the
                         // status cluster doesn't jump on IDLE ↔ other states.
@@ -272,25 +281,41 @@ private fun CommandPage(
 }
 
 @Composable
-private fun StopButton(onClick: () -> Unit) {
-    // Shown on Page 0 while status == RUNNING. Tap = send ETX () via
-    // /command, which the wrapper interprets as "kill the runner" — Claude
-    // exits cleanly. Audit log captures the cancellation.
+private fun StopButton(onClick: () -> Unit, onLongClick: () -> Unit) {
+    // Shown on Page 0 while status == RUNNING. Two affordances:
+    //  - Tap: send ETX via /command -> wrapper kills the runner cleanly.
+    //  - Long-press (>=500ms): force-reset RTDB state directly from the
+    //    watch -- covers the case where status=RUNNING is phantom
+    //    (wrapper died, SIGINT goes nowhere). Without this the user has
+    //    no recovery short of force-quitting the app. Watch audit CRITICAL#2.
+    val view = LocalView.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
     ) {
-        Button(
-            onClick = onClick,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.Transparent,
-                contentColor = ClaudeRed,
-            ),
-            border = BorderStroke(1.dp, ClaudeRed.copy(alpha = 0.65f)),
-            modifier = Modifier.size(width = 140.dp, height = 48.dp),
+        Box(
+            modifier = Modifier
+                .size(width = 140.dp, height = 48.dp)
+                .border(
+                    BorderStroke(1.dp, ClaudeRed.copy(alpha = 0.65f)),
+                    shape = RoundedCornerShape(24.dp),
+                )
+                .clip(RoundedCornerShape(24.dp))
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = {
+                        // Extra haptic so the user knows the destructive
+                        // long-press fired (vs. a normal tap that just
+                        // dimmed the button).
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        onLongClick()
+                    },
+                ),
+            contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = "✗ detener",
+                color = ClaudeRed,
                 fontFamily = MonoFamily,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
@@ -476,7 +501,9 @@ private fun FollowupPage(
                 border = BorderStroke(1.dp, ClaudeAmber.copy(alpha = 0.55f)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 40.dp),
+                    // Wear OS spec: 48dp min for touch targets. 40dp was a
+                    // squeak under spec, easy to miss on a moving wrist.
+                    .heightIn(min = 48.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 Text(
@@ -503,7 +530,8 @@ private fun FollowupChip(text: String, onTap: () -> Unit) {
         shape = RoundedCornerShape(14.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 38.dp),
+            // Wear OS 48dp spec — 38dp was below spec, hard to tap reliably.
+            .heightIn(min = 48.dp),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Text(

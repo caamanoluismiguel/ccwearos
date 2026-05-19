@@ -102,6 +102,24 @@ class CcwearosRepository(
         ref("prompt").setValue(payload).await()
     }
 
+    // Force-clear stale UI state directly from the watch — for when the
+    // wrapper is dead but RTDB still shows status=RUNNING / sharedSession
+    // populated / permissionPrompt set. The wrapper's own crash-cleanup
+    // (onDisconnect) handles the normal case; this is the "I see the
+    // phantom and want to dismiss it" recovery affordance, bound to the
+    // long-press on the stop button.
+    suspend fun forceResetUi() {
+        val updates = mapOf<String, Any?>(
+            "status" to "IDLE",
+            "sharedSession" to null,
+            "permissionPrompt" to null,
+            "command" to null,
+            "activity" to null,
+            "task" to null,
+        )
+        db.reference.updateChildren(updates).await()
+    }
+
     private fun <T> pathFlow(path: String, mapper: (DataSnapshot) -> T): Flow<T> =
         callbackFlow {
             val listener = object : ValueEventListener {

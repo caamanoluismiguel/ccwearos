@@ -2,8 +2,11 @@ import { config } from "./config.js";
 import {
   appendAuditEntry,
   clearCommand,
+  clearCrashCleanup,
   clearPrompt,
+  clearStaleState,
   initFirebase,
+  registerCrashCleanup,
   sendFcmWake,
   setActivity,
   setClaudeStatus,
@@ -28,22 +31,6 @@ import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
-
-async function clearStaleState(): Promise<void> {
-  await Promise.all([
-    clearCommand(),
-    clearPrompt(),
-    setPermissionPrompt(null),
-    setActivity(null),
-    setTask(null),
-    setResponse(null),
-    setTaskKind(null),
-    setToolEvents(null),
-    setHeadline(null),
-    setFollowups(null),
-  ]);
-  await setStatus("IDLE");
-}
 
 // Tells Claude to start informational answers with `**TL;DR:** xxx` so the
 // watch can render a glanceable headline. Bilingual heuristic — pick the
@@ -86,7 +73,11 @@ async function runInteractive(): Promise<void> {
     "[ccwearos] Wrapper online (interactive). DB:",
     config.firebaseDbUrl,
   );
-  await clearStaleState();
+  await clearStaleState("IDLE");
+  // onDisconnect handlers on the Firebase server clear UI surfaces if our
+  // TCP drops (SIGKILL, OOM, network blip, machine sleep) — the only
+  // cleanup mechanism that survives those exit modes.
+  await registerCrashCleanup({ uiSurfaces: true });
 
   const runner = startClaude({
     onStatus: (s) => {
@@ -142,10 +133,13 @@ async function runInteractive(): Promise<void> {
     console.log(`[ccwearos] ${signal} received — shutting down.`);
     stopWatching();
     try {
-      await setStatus("OFFLINE");
+      // Full state clear, not just /status, so the watch doesn't see phantom
+      // task / permissionPrompt / activity after we exit. Audit C-3.
+      await clearStaleState("OFFLINE");
     } catch (e) {
-      console.error("[ccwearos] Failed to mark OFFLINE on shutdown:", e);
+      console.error("[ccwearos] Failed to clear state on shutdown:", e);
     }
+    await clearCrashCleanup();
     runner.kill();
     process.exit(0);
   };
@@ -157,7 +151,11 @@ async function runInteractive(): Promise<void> {
 async function runDaemon(): Promise<void> {
   initFirebase();
   console.log("[ccwearos] Daemon online. DB:", config.firebaseDbUrl);
-  await clearStaleState();
+  await clearStaleState("IDLE");
+  // Server-side cleanup if the daemon dies abruptly (LaunchAgent SIGKILL,
+  // OOM, Mac power loss). UI surfaces are reset; daemon does NOT claim
+  // /sharedSession so we leave that path alone.
+  await registerCrashCleanup({ uiSurfaces: true });
 
   let busy = false;
   // True once we've completed at least one oneshot in this daemon run — then
@@ -220,6 +218,16 @@ async function runDaemon(): Promise<void> {
     if (sharedSession?.kind === "hook") {
       console.log(
         `[ccwearos] /command ignored (hook share active for ${sharedSession.cwd}): ${cmd.text}`,
+      );
+      return;
+    }
+    // D (wrapper-pty share): the `cc` alias owns its own pty and has its
+    // own /command watcher. If the daemon listener fires first and clears
+    // /command, cc never reads the user's tap. Yield ownership here too —
+    // cc's watchCommands callback consumes + clears.
+    if (sharedSession?.kind === "wrapper-pty") {
+      console.log(
+        `[ccwearos] /command ignored (cc share active for ${sharedSession.cwd}): ${cmd.text}`,
       );
       return;
     }
@@ -398,11 +406,22 @@ async function runDaemon(): Promise<void> {
     stopCmdWatching();
     stopWatchingShared();
     stopSessionScanner();
+    // Kill any in-flight voice runner so the pty child doesn't orphan to
+    // init (and so its own onExit gets a chance to clear UI surfaces).
     try {
-      await setStatus("OFFLINE");
-    } catch (e) {
-      console.error("[ccwearos] Failed to mark OFFLINE on shutdown:", e);
+      activeRunner?.kill();
+    } catch {
+      // already gone
     }
+    try {
+      // Full state clear (status / task / permissionPrompt / activity /
+      // claudeStatus / etc.) — not just /status — so the watch doesn't see
+      // stale data from the last run after the daemon exits. Audit C-7.
+      await clearStaleState("OFFLINE");
+    } catch (e) {
+      console.error("[ccwearos] Failed to clear state on shutdown:", e);
+    }
+    await clearCrashCleanup();
     process.exit(0);
   };
 

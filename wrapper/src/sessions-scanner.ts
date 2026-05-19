@@ -25,6 +25,7 @@ import {
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { setRecentSessions } from "./firebase.js";
+import { isPidAlive } from "./pid-utils.js";
 import type { RecentSession } from "./types/schema.js";
 
 const SESSIONS_DIR = join(homedir(), ".claude/sessions");
@@ -93,15 +94,6 @@ function readActivePids(): Map<string, ActivePidInfo> {
     map.set(sessionId, { pid, sessionId, cwd });
   }
   return map;
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 // Read the LAST `lastBytes` of a file into a string. Cheap version of `tail -c`

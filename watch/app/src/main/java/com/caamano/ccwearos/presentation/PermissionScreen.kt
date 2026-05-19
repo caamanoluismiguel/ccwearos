@@ -1,6 +1,7 @@
 package com.caamano.ccwearos.presentation
 
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.Text
+import kotlinx.coroutines.delay
 
 @Composable
 fun PermissionScreen(
@@ -36,8 +38,19 @@ fun PermissionScreen(
 ) {
     val view = LocalView.current
     LaunchedEffect(prompt) {
+        // Debounce so two snapshots within 100ms during Firebase reconnect
+        // don't fire a double-buzz that feels like a glitchy single vibration.
+        // Also skip empty prompts — the watch sometimes wakes from ambient
+        // with `prompt=null` cached before the real prompt arrives; firing
+        // a haptic on that cached null is a phantom buzz.
+        if (prompt.isNullOrBlank()) return@LaunchedEffect
+        delay(120)
         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
     }
+    // Hardware back / swipe-right on Wear OS would close the app — surprising
+    // for a modal asking for a critical decision. Swallow back so the user
+    // has to explicitly tap allow or deny.
+    BackHandler(enabled = true) { /* no-op: prevent accidental dismiss */ }
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(

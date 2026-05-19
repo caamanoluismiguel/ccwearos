@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { spawn as ptySpawn, type IPty } from "node-pty";
 import { config } from "./config.js";
 import { createMetricsStore } from "./metrics-store.js";
+import { shSingleQuote } from "./sh-escape.js";
 import {
   extractActivity,
   extractClaudeStatus,
@@ -30,20 +31,39 @@ export interface ClaudeRunner {
   kill(): void;
 }
 
-export function startClaude(events: RunnerEvents): ClaudeRunner {
+export interface StartClaudeOptions {
+  // Extra CLI flags appended after `claude` — e.g. ["--resume", "<id>",
+  // "--permission-mode", "dontAsk"]. The caller is responsible for ordering;
+  // we just shell-escape and forward. Empty array = bare `claude`.
+  extraArgs?: string[];
+}
+
+export function startClaude(
+  events: RunnerEvents,
+  options: StartClaudeOptions = {},
+): ClaudeRunner {
+  // Filter out empty extraArgs — they shell-expand to `''` (empty arg) and
+  // confuse Claude. Defensive guard; current callers don't pass empties.
+  const extraArgs = (options.extraArgs ?? []).filter((a) => a.length > 0);
+  const argSuffix =
+    extraArgs.length > 0 ? " " + extraArgs.map(shSingleQuote).join(" ") : "";
   let pty: IPty;
   try {
     // node-pty's posix_spawnp can fail on some macOS Mach-O binaries (Bun-
     // compiled ones like Claude Code, for example). Workaround: spawn /bin/sh
     // which always works, then `exec` the real target so it replaces sh and
     // inherits the pty directly. No extra subshell stays alive.
-    pty = ptySpawn("/bin/sh", ["-c", `exec ${config.claudeCliCommand}`], {
-      name: "xterm-256color",
-      cols: process.stdout.columns ?? 120,
-      rows: process.stdout.rows ?? 30,
-      cwd: process.cwd(),
-      env: { ...process.env } as Record<string, string>,
-    });
+    pty = ptySpawn(
+      "/bin/sh",
+      ["-c", `exec ${config.claudeCliCommand}${argSuffix}`],
+      {
+        name: "xterm-256color",
+        cols: process.stdout.columns ?? 120,
+        rows: process.stdout.rows ?? 30,
+        cwd: process.cwd(),
+        env: { ...process.env } as Record<string, string>,
+      },
+    );
   } catch (err) {
     console.error(
       `[ccwearos] Failed to spawn '${config.claudeCliCommand}':`,

@@ -129,7 +129,10 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function pollForCommand(deadline: number): Promise<string | null> {
+async function pollForCommand(
+  deadline: number,
+  startedAt: number,
+): Promise<string | null> {
   const ref = db().ref("/command");
   const debug = !!process.env["CCWEAROS_HOOK_DEBUG"];
   let iterations = 0;
@@ -144,7 +147,22 @@ async function pollForCommand(deadline: number): Promise<string | null> {
         );
       }
       if (val && typeof val.text === "string" && val.text.length > 0) {
-        return val.text;
+        // Defense in depth: ignore /command entries written BEFORE this hook
+        // started polling. If `clearCommand` failed at the top of main()
+        // (network blip), a stale entry from a previous prompt is sitting
+        // there and would be wrongly consumed as the answer. Daemon + cc
+        // already enforce this via commandMaxAgeSeconds; mirror it here.
+        const issuedAt = val.issuedAt ?? 0;
+        if (issuedAt < startedAt - 1_000) {
+          if (debug) {
+            process.stderr.write(
+              `[ccwearos-hook] poll #${iterations} skipping stale cmd (issuedAt=${issuedAt}, startedAt=${startedAt})\n`,
+            );
+          }
+          // Keep polling — the user may answer in time still.
+        } else {
+          return val.text;
+        }
       }
     } catch (e) {
       process.stderr.write(
@@ -217,6 +235,35 @@ async function main(): Promise<void> {
       `[ccwearos-hook] matched session, publishing prompt\n`,
     );
   }
+
+  // Install signal handlers BEFORE publishing /permissionPrompt. The Claude
+  // Code host may kill us with SIGTERM if it hits its 60s hook timeout, or
+  // SIGINT if the user Ctrl-C's mid-prompt. Without this handler the script
+  // dies mid-poll and leaves /permissionPrompt + /status="AWAITING_PERMISSION"
+  // set forever — the watch shows a stale prompt indefinitely. Audit C-5.
+  let cleanupRan = false;
+  const cleanup = async (reason: string): Promise<void> => {
+    if (cleanupRan) return;
+    cleanupRan = true;
+    dlog(`cleanup (${reason})`);
+    try {
+      await setPermissionPrompt(null);
+      await setStatus("IDLE");
+      await db().ref("/command").set(null);
+    } catch (e) {
+      dlog(`cleanup failed: ${(e as Error).message}`);
+    }
+  };
+  const onSignal = (sig: NodeJS.Signals): void => {
+    void cleanup(sig).finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  process.on("uncaughtException", (err) => {
+    dlog(`uncaught: ${err.message}`);
+    void cleanup("uncaughtException").finally(() => process.exit(0));
+  });
+
   // CRITICAL ordering: clear /command BEFORE publishing /permissionPrompt.
   // If we publish first and clear later, this race fires:
   //   T+0   /permissionPrompt = "..." → watch wakes
@@ -249,26 +296,24 @@ async function main(): Promise<void> {
       `[ccwearos-hook] polling /command (max ${POLL_BUDGET_MS}ms)\n`,
     );
   }
-  const deadline = Date.now() + POLL_BUDGET_MS;
-  const reply = await pollForCommand(deadline);
+  const pollStartedAt = Date.now();
+  const deadline = pollStartedAt + POLL_BUDGET_MS;
+  const reply = await pollForCommand(deadline, pollStartedAt);
   if (debug) {
     process.stderr.write(
       `[ccwearos-hook] poll returned: ${JSON.stringify(reply)}\n`,
     );
   }
 
-  // Cleanup regardless of outcome.
-  try {
-    await setPermissionPrompt(null);
-    await setStatus("IDLE");
-    await db().ref("/command").set(null);
-  } catch {
-    // best-effort
-  }
+  // Cleanup regardless of outcome — shared with the signal handlers above
+  // so a SIGTERM mid-poll also clears /permissionPrompt + /status.
+  await cleanup("normal-exit");
 
   if (reply === null) {
     // Watch never answered. Fall back to Claude's normal Terminal prompt.
-    void appendAuditEntry({
+    // AWAIT the audit write — `void` + immediate process.exit drops the
+    // RTDB call before the request leaves the socket. Audit AU-1.
+    await appendAuditEntry({
       ts: Date.now(),
       kind: "hook",
       tool: toolName!,
@@ -294,7 +339,7 @@ async function main(): Promise<void> {
     // Emitting JSON with permissionDecision=allow was being treated as a
     // hint that did NOT skip the prompt; bare exit 0 does.
     dlog("emit: bare exit 0 (allow)");
-    void appendAuditEntry({
+    await appendAuditEntry({
       ts: Date.now(),
       kind: "hook",
       tool: toolName!,
@@ -307,7 +352,7 @@ async function main(): Promise<void> {
   // DENY path: stderr JSON + exit 2 — the canonical "block" signal from
   // Claude Code hook docs.
   dlog("emit: stderr JSON + exit 2 (deny)");
-  void appendAuditEntry({
+  await appendAuditEntry({
     ts: Date.now(),
     kind: "hook",
     tool: toolName!,

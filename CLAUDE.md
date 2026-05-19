@@ -41,15 +41,16 @@ Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `wat
 
 Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt` to avoid clock-skew bugs on emulators.
 
-## ¿Cuál usar: `cc` o `/ccwearos`?
+## ¿Cuál usar: `cc`, `/ccwearos`, o `/ccwearos-takeover`?
 
-Hay tres formas de que el reloj reciba permission prompts. Resumen rápido:
+Cuatro formas de que el reloj reciba permission prompts. Resumen rápido:
 
-| Si quieres...                                                                    | Usá                                | Por qué                                                                                                                                                                                                      |
-| -------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Empezar a trabajar y poder irte del Mac**                                      | `cc` (alias) en cualquier Terminal | Wrapper es dueño del pty. Tap watch = autoriza directo, sin Terminal prompt extra. **Path canónico.**                                                                                                        |
-| **Monitorear desde el reloj una sesión que ya empezaste** sin perder la Terminal | `/ccwearos` slash                  | Hook ya instalado en `~/.claude/settings.json`. **Requiere `claude --permission-mode dontAsk` o vivirás un double-confirm.** El propio `enable-share.ts` te lo advierte si tu `defaultMode` no es `dontAsk`. |
-| **Preguntar algo nuevo por voz desde el reloj**                                  | Page 0 botón "ask claude"          | Daemon spawn `claude -p` para esa pregunta.                                                                                                                                                                  |
+| Si quieres...                                                                       | Usá                                | Por qué                                                                                                                                                                                                                                  |
+| ----------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Empezar nueva sesión y poder irte del Mac**                                       | `cc` (alias) en cualquier Terminal | Wrapper es dueño del pty desde el arranque. Tap watch = autoriza directo, sin Terminal prompt extra.                                                                                                                                     |
+| **Estoy en una sesión activa y me quiero ir AHORA mismo del Mac**                   | `/ccwearos-takeover` slash         | Abre nueva Terminal con `cc --resume <id> --permission-mode dontAsk`. La sesión continúa intacta en la ventana nueva; el reloj decide solo. La vieja Terminal queda read-only — cerrala cuando vuelvas. **Path canónico para "me voy".** |
+| **Monitorear desde el reloj sin perder la Terminal actual** (acepto double-confirm) | `/ccwearos` slash                  | Hook ya instalado en `~/.claude/settings.json`. Si tu `defaultMode` no es `dontAsk`, vivirás un double-confirm; `enable-share.ts` te avisa.                                                                                              |
+| **Preguntar algo nuevo por voz desde el reloj**                                     | Page 0 botón "ask claude"          | Daemon spawn `claude -p` para esa pregunta.                                                                                                                                                                                              |
 
 **Setup `cc` (una sola vez):**
 
@@ -83,6 +84,7 @@ cd ~/projects/CCWEAROS/wrapper && npx tsx scripts/install-hooks.ts
 - [x] Sprint 4i — Page 5 "Sesiones del Mac" + shared sessions (Camino D): wrapper publishes `/recentSessions` (scan of `~/.claude/sessions` + `~/.claude/projects`) every 15s; new `cc` alias script (`scripts/share.ts`) lets the user start a Claude session from any Terminal directory while the watch sees state and can answer permissions; daemon refuses voice prompts while `/sharedSession` is alive; Page 5 lists sessions grouped by project (read-only V1)
 - [x] Sprint 4j — `/ccwearos` slash command + PreToolUse hook (Camino E-2): mid-session handoff for Claude Code sessions already running in any Terminal. User runs `/ccwearos` to mark the current session as bridged; from then on every tool call goes through a PreToolUse hook that publishes the pending tool to `/permissionPrompt` and blocks waiting on `/command` (Allow/Deny from the watch). Terminal stays alive throughout. Installer at `wrapper/scripts/install-hooks.ts` (re-runnable). Daemon yields `/command` ownership when `sharedSession.kind === "hook"`.
 - [x] Sprint 4k — Tier 1 post-audit: `✗ detener` cancel button on Page 0 (SIGINT via `/command`), bilingual fallback chips on Page 3 when Claude omits `Followups:`, `defaultMode` warning in `enable-share.ts` for `acceptEdits` users, rolling `/auditLog` (20 entries) of every permission decision viewable via `scripts/audit.ts`, and `cc` vs `/ccwearos` canonical docs.
+- [x] Sprint 4l — `/ccwearos-takeover` (auto-handoff): solves the `acceptEdits` double-confirm by spawning a new Terminal window (via `osascript`, Terminal.app or iTerm.app per `$TERM_PROGRAM`) running `cc --resume <id> --permission-mode dontAsk`. Old Terminal becomes read-only; watch is the sole permission gate in the new one. Pure utilities live in `src/share-args.ts` + `src/takeover-utils.ts` with 25 dedicated tests covering shell-escape, AppleScript escape, launcher pick, sessionId regex.
 
 ## Wrapper modes
 
@@ -192,9 +194,9 @@ Daemon mode (voice flow) doesn't need FCM — you're already looking at the watc
 
 The RTDB rules in `/firebase-rules.json` pin all reads + the `/command` and `/prompt` writes to known anonymous-auth UIDs.
 
-| Device                     | UID                   |
-| -------------------------- | --------------------- |
-| Wear OS emulator (current) | `EMULATOR_UID_HERE`   |
+| Device                     | UID                            |
+| -------------------------- | ------------------------------ |
+| Wear OS emulator (current) | `EMULATOR_UID_HERE` |
 | Real Galaxy Watch 8        | `REAL_WATCH_UID_HERE` |
 
 After adding a new UID to rules, paste the JSON into Firebase Console → Realtime Database → Rules → Publish.
@@ -247,7 +249,7 @@ Two ways the watch sees Mac sessions:
    npx tsx scripts/install-hooks.ts
    ```
 
-   This writes a PreToolUse hook to `~/.claude/settings.json` and copies the `/ccwearos` + `/ccwearos-off` slash commands into `~/.claude/commands/`. The hook self-skips unless `/sharedSession.kind === "hook"` matches the current session.
+   This writes a PreToolUse hook to `~/.claude/settings.json` and copies the `/ccwearos`, `/ccwearos-off`, and `/ccwearos-takeover` slash commands into `~/.claude/commands/`. The hook self-skips unless `/sharedSession.kind === "hook"` matches the current session.
 
    Usage inside any Claude Code session:
    - `/ccwearos` — marks this session as bridged. The hook now publishes every pending tool to `/permissionPrompt` and waits up to 55s for the watch's Allow/Deny. If the watch doesn't answer, the hook returns `ask` and Claude falls back to its normal Terminal permission prompt.
@@ -256,8 +258,19 @@ Two ways the watch sees Mac sessions:
    While `kind="hook"` is active, the daemon's `watchCommands` handler YIELDS — it sees the watch's `/command` write but doesn't consume it, so the hook gets the reply. Voice prompts (Page 1 of the watch) are still gated off.
 
    Watch's Page 0 SharedSessionBlock text differentiates the two kinds:
-   - `kind="wrapper-pty"` (cc) → "📟 sesión compartida · activa en tu Mac · cc"
+   - `kind="wrapper-pty"` (cc / takeover) → "📟 sesión compartida · activa en tu Mac · cc"
    - `kind="hook"` (/ccwearos) → "📟 puente activo · permisos vienen al reloj"
+
+4. **Auto-handoff via `/ccwearos-takeover` (Camino E-3).** When you're mid-session and decide to leave the Mac: this slash command opens a **new Terminal window** (Terminal.app, or iTerm.app per `$TERM_PROGRAM`) running `cc --resume <sessionId> --permission-mode dontAsk`. The original session is resumed under wrapper-pty control with the watch as the sole permission gate (no Terminal double-confirm). The OLD window is left read-only — you can close it whenever.
+
+   The slash command runs `wrapper/scripts/hooks/enable-takeover.ts`, which:
+   - Detects current `sessionId` via `_helpers.detectSessionId` (refuses if it can't pin one down).
+   - Refuses if another `wrapper-pty` session is alive.
+   - Soft-locks `/sharedSession.kind="wrapper-pty"` immediately so the OLD Terminal's `PreToolUse` hook bails on next fire (`kind !== "hook"` → pass-through).
+   - Spawns the new window via `osascript` (`-e ...` style, escaped through `shSingleQuote` + `aplEscape` helpers in `src/takeover-utils.ts`).
+   - Logs an audit entry (`kind: "hook"`, `tool: "(takeover)"`).
+
+   If `osascript` fails (e.g., macOS Automation permissions not granted), the placeholder is rolled back and a manual fallback (`cd <cwd> && cc --resume <id>`) is printed.
 
 ## Known limitations
 

@@ -85,6 +85,13 @@ class CcwearosViewModel(
     // forwarding to the pty so Claude exits cleanly. Audit log captures it.
     fun stop() { viewModelScope.launch { repo.sendCommand("\u0003") } }
 
+    // Long-press of the stop button: force-reset stale UI state directly
+    // from the watch when the wrapper appears dead. SIGINT via /command
+    // goes nowhere if no wrapper is listening, leaving status=RUNNING
+    // forever. This writes IDLE + null directly to RTDB so the watch gets
+    // out of phantom state regardless of wrapper liveness.
+    fun forceReset() { viewModelScope.launch { repo.forceResetUi() } }
+
     // ESC drops out of the prompt to the "No, and tell Claude what to do
     // differently" branch.
     fun deny() { viewModelScope.launch { repo.sendCommand("\u001B") } }

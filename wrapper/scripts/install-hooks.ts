@@ -77,10 +77,16 @@ function tsxBin(): string {
   return existsSync(local) ? local : "tsx";
 }
 
+const SLASH_COMMAND_FILES = [
+  "ccwearos.md",
+  "ccwearos-off.md",
+  "ccwearos-takeover.md",
+];
+
 function install(): void {
   // 1. Slash commands
   mkdirSync(COMMANDS_DIR, { recursive: true });
-  for (const name of ["ccwearos.md", "ccwearos-off.md"]) {
+  for (const name of SLASH_COMMAND_FILES) {
     const src = join(TEMPLATES_DIR, name);
     const dst = join(COMMANDS_DIR, name);
     copyFileSync(src, dst);
@@ -115,11 +121,14 @@ function install(): void {
   console.log("  3. When Claude wants to run a tool, your watch will buzz.");
   console.log("  4. Tap Allow/Deny on the watch.");
   console.log("  5. Run /ccwearos-off to stop sharing.");
+  console.log("");
+  console.log("Leaving the Mac? /ccwearos-takeover opens a new Terminal");
+  console.log("under `cc` with permission-mode=dontAsk (no double-confirm).");
 }
 
 function uninstall(): void {
   // 1. Remove slash commands (only if they're ours — match content by header).
-  for (const name of ["ccwearos.md", "ccwearos-off.md"]) {
+  for (const name of SLASH_COMMAND_FILES) {
     const dst = join(COMMANDS_DIR, name);
     if (existsSync(dst)) {
       try {

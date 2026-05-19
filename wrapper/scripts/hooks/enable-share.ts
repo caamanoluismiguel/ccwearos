@@ -12,87 +12,17 @@
 // Claude TUI output. Never exits non-zero (the slash command must always
 // "succeed" so Claude completes the turn).
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
 import {
   initFirebase,
   setSharedSession,
   readSharedSession,
 } from "../../src/firebase.js";
 import type { SharedSessionMeta } from "../../src/types/schema.js";
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function detectSessionId(cwd: string): string | null {
-  const envId = process.env["CLAUDE_SESSION_ID"];
-  if (envId) return envId;
-
-  const sessionsDir = join(homedir(), ".claude/sessions");
-  try {
-    const entries = readdirSync(sessionsDir)
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => {
-        try {
-          const raw = readFileSync(join(sessionsDir, f), "utf8");
-          return JSON.parse(raw) as {
-            pid?: number;
-            sessionId?: string;
-            cwd?: string;
-            updatedAt?: number;
-          };
-        } catch {
-          return null;
-        }
-      })
-      .filter(
-        (
-          e,
-        ): e is {
-          pid: number;
-          sessionId: string;
-          cwd: string;
-          updatedAt: number;
-        } =>
-          e !== null &&
-          typeof e.pid === "number" &&
-          typeof e.sessionId === "string" &&
-          e.cwd === cwd &&
-          isPidAlive(e.pid),
-      )
-      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    if (entries[0]) return entries[0].sessionId;
-  } catch {
-    // sessions dir missing or unreadable
-  }
-
-  // Last resort: scan ~/.claude/projects/<sanitized-cwd>/*.jsonl by mtime.
-  try {
-    const projDir = join(
-      homedir(),
-      ".claude/projects",
-      "-" + cwd.replace(/^\//, "").replace(/\//g, "-"),
-    );
-    const jsonls = readdirSync(projDir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => ({
-        sessionId: basename(f, ".jsonl"),
-        mtime: statSync(join(projDir, f)).mtimeMs,
-      }))
-      .sort((a, b) => b.mtime - a.mtime);
-    if (jsonls[0]) return jsonls[0].sessionId;
-  } catch {
-    // project dir missing
-  }
-  return null;
-}
+import {
+  detectPermissionMode,
+  detectSessionId,
+  isPidAlive,
+} from "./_helpers.js";
 
 async function main(): Promise<void> {
   const cwd = process.cwd();
@@ -129,8 +59,9 @@ async function main(): Promise<void> {
 
   // Detect the Claude permission mode. If it's NOT dontAsk (or bypassPermissions),
   // Claude will keep its Terminal prompt visible even after our hook returns
-  // "allow" — the watch effectively becomes a double-confirm. Warn the user up
-  // front so they know the alternative.
+  // "allow" — the watch effectively becomes a double-confirm. Tell the user up
+  // front about the canonical alternative: /ccwearos-takeover (one-step handoff
+  // to a new Terminal under wrapper-pty control with dontAsk pre-applied).
   const mode = detectPermissionMode();
   if (mode && mode !== "dontAsk" && mode !== "bypassPermissions") {
     console.log("");
@@ -140,36 +71,26 @@ async function main(): Promise<void> {
     console.log(
       "[ccwearos]    PERO Claude también te preguntará en este Terminal (doble-confirm).",
     );
-    console.log("[ccwearos]    Para reloj-only, cierra y reabre con:");
-    console.log("[ccwearos]      claude --permission-mode dontAsk");
+    console.log("");
     console.log(
-      "[ccwearos]    O usá `cc` (alias) que ya está optimizado para 'me voy del Mac'.",
+      "[ccwearos]    👉 Para irte del Mac sin doble-confirm, usá /ccwearos-takeover:",
     );
+    console.log(
+      "[ccwearos]       Abre una nueva Terminal con esta sesión resumida bajo `cc`",
+    );
+    console.log(
+      "[ccwearos]       (permission-mode=dontAsk → el reloj es el único gate).",
+    );
+    console.log(
+      "[ccwearos]    Alternativa manual: cerrar Claude y reabrir con",
+    );
+    console.log("[ccwearos]      claude --permission-mode dontAsk");
   }
   console.log("");
   console.log(
     "[ccwearos] Permission prompts will now appear on your watch. Tap Allow/Deny from your wrist.",
   );
   console.log("[ccwearos] Run /ccwearos-off to disable.");
-}
-
-function detectPermissionMode(): string | null {
-  // Read ~/.claude/settings.json + .local for permissions.defaultMode.
-  // The two files are merged by Claude at startup; check both, .local wins.
-  for (const fname of ["settings.local.json", "settings.json"]) {
-    try {
-      const path = join(homedir(), ".claude", fname);
-      const raw = readFileSync(path, "utf8");
-      const parsed = JSON.parse(raw) as {
-        permissions?: { defaultMode?: string };
-      };
-      const m = parsed.permissions?.defaultMode;
-      if (typeof m === "string" && m.length > 0) return m;
-    } catch {
-      // file missing or malformed — try the next one
-    }
-  }
-  return null;
 }
 
 main()
