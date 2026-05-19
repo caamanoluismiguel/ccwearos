@@ -9,8 +9,24 @@ The watch shows live status / activity / task / token usage / Claude's response,
 - `/wrapper` — Node.js + TypeScript bridge. Two modes:
   - **Interactive** (`npm start`): spawns Claude in a pty, you use Claude in your terminal as normal, watch monitors + responds to permission prompts.
   - **Daemon** (`CCWEAROS_MODE=daemon`): listens for prompts from the watch, runs `claude -p <text> --output-format=stream-json --verbose`, streams the answer to `/response`. Auto-started by LaunchAgent.
+- `/wrapper/src/` — library code (importable, side-effect-free where possible):
+  - `firebase.ts` — RTDB helpers including `registerCrashCleanup` (onDisconnect), `clearStaleState`, `appendAuditEntry` (transaction).
+  - `claude-runner.ts` — interactive pty runner used by `npm start` + `cc`. Accepts `extraArgs` for `--resume` / `--permission-mode`.
+  - `claude-voice.ts` — voice-mode runner used by daemon for `claude -p` one-shots.
+  - `parser.ts` — ~40 regex extractors (tokens, status line, response, followups, TL;DR, OSC titles).
+  - `sessions-scanner.ts` — 15s scan of `~/.claude/sessions` + `~/.claude/projects/*/*.jsonl` → `/recentSessions`.
+  - `share-args.ts`, `takeover-utils.ts`, `sh-escape.ts`, `pid-utils.ts` — pure, tested utilities used by the takeover flow.
+  - `types/schema.ts` — TS source of truth for every RTDB path.
+- `/wrapper/scripts/` — entry points:
+  - `share.ts` (the `cc` alias) — wrapper-pty session under `kind="wrapper-pty"`.
+  - `hooks/pre-tool-use.ts` — PreToolUse hook for `/ccwearos` mid-session bridging.
+  - `hooks/enable-share.ts`, `disable-share.ts`, `enable-takeover.ts` — slash command entry points.
+  - `hooks/_helpers.ts` — shared session detection (`detectSessionId`, `detectSessionIdDetailed`, `detectPermissionMode`).
+  - `install-hooks.ts` — idempotent installer for the slash commands + PreToolUse entry.
+  - `audit.ts` — CLI viewer for `/auditLog`.
 - `/wrapper/secrets/firebase-admin-key.json` — Admin SDK key, gitignored.
 - `/wrapper/fixtures/` — synthetic Claude Code output for parser tuning; `captures/` is gitignored.
+- `/wrapper/templates/` — slash command markdown files installed to `~/.claude/commands/`.
 - `/watch` — Wear OS / Jetpack Compose Material3 client. Pixel mascot + terminal aesthetic.
 - `/firebase-rules.json` — RTDB security rules. Pinned to watch UIDs.
 - `/scripts/install-launchagent.sh` — installer for the daemon LaunchAgent.
@@ -20,26 +36,29 @@ The watch shows live status / activity / task / token usage / Claude's response,
 
 Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `watch/.../data/RtdbModels.kt`.
 
-| Path                | Who writes | Who reads        | Notes                                                                    |
-| ------------------- | ---------- | ---------------- | ------------------------------------------------------------------------ |
-| `/status`           | wrapper    | watch            | `"IDLE" \| "RUNNING" \| "AWAITING_PERMISSION" \| "OFFLINE"`              |
-| `/metrics`          | wrapper    | watch            | Rolling-window token totals (day/week/month)                             |
-| `/command`          | watch      | wrapper          | `{text, issuedAt}` — permission responses (`"1\r"` / `""`)               |
-| `/prompt`           | watch      | wrapper (daemon) | `{text, issuedAt}` — new voice prompt to run                             |
-| `/permissionPrompt` | wrapper    | watch            | Human-readable prompt text                                               |
-| `/activity`         | wrapper    | watch            | Spinner verb ("Crunching…", "Worked for 33s")                            |
-| `/task`             | wrapper    | watch            | Current task description (from OSC title)                                |
-| `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                              |
-| `/headline`         | wrapper    | watch            | TL;DR one-liner extracted from response (info runs)                      |
-| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (Page 4)        |
-| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives Page 3 layout branch                       |
-| `/toolEvents`       | wrapper    | watch            | Up to 12 tool invocations observed during the run                        |
-| `/claudeStatus`     | wrapper    | watch            | Parsed Claude status line: model, contextSize, monthlyCost, reset times  |
-| `/sharedSession`    | wrapper    | watch            | Active `cc`/share.ts session metadata. Gates voice prompts + Page 0 CTA. |
-| `/recentSessions`   | wrapper    | watch            | Mac-wide Claude session snapshot. Drives Page 5 grouped-by-project list. |
-| `/fcmToken`         | watch      | wrapper          | Watch's FCM registration token (for wake-ups)                            |
+| Path                | Who writes | Who reads        | Notes                                                                                                                                                               |
+| ------------------- | ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/status`           | wrapper    | watch            | `"IDLE" \| "RUNNING" \| "AWAITING_PERMISSION" \| "OFFLINE"`                                                                                                         |
+| `/metrics`          | wrapper    | watch            | Rolling-window token totals (day/week/month)                                                                                                                        |
+| `/command`          | watch      | wrapper          | `{text, issuedAt}` — permission responses (`"1\r"` / `""`)                                                                                                          |
+| `/prompt`           | watch      | wrapper (daemon) | `{text, issuedAt}` — new voice prompt to run                                                                                                                        |
+| `/permissionPrompt` | wrapper    | watch            | Human-readable prompt text                                                                                                                                          |
+| `/activity`         | wrapper    | watch            | Spinner verb ("Crunching…", "Worked for 33s")                                                                                                                       |
+| `/task`             | wrapper    | watch            | Current task description (from OSC title)                                                                                                                           |
+| `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                                                                                                                         |
+| `/headline`         | wrapper    | watch            | TL;DR one-liner extracted from response (info runs)                                                                                                                 |
+| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (Page 4)                                                                                                   |
+| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives Page 3 layout branch                                                                                                                  |
+| `/toolEvents`       | wrapper    | watch            | Up to 12 tool invocations observed during the run                                                                                                                   |
+| `/claudeStatus`     | wrapper    | watch            | Parsed Claude status line: model, contextSize, monthlyCost, reset times                                                                                             |
+| `/sharedSession`    | wrapper    | watch            | Active `cc`/share.ts session metadata. Gates voice prompts + Page 0 CTA.                                                                                            |
+| `/recentSessions`   | wrapper    | watch            | Mac-wide Claude session snapshot. Drives Page 5 grouped-by-project list.                                                                                            |
+| `/auditLog`         | wrapper    | (CLI only)       | Rolling 20-entry log of every permission decision; viewable via `scripts/audit.ts`. Written via `ref.transaction()` so voice + cc + hook writes don't lose entries. |
+| `/fcmToken`         | watch      | wrapper          | Watch's FCM registration token (for wake-ups)                                                                                                                       |
 
 Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt` to avoid clock-skew bugs on emulators.
+
+**Server-side crash cleanup.** On startup every wrapper entry point (daemon, `npm start`, `cc`) registers `onDisconnect()` handlers via `registerCrashCleanup()` in `src/firebase.ts`. Firebase clears `/status`, `/permissionPrompt`, `/activity`, `/task`, `/headline`, `/taskKind`, `/toolEvents`, `/followups`, `/command` (and `/sharedSession` for `cc`) the moment our TCP connection drops — the only mechanism that survives `kill -9`, OOM, or Mac sleep. On clean shutdown we explicitly `clearCrashCleanup()` to avoid racing ourselves.
 
 ## ¿Cuál usar: `cc`, `/ccwearos`, o `/ccwearos-takeover`?
 
@@ -84,7 +103,15 @@ cd ~/projects/CCWEAROS/wrapper && npx tsx scripts/install-hooks.ts
 - [x] Sprint 4i — Page 5 "Sesiones del Mac" + shared sessions (Camino D): wrapper publishes `/recentSessions` (scan of `~/.claude/sessions` + `~/.claude/projects`) every 15s; new `cc` alias script (`scripts/share.ts`) lets the user start a Claude session from any Terminal directory while the watch sees state and can answer permissions; daemon refuses voice prompts while `/sharedSession` is alive; Page 5 lists sessions grouped by project (read-only V1)
 - [x] Sprint 4j — `/ccwearos` slash command + PreToolUse hook (Camino E-2): mid-session handoff for Claude Code sessions already running in any Terminal. User runs `/ccwearos` to mark the current session as bridged; from then on every tool call goes through a PreToolUse hook that publishes the pending tool to `/permissionPrompt` and blocks waiting on `/command` (Allow/Deny from the watch). Terminal stays alive throughout. Installer at `wrapper/scripts/install-hooks.ts` (re-runnable). Daemon yields `/command` ownership when `sharedSession.kind === "hook"`.
 - [x] Sprint 4k — Tier 1 post-audit: `✗ detener` cancel button on Page 0 (SIGINT via `/command`), bilingual fallback chips on Page 3 when Claude omits `Followups:`, `defaultMode` warning in `enable-share.ts` for `acceptEdits` users, rolling `/auditLog` (20 entries) of every permission decision viewable via `scripts/audit.ts`, and `cc` vs `/ccwearos` canonical docs.
-- [x] Sprint 4l — `/ccwearos-takeover` (auto-handoff): solves the `acceptEdits` double-confirm by spawning a new Terminal window (via `osascript`, Terminal.app or iTerm.app per `$TERM_PROGRAM`) running `cc --resume <id> --permission-mode dontAsk`. Old Terminal becomes read-only; watch is the sole permission gate in the new one. Pure utilities live in `src/share-args.ts` + `src/takeover-utils.ts` with 25 dedicated tests covering shell-escape, AppleScript escape, launcher pick, sessionId regex.
+- [x] Sprint 4l — `/ccwearos-takeover` + crash-cleanup foundation + audit-driven hardening.
+  - **Takeover slash command:** spawns a new Terminal window (Terminal.app, or iTerm.app per `$TERM_PROGRAM`, via `osascript`) running `cc --resume <id> --permission-mode dontAsk`. Old Terminal becomes read-only; watch is the sole permission gate in the new one. Solves the `acceptEdits` double-confirm trap.
+  - **Pure utility modules** (testable in isolation): `src/sh-escape.ts` (POSIX single-quote, used by claude-runner + takeover), `src/share-args.ts` (--resume parser with strict hex-dash regex), `src/takeover-utils.ts` (aplEscape + pickLauncher + buildShellCommand), `src/pid-utils.ts` (hardened isPidAlive with `pid > 1` + integer guard). Total: 72 passing tests (+ 38 net new since Sprint 4k).
+  - **Crash-cleanup foundation:** `firebase.ts:registerCrashCleanup()` uses Firebase server-side `onDisconnect()` so RTDB clears UI surfaces when wrapper TCP drops — the only mechanism that survives `kill -9`. `firebase.ts:clearStaleState(finalStatus)` atomic 12-path `update()` replaces every "set OFFLINE and pray" shutdown. Both daemon + `cc` + interactive now register on startup and clean on shutdown.
+  - **Hook robustness** (`pre-tool-use.ts`): SIGTERM / SIGINT / uncaughtException handlers run cleanup before exit so a host-killed hook no longer leaves `/permissionPrompt` set forever. `pollForCommand` checks `cmd.issuedAt` against `pollStartedAt` to ignore stale entries. `appendAuditEntry` calls before every `process.exit` are now `await`-ed (was being dropped).
+  - **Audit-log race fix:** `appendAuditEntry` now uses `ref.transaction()` instead of read-modify-write, so voice + cc + hook concurrent writes don't lose entries.
+  - **Daemon yields for `wrapper-pty` too** (mirrors existing `kind === "hook"` yield): closes a race where daemon's `/command` listener would clear cc's permission tap before cc's own listener saw it.
+  - **Watch fixes:** `PermissionScreen` haptic debounce (120ms) + skip-on-null (no phantom buzz on Firebase reconnect); `BackHandler` swallows accidental swipe-back; `StopButton` long-press → `forceResetUi()` writes IDLE/null directly to RTDB (recovery when wrapper is dead and SIGINT goes nowhere); FollowupChip + reset button bumped from 38/40dp to 48dp (Wear OS spec).
+  - **Security hardening in takeover:** `aplEscape` scrubs control chars (`\x00-\x1f`, `\x7f`, U+2028, U+2029) — closes AppleScript-injection-via-cwd vector. `enable-takeover.ts` wraps post-placeholder block in `try/catch` that restores `previousShared` on any failure. Switched placeholder pid from `process.ppid` to `process.pid` so the soft-lock self-releases on script exit. 30s timeout on osascript.
 
 ## Wrapper modes
 
@@ -120,7 +147,7 @@ tail -f ~/Library/Logs/ccwearos.err.log # stderr
 cd ~/projects/CCWEAROS/wrapper
 
 npm start                                # interactive mode
-npm test                                 # 19/19 vitest unit tests
+npm test                                 # 72/72 vitest unit tests
 npm run typecheck                        # tsc --noEmit
 npm run verify                           # smoke test: write IDLE, read back
 npm run demo                             # live IDLE→RUNNING→PROMPT→IDLE demo
@@ -129,13 +156,16 @@ npm run replay -- fixtures/<file>        # parser tuning against captured stdout
 # Test the daemon prompt flow without a microphone:
 npx tsx scripts/send-prompt.ts "explain this project in one sentence"
 
+# Inspect the rolling /auditLog (20 most-recent permission decisions):
+npx tsx scripts/audit.ts
+
 # Wipe stale Firebase state between sessions:
 npx tsx scripts/reset-rtdb.ts
 ```
 
 ## Real Galaxy Watch 8 deploy
 
-(Status: pending. Steps tested against the API 36 emulator; physical watch requires the user to enable developer mode.)
+Live on a physical Galaxy Watch 8 since Sprint 4e; wireless adb port rotates after sleep so reconnecting is the first thing to do.
 
 1. **Watch: enable Developer Mode**
    - Settings → About watch → Software → tap "Software version" **7 times**
@@ -205,12 +235,19 @@ After adding a new UID to rules, paste the JSON into Firebase Console → Realti
 
 - Wrapper is ESM TypeScript strict (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`)
 - Never commit `secrets/`, `.env`, or `google-services.json`
-- `/command` and `/prompt` MUST include `issuedAt`; wrapper drops anything older than `COMMAND_MAX_AGE_SECONDS` (default 60s)
+- `/command` and `/prompt` MUST include `issuedAt`; wrapper drops anything older than `COMMAND_MAX_AGE_SECONDS` (default 60s). `pre-tool-use.ts:pollForCommand` enforces this against `pollStartedAt` so a stale entry from a previous prompt isn't consumed.
 - `/metrics` writes debounced to `METRICS_DEBOUNCE_MS` (default 5000ms)
 - `/response` writes debounced to 5s (interactive) / 800ms (daemon)
 - `node-pty`'s `posix_spawnp` fails on Bun-compiled binaries (claude is one) → wrap target in `/bin/sh -c 'exec <claude>'`
 - `node-pty/prebuilds/<arch>/spawn-helper` loses its +x bit during npm install → handled by `package.json` postinstall hook
 - Watch writes `issuedAt` as `ServerValue.TIMESTAMP` (not `System.currentTimeMillis()`) to immunise against device clock skew
+- **Crash cleanup (Sprint 4l invariant).** Every wrapper entry point — `runInteractive`, `runDaemon`, `share.ts`, `pre-tool-use.ts` — MUST:
+  1. `await registerCrashCleanup({ uiSurfaces: true, sharedSession?: true })` after `initFirebase()` (cc owns sharedSession; the others don't).
+  2. On clean shutdown call `clearStaleState("OFFLINE")` then `clearCrashCleanup()` BEFORE `process.exit()`.
+  3. The hook (`pre-tool-use.ts`) also installs `SIGTERM` / `SIGINT` / `uncaughtException` handlers that run the same cleanup — otherwise a host-killed hook leaves `/permissionPrompt` set forever.
+- **Awaited audit writes.** Any `appendAuditEntry()` call immediately before `process.exit()` MUST be `await`-ed. `void appendAuditEntry(...)` + immediate exit drops the RTDB write before the request leaves the socket. Drops are silent.
+- **`isPidAlive` lives in ONE place.** `src/pid-utils.ts`. Don't duplicate; every caller imports. The guard against `pid <= 1` is essential because `process.kill(0, 0)` probes the calling process group and would always return true.
+- **AppleScript escape is defense in depth.** `aplEscape` strips control chars + U+2028/U+2029 so a cwd with a newline can't break out of `do script "..."`. Tests in `src/takeover-utils.test.ts` cover the attack pattern.
 
 ## Conversation continuity (Camino C-bis)
 
@@ -272,12 +309,29 @@ Two ways the watch sees Mac sessions:
 
    If `osascript` fails (e.g., macOS Automation permissions not granted), the placeholder is rolled back and a manual fallback (`cd <cwd> && cc --resume <id>`) is printed.
 
+## Watch UI affordances
+
+- **Page 0 — Command.** Shows brand + status + live activity. Bottom slot:
+  - `IDLE` + no shared session → `AskRow` (voice input button).
+  - `RUNNING` → `StopButton`. **Tap = SIGINT** (sends `` via `/command`; wrapper kills runner). **Long-press ≥500ms = force-reset** (writes `IDLE` / `null` directly to RTDB via `forceResetUi`). The long-press is the recovery affordance when the wrapper is dead and SIGINT goes nowhere.
+  - `AWAITING_PERMISSION` → routes to `PermissionScreen` overlay.
+  - `OFFLINE` → routes to `OfflineScreen`.
+  - `sharedSession != null` → `SharedSessionBlock` (text differs by `kind`).
+- **Page 1 — Metrics.** Token totals + Claude status line (model, contextSize, monthlyCost, resets).
+- **Page 2 — Response** (only when `hasResult`). Branches on `taskKind`: `action` → ✓/✗ confirmation card + tool breadcrumbs; `info` → scrollable markdown + TL;DR headline.
+- **Page 3 — Followups** (only when `hasResult`). Tappable chips from Claude's `Sugerencias:` / `Followups:` block, with bilingual hardcoded fallback ("Más detalles" / "Otra cosa" / "Deshacer") when Claude omits them. Reset button at bottom.
+- **Page 4 / Sessions** (only when `recentSessions` non-empty). Grouped by project. Coral dot = `cc`-shared; green dot = active; dim = historical. Read-only in V1.
+- **PermissionScreen overlay.** Big pill buttons (`allow` green, `deny` red). 120ms haptic debounce so reconnect bursts don't double-buzz. `BackHandler` swallows accidental swipe-back — modal must be explicitly answered.
+
 ## Known limitations
 
 - Markdown rendering on watch is inline only (bold/italic/code). Block markdown (lists, headings, code blocks) renders as plain text.
 - Tables are flattened to `cell1 · cell2 · cell3` rows — multi-line table cells lose column association.
-- Action runs (tool-heavy) often skip the `Followups:` block — Page 4 falls back to just the reset button. Fix idea: hardcode generic chips ("Más detalles", "Deshacer", "Otra acción") when `/followups` is null but a response exists.
-- Watch's `WrapperStatus` initial value is `OFFLINE` with `SharingStarted.WhileSubscribed(5_000)` — after the screen sleeps for >5s the listener disconnects, so on wake the watch flashes "wrapper not reachable" for a few seconds until Firebase reconnects. Possible fix: switch to `SharingStarted.Eagerly` (battery trade-off) or introduce a `CONNECTING` state.
+- Action runs (tool-heavy) often skip the `Followups:` block — Page 4 falls back to bilingual hardcoded chips ("Más detalles" / "Otra cosa" / "Deshacer") via the Sprint 4k fallback path. Real Claude-generated chips are preferred when present.
+- Watch's `WrapperStatus` initial value is `OFFLINE` with `SharingStarted.WhileSubscribed(5_000)` — after the screen sleeps for >5s the listener disconnects, so on wake the watch flashes "wrapper not reachable" for a few seconds until Firebase reconnects. Mitigated in Sprint 4l by: (a) wrapper-side `onDisconnect()` keeps the server-canonical state truthful even after wrapper death, and (b) StopButton long-press writes IDLE directly from the watch when the user sees a phantom RUNNING. Possible further fix: switch to `SharingStarted.Eagerly` (battery trade-off) or introduce a `CONNECTING` state.
+- `/ccwearos-takeover` cannot resume the SAME session that invoked it (Claude rejects concurrent access to a locked sessionId). The script self-detects this when `detectSessionIdDetailed` returns `source === "session-file"` with `ownerPid === process.ppid` and refuses upfront. The weaker `jsonl-mtime` fallback emits a warning and proceeds — if the new window closes silently, that's the cause.
+- `cc` resume vs. self-takeover: the user must close the OLD Terminal window before the lock-bound `cc --resume` can take over; the takeover script does NOT kill the parent Claude. Manual coordination is the V1 contract.
+- `sentInSession` lives only in the watch ViewModel — Android process kill resets it to `false` mid-conversation, so the Page 0 button reads "ask claude" even though the daemon will silently `--continue`. Cosmetic mismatch; cleanest fix is `/conversationActive` in RTDB (Tier 2).
 
 ## Prompt prefix (wrapper)
 
