@@ -9,6 +9,7 @@ import {
   clearCrashCleanup,
   clearPrompt,
   clearStaleState,
+  db,
   initFirebase,
   readSharedSession,
   registerCrashCleanup,
@@ -210,6 +211,40 @@ async function runDaemon(): Promise<void> {
   const stopSessionScanner = startSessionScanner({
     getSharedSessionId: () => sharedSession?.sessionId || null,
   });
+
+  // Sprint 4o — runtime heartbeat. The Sprint 4m fix only re-asserts IDLE
+  // at startup (8s defensive setTimeout); it doesn't help if the daemon's
+  // TCP blips DURING runtime — observed 3 times in 2 days (2026-05-19,
+  // 2026-05-20 x2). When the Mac's WiFi titubea, the Firebase server fires
+  // our onDisconnect handler (writes OFFLINE), then the SDK reconnects,
+  // but the daemon doesn't know to re-assert IDLE.
+  //
+  // Fix: every 30s, atomically replace "OFFLINE" → "IDLE" via transaction
+  // (only when we know we're not busy and no shared session owns status).
+  // Transaction is mandatory — a plain setStatus would race with concurrent
+  // voice-handler writes ("RUNNING") and could overwrite RUNNING with
+  // a stale IDLE. The transaction's `current !== "OFFLINE"` check aborts
+  // in any other case, leaving correct states untouched.
+  const HEARTBEAT_MS = 30_000;
+  const heartbeat = setInterval(() => {
+    if (busy) return;
+    if (sharedSession !== null) return;
+    void db()
+      .ref("/status")
+      .transaction((current: string | null) => {
+        // Returning `undefined` aborts the transaction — the path is
+        // untouched. So we only overwrite OFFLINE, never RUNNING or
+        // AWAITING_PERMISSION (those are managed by the voice / permission
+        // flows). Null (path absent) is also treated as needing IDLE.
+        if (current !== "OFFLINE" && current !== null) return undefined;
+        return "IDLE";
+      })
+      .catch(() => {
+        // best-effort; next tick retries. Failure could be network blip
+        // (the very thing we're trying to recover from) — wait and retry.
+      });
+  }, HEARTBEAT_MS);
+  heartbeat.unref();
 
   // Voice phrases that signal "start a fresh conversation, ignore previous
   // turns". Spanish + English, case-insensitive substring match.
@@ -467,6 +502,11 @@ async function runDaemon(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[ccwearos] ${signal} received — daemon shutting down.`);
+    // Stop the heartbeat FIRST — otherwise it could race with our
+    // clearStaleState("OFFLINE") write below and re-assert IDLE during
+    // shutdown, leaving the watch thinking the daemon is alive after
+    // we've actually exited.
+    clearInterval(heartbeat);
     stopPromptWatching();
     stopCmdWatching();
     stopWatchingShared();
