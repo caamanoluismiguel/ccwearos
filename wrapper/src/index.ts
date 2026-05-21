@@ -1,14 +1,20 @@
+import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import {
   appendAuditEntry,
+  clearClaimRequest,
   clearCommand,
   clearCrashCleanup,
   clearPrompt,
   clearStaleState,
   initFirebase,
+  readSharedSession,
   registerCrashCleanup,
   sendFcmWake,
   setActivity,
+  setClaimResult,
   setClaudeStatus,
   setFollowups,
   setHeadline,
@@ -18,6 +24,7 @@ import {
   setTask,
   setTaskKind,
   setToolEvents,
+  watchClaimRequest,
   watchCommands,
   watchPrompts,
   writeMetrics,
@@ -29,6 +36,8 @@ import type { SharedSessionMeta } from "./types/schema.js";
 import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
+import { handleClaimRequest } from "./claim-handler.js";
+import { isPidAlive } from "./pid-utils.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
 
@@ -297,6 +306,46 @@ async function runDaemon(): Promise<void> {
     await setStatus("RUNNING");
   });
 
+  // Sprint 4n — watch-initiated tap-to-claim. When the user taps a session
+  // row on Page 5 and confirms the dialog, the watch writes /claimRequest;
+  // the handler validates + spawns `cc --resume <id>` in a new Terminal via
+  // osascript (same machinery as /ccwearos-takeover). Single-flight gated
+  // by claimBusy so two rapid taps don't open two Terminals.
+  const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+  const WRAPPER_ROOT = resolve(MODULE_DIR, "..");
+  const SHARE_SCRIPT = join(WRAPPER_ROOT, "scripts/share.ts");
+  const TSX_BIN = join(WRAPPER_ROOT, "node_modules/.bin/tsx");
+  // Snapshot once at daemon startup — $TERM_PROGRAM is from the LaunchAgent
+  // env, which doesn't change at runtime. Watch users will get Terminal.app
+  // unless their daemon was launched from iTerm with that env preserved.
+  const TERM_PROGRAM = process.env["TERM_PROGRAM"];
+  let claimBusy = false;
+  const stopClaimWatching = watchClaimRequest(async (claim) => {
+    await handleClaimRequest(claim, {
+      readSharedSession,
+      setClaimResult,
+      clearClaimRequest,
+      appendAuditEntry,
+      isPidAlive,
+      spawn: (cmd, args, options) => {
+        const r = spawnSync(cmd, args as readonly string[], options);
+        return {
+          status: r.status,
+          signal: r.signal,
+          stderr: String(r.stderr ?? ""),
+        };
+      },
+      commandMaxAgeSeconds: config.commandMaxAgeSeconds,
+      tsxBin: TSX_BIN,
+      shareScript: SHARE_SCRIPT,
+      termProgram: TERM_PROGRAM,
+      getClaimBusy: () => claimBusy,
+      setClaimBusy: (v) => {
+        claimBusy = v;
+      },
+    });
+  });
+
   const stopPromptWatching = watchPrompts(async (p) => {
     if (busy) {
       console.log("[ccwearos] Busy — ignoring overlapping prompt:", p.text);
@@ -422,6 +471,7 @@ async function runDaemon(): Promise<void> {
     stopCmdWatching();
     stopWatchingShared();
     stopSessionScanner();
+    stopClaimWatching();
     // Kill any in-flight voice runner so the pty child doesn't orphan to
     // init (and so its own onExit gets a chance to clear UI surfaces).
     try {

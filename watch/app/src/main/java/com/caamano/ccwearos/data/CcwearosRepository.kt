@@ -83,6 +83,13 @@ class CcwearosRepository(
         list
     }
 
+    // Sprint 4n — tap-to-claim result. Daemon writes /claimResult after
+    // handling a watch-initiated claim; we observe it to drive the success
+    // / error banner. Null = no recent claim or banner already dismissed.
+    val claimResult: Flow<ClaimResult?> = pathFlow("claimResult") { snap ->
+        snap.getValue(ClaimResult::class.java)
+    }
+
     suspend fun sendCommand(text: String) {
         // Use Firebase server timestamp (not System.currentTimeMillis) so a
         // skewed device clock — including Wear OS emulators with drifted time —
@@ -100,6 +107,27 @@ class CcwearosRepository(
             "issuedAt" to ServerValue.TIMESTAMP,
         )
         ref("prompt").setValue(payload).await()
+    }
+
+    // Sprint 4n — tap-to-claim. Writes /claimRequest with the (sessionId,
+    // cwd) the user tapped on Page 5. Daemon consumes it and spawns
+    // `cc --resume <sessionId>` in a new Mac Terminal via osascript.
+    // Uses ServerValue.TIMESTAMP so the daemon's age check ignores
+    // device clock skew.
+    suspend fun claimSession(sessionId: String, cwd: String) {
+        val payload = mapOf<String, Any>(
+            "sessionId" to sessionId,
+            "cwd" to cwd,
+            "issuedAt" to ServerValue.TIMESTAMP,
+        )
+        ref("claimRequest").setValue(payload).await()
+    }
+
+    // Watch-side ack: after the result banner auto-dismisses (or user taps
+    // the close affordance) we null out /claimResult so a stale result
+    // doesn't re-show on next listener reconnect.
+    suspend fun clearClaimResult() {
+        ref("claimResult").setValue(null).await()
     }
 
     // Force-clear stale UI state directly from the watch — for when the

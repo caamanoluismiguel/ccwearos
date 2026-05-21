@@ -3,6 +3,7 @@ package com.caamano.ccwearos.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.caamano.ccwearos.data.CcwearosRepository
+import com.caamano.ccwearos.data.ClaimResult
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.RecentSession
@@ -71,6 +72,18 @@ class CcwearosViewModel(
     val recentSessions: StateFlow<List<RecentSession>> = repo.recentSessions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    // Sprint 4n — tap-to-claim. Daemon writes /claimResult after each
+    // claim attempt; UI drives the success / error banner from this.
+    val claimResult: StateFlow<ClaimResult?> = repo.claimResult
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    // Pending confirmation dialog state. Pair<sessionId, cwd> when set;
+    // null when no dialog is showing. Driven entirely from the watch side
+    // (UI tap → set; user confirms or cancels → cleared).
+    private val _confirmingClaim = MutableStateFlow<Pair<String, String>?>(null)
+    val confirmingClaim: StateFlow<Pair<String, String>?> =
+        _confirmingClaim.asStateFlow()
+
     // Per-app-session flag: did THIS app launch / ViewModel instance send a
     // regular prompt yet? Resets on app cold start (process death recreates
     // the ViewModel) so opening the watch after a while feels "fresh" even
@@ -129,5 +142,31 @@ class CcwearosViewModel(
         if (trimmed.isEmpty()) return
         _sentInSession.value = false
         viewModelScope.launch { repo.sendPrompt("nueva conversación, $trimmed") }
+    }
+
+    // Sprint 4n — tap-to-claim actions.
+    //
+    // requestClaimConfirmation() is called when SessionRow is tapped on
+    // Page 5; it raises the confirmation dialog without yet writing to
+    // RTDB. confirmClaim() / cancelClaim() resolve that dialog.
+    fun requestClaimConfirmation(sessionId: String, cwd: String) {
+        _confirmingClaim.value = sessionId to cwd
+    }
+
+    fun cancelClaim() {
+        _confirmingClaim.value = null
+    }
+
+    fun confirmClaim() {
+        val pending = _confirmingClaim.value ?: return
+        _confirmingClaim.value = null
+        viewModelScope.launch { repo.claimSession(pending.first, pending.second) }
+    }
+
+    // Called by ClaimResultBanner after the auto-dismiss timer fires (or
+    // user taps the close X). Nulls /claimResult so a stale entry doesn't
+    // re-show on next listener reconnect.
+    fun dismissClaimResult() {
+        viewModelScope.launch { repo.clearClaimResult() }
     }
 }

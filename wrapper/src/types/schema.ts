@@ -66,6 +66,17 @@ export interface RtdbRoot {
   // ~/.claude/sessions/*.json (active PIDs) and ~/.claude/projects/*/*.jsonl
   // (recent transcripts by mtime). Surfaced as Page 5 on the watch.
   recentSessions: RecentSession[] | null;
+  // Watch-initiated request to resume a session from /recentSessions —
+  // tap-to-claim (Sprint 4n). The watch writes this when the user taps a
+  // session row + confirms the dialog. The daemon's watchClaimRequest
+  // handler picks it up, validates, and spawns `cc --resume <id>` in a
+  // new Terminal via osascript (reusing the /ccwearos-takeover machinery).
+  claimRequest: PendingClaim | null;
+  // Daemon's response to the most recent claim. Watch reads it to show a
+  // success / error banner and auto-dismisses after a few seconds.
+  // sessionId echoes the request so stale results (from a previous tap)
+  // can be filtered client-side.
+  claimResult: ClaimResult | null;
 }
 
 export interface SharedSessionMeta {
@@ -108,6 +119,23 @@ export interface AuditEntry {
 export interface PendingPrompt {
   text: string;
   issuedAt: number;
+}
+
+// Watch-initiated request to resume a Claude session in a new Terminal.
+// Schema mirror in watch/.../data/RtdbModels.kt — keep in sync.
+export interface PendingClaim {
+  sessionId: string; // Claude session UUID — validated against [0-9a-fA-F-]{8,64}
+  cwd: string; // working directory; daemon runs `cd <cwd>` before exec'ing cc
+  issuedAt: number; // unix epoch ms (watch uses ServerValue.TIMESTAMP)
+}
+
+// Daemon → watch response to the most recent claimRequest. Echoes the
+// sessionId so the watch can filter out stale results from a prior tap.
+export interface ClaimResult {
+  ok: boolean;
+  reason?: string; // human-readable message when ok=false
+  sessionId: string; // echoes the request that produced this result
+  ts: number; // unix epoch ms
 }
 
 // Surfaced from claude-voice TUI parsing — one entry per tool invocation we
@@ -155,4 +183,6 @@ export const RTDB_PATHS = {
   sharedSession: "/sharedSession",
   recentSessions: "/recentSessions",
   auditLog: "/auditLog",
+  claimRequest: "/claimRequest",
+  claimResult: "/claimResult",
 } as const;

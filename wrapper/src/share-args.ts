@@ -14,7 +14,11 @@ export interface ShareArgs {
 // versions produced shorter ids and dashes are sometimes substituted. Keep
 // the regex permissive on length but strict on charset so we never end up
 // shell-injecting arbitrary argv content into the spawned `claude`.
-const SESSION_ID_RE = /^[0-9a-fA-F-]{8,64}$/;
+//
+// Exported so the daemon's claim-handler (Sprint 4n) can validate watch-
+// sourced sessionIds with the SAME regex used by the takeover CLI parser.
+// Centralizing the rule means a future change here propagates to both.
+export const SESSION_ID_RE = /^[0-9a-fA-F-]{8,64}$/;
 
 export function parseShareArgs(argv: readonly string[]): ShareArgs {
   let resumeSessionId: string | null = null;

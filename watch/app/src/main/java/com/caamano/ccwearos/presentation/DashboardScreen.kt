@@ -110,6 +110,10 @@ fun DashboardScreen(
     onAskWithReset: (String) -> Unit = {},
     onStop: () -> Unit = {},
     onForceReset: () -> Unit = {},
+    // Sprint 4n — invoked when a session row is tapped on Page 5. The
+    // ViewModel raises the confirmation dialog; this composable doesn't
+    // own that state, just plumbs the tap upward.
+    onClaim: (sessionId: String, cwd: String) -> Unit = { _, _ -> },
 ) {
     // Pages 2 + 3 show up whenever there's anything worth showing — response
     // text OR a settled taskKind (an action task with no body text still needs
@@ -165,6 +169,7 @@ fun DashboardScreen(
                 sessionsIndex -> SessionsPage(
                     sessions = recentSessions,
                     sharedSession = sharedSession,
+                    onClaim = onClaim,
                 )
                 2 -> ResponsePage(
                     response = response,
@@ -558,6 +563,7 @@ private fun FollowupChip(text: String, onTap: () -> Unit) {
 private fun SessionsPage(
     sessions: List<RecentSession>,
     sharedSession: SharedSessionMeta?,
+    onClaim: (sessionId: String, cwd: String) -> Unit,
 ) {
     val grouped = sessions.groupBy { it.projectName }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -596,9 +602,20 @@ private fun SessionsPage(
                 )
                 Spacer(Modifier.height(4.dp))
                 for (sess in projectSessions) {
+                    val isShared = sess.sessionId == sharedSession?.sessionId
                     SessionRow(
                         session = sess,
-                        isShared = sess.sessionId == sharedSession?.sessionId,
+                        isShared = isShared,
+                        // Sprint 4n — tap to claim. Active sessions
+                        // (green dot) and the currently-shared one (coral)
+                        // are NOT claimable: the underlying `claude
+                        // --resume` would fail because another Claude
+                        // process holds the file lock.
+                        onTap = if (sess.active || isShared) {
+                            null
+                        } else {
+                            { onClaim(sess.sessionId, sess.cwd) }
+                        },
                     )
                     Spacer(Modifier.height(4.dp))
                 }
@@ -610,14 +627,24 @@ private fun SessionsPage(
 }
 
 @Composable
-private fun SessionRow(session: RecentSession, isShared: Boolean) {
+private fun SessionRow(
+    session: RecentSession,
+    isShared: Boolean,
+    onTap: (() -> Unit)?,
+) {
     val dotColor = when {
         isShared -> ClaudeCoral
         session.active -> ClaudeGreen
         else -> ClaudeDim.copy(alpha = 0.35f)
     }
+    val rowModifier = Modifier
+        .fillMaxWidth()
+        // Only attach combinedClickable when tap is enabled — keeps the
+        // ripple / touch feedback off the disabled rows so the visual
+        // signal stays clear: dim row = no action available.
+        .let { if (onTap != null) it.combinedClickable(onClick = onTap) else it }
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = rowModifier,
         verticalAlignment = Alignment.Top,
     ) {
         Box(

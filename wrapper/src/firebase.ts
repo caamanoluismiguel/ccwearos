@@ -2,8 +2,10 @@ import admin from "firebase-admin";
 import { config, loadServiceAccount } from "./config.js";
 import type {
   AuditEntry,
+  ClaimResult,
   ClaudeStatus,
   Metrics,
+  PendingClaim,
   PendingCommand,
   PendingPrompt,
   RecentSession,
@@ -284,4 +286,30 @@ export function watchCommands(
   };
   ref.on("value", handler);
   return () => ref.off("value", handler);
+}
+
+// Sprint 4n — tap-to-claim watcher. Mirrors watchPrompts / watchCommands.
+// Fires whenever the watch writes a /claimRequest. Handler is responsible
+// for clearing the path (via clearClaimRequest) after consuming it so
+// we don't re-process on listener reconnect.
+export function watchClaimRequest(
+  onClaim: (claim: PendingClaim) => void | Promise<void>,
+): () => void {
+  const ref = db().ref("/claimRequest");
+  const handler = (snap: admin.database.DataSnapshot) => {
+    const val = snap.val() as PendingClaim | null;
+    if (val) void onClaim(val);
+  };
+  ref.on("value", handler);
+  return () => ref.off("value", handler);
+}
+
+export async function clearClaimRequest(): Promise<void> {
+  await db().ref("/claimRequest").set(null);
+}
+
+export async function setClaimResult(
+  result: ClaimResult | null,
+): Promise<void> {
+  await db().ref("/claimResult").set(result);
 }

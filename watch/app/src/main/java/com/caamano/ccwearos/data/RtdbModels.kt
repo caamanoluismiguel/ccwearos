@@ -85,3 +85,25 @@ data class RecentSession(
     val shared: Boolean = false,
     val lastUserMessage: String? = null,
 )
+
+// Sprint 4n — tap-to-claim. Watch writes /claimRequest when the user taps a
+// session row + confirms the dialog. Daemon reads it and spawns `cc --resume
+// <sessionId>` in a new Mac Terminal via osascript. Schema mirror is in
+// wrapper/src/types/schema.ts — keep in sync.
+@IgnoreExtraProperties
+data class PendingClaim(
+    val sessionId: String = "",
+    val cwd: String = "",
+    val issuedAt: Long = 0,
+)
+
+// Daemon's response, written to /claimResult after handling a claim. The
+// watch reads it to show a success / error banner. `sessionId` echoes the
+// originating request so the watch can ignore stale results from prior taps.
+@IgnoreExtraProperties
+data class ClaimResult(
+    val ok: Boolean = false,
+    val reason: String? = null,
+    val sessionId: String = "",
+    val ts: Long = 0,
+)

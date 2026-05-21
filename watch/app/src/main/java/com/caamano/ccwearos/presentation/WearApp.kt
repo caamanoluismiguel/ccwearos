@@ -33,6 +33,8 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
     val sentInSession by vm.sentInSession.collectAsState()
     val sharedSession by vm.sharedSession.collectAsState()
     val recentSessions by vm.recentSessions.collectAsState()
+    val confirmingClaim by vm.confirmingClaim.collectAsState()
+    val claimResult by vm.claimResult.collectAsState()
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AnimatedContent(
@@ -76,6 +78,39 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                     onAskWithReset = vm::askWithReset,
                     onStop = vm::stop,
                     onForceReset = vm::forceReset,
+                    onClaim = vm::requestClaimConfirmation,
+                )
+            }
+        }
+
+        // Sprint 4n — overlays drawn ABOVE the AnimatedContent screen
+        // routing, so they sit on top of any status (IDLE/RUNNING/etc).
+        // Confirmation dialog short-circuits the result banner: if the
+        // user is still confirming, an older result shouldn't compete.
+        val pendingClaim = confirmingClaim
+        if (pendingClaim != null) {
+            ConfirmClaimDialog(
+                sessionId = pendingClaim.first,
+                cwd = pendingClaim.second,
+                onConfirm = vm::confirmClaim,
+                onCancel = vm::cancelClaim,
+            )
+        } else {
+            // Only render the banner if the result is fresh (<10s old).
+            // Stale results from a previous claim shouldn't pop back up
+            // when the user wakes the watch hours later.
+            val freshResult = claimResult?.takeIf {
+                System.currentTimeMillis() - it.ts < 10_000L
+            }
+            freshResult?.let { result ->
+                ClaimResultBanner(
+                    ok = result.ok,
+                    message = if (result.ok) {
+                        "sesión abierta en tu Mac"
+                    } else {
+                        result.reason ?: "no se pudo abrir"
+                    },
+                    onDismiss = vm::dismissClaimResult,
                 )
             }
         }
