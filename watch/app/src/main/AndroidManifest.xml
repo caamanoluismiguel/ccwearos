@@ -6,10 +6,24 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!--
+        Foreground service: keeps the Firebase listener alive across ambient
+        / screen-off / Samsung Freecess freezing. Samsung's own docs (Galaxy
+        Watch developer blog, 2026-04-23) state that promoting a service to
+        foreground is mandatory to prevent the OS from pausing the app after
+        60s of screen-off time.
+
+        dataSync type fits Firebase RTDB sync (data transfer between device
+        and cloud per Android FGS docs). FOREGROUND_SERVICE_DATA_SYNC is
+        required on Android 14+ when foregroundServiceType="dataSync".
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <uses-feature android:name="android.hardware.type.watch" />
 
     <application
+        android:name=".CcwearosApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -51,6 +65,13 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- Foreground service that keeps Firebase listeners alive across
+             ambient / screen-off. See manifest header comment for why. -->
+        <service
+            android:name=".data.CcwearosForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

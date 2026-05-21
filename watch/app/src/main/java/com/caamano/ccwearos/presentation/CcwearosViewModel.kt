@@ -21,14 +21,28 @@ class CcwearosViewModel(
     private val repo: CcwearosRepository = CcwearosRepository(),
 ) : ViewModel() {
 
+    // ROUTING-CRITICAL flows use SharingStarted.Eagerly: the listener stays
+    // alive even when no UI is collecting (i.e., screen off / ambient). Cost
+    // is one Firebase value listener kept warm; benefit is no "wrapper not
+    // reachable" flicker on wake — observed twice in 24h on real watch with
+    // WhileSubscribed(5_000). These three drive screen routing in WearApp
+    // and the haptic in PermissionScreen, so a fresh value on wake matters
+    // more than the tiny battery cost of an idle listener.
     val status: StateFlow<WrapperStatus> = repo.status
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WrapperStatus.OFFLINE)
-
-    val metrics: StateFlow<Metrics> = repo.metrics
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Metrics())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, WrapperStatus.OFFLINE)
 
     val permissionPrompt: StateFlow<String?> = repo.permissionPrompt
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val sharedSession: StateFlow<SharedSessionMeta?> = repo.sharedSession
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    // NON-ROUTING flows: stay on WhileSubscribed(5_000) — the listener
+    // pauses when no UI is observing, and stale display on wake is fine
+    // (these only show after the user has navigated to a page that uses
+    // them, by which point Firebase has reconnected anyway).
+    val metrics: StateFlow<Metrics> = repo.metrics
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Metrics())
 
     val activity: StateFlow<String?> = repo.activity
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -53,9 +67,6 @@ class CcwearosViewModel(
 
     val followups: StateFlow<List<String>> = repo.followups
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    val sharedSession: StateFlow<SharedSessionMeta?> = repo.sharedSession
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val recentSessions: StateFlow<List<RecentSession>> = repo.recentSessions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())

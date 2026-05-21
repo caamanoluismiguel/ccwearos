@@ -78,6 +78,10 @@ async function runInteractive(): Promise<void> {
   // TCP drops (SIGKILL, OOM, network blip, machine sleep) — the only
   // cleanup mechanism that survives those exit modes.
   await registerCrashCleanup({ uiSurfaces: true });
+  // Defensive re-assertion at 8s — see runDaemon for why.
+  setTimeout(() => {
+    void setStatus("IDLE").catch(() => {});
+  }, 8_000).unref();
 
   const runner = startClaude({
     onStatus: (s) => {
@@ -141,6 +145,8 @@ async function runInteractive(): Promise<void> {
     }
     await clearCrashCleanup();
     runner.kill();
+    // Same grace period as the daemon shutdown — see runDaemon comment.
+    await new Promise((r) => setTimeout(r, 250));
     process.exit(0);
   };
 
@@ -156,6 +162,16 @@ async function runDaemon(): Promise<void> {
   // OOM, Mac power loss). UI surfaces are reset; daemon does NOT claim
   // /sharedSession so we leave that path alone.
   await registerCrashCleanup({ uiSurfaces: true });
+  // Defensive re-assertion. If a previous daemon was kill -9'd, its
+  // onDisconnect handler fires server-side ~5-10s AFTER we've already
+  // written IDLE — overwriting us with OFFLINE. Schedule a second IDLE
+  // write at 8s to win the race. Audit observation 2026-05-19.
+  setTimeout(() => {
+    void setStatus("IDLE").catch(() => {
+      // best-effort; if this fails, the watch's long-press force-reset
+      // is the user-facing recovery.
+    });
+  }, 8_000).unref();
 
   let busy = false;
   // True once we've completed at least one oneshot in this daemon run — then
@@ -422,6 +438,12 @@ async function runDaemon(): Promise<void> {
       console.error("[ccwearos] Failed to clear state on shutdown:", e);
     }
     await clearCrashCleanup();
+    // Grace period: clearCrashCleanup sends an "onDisconnect cancel" message
+    // to the Firebase server. The cancel is async — if we process.exit
+    // immediately, our TCP closes before the cancel is ACK'd and the server
+    // fires the (uncanceled) onDisconnect anyway. 250ms is enough for the
+    // round-trip on a local network without making shutdown feel sluggish.
+    await new Promise((r) => setTimeout(r, 250));
     process.exit(0);
   };
 

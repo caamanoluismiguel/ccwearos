@@ -104,6 +104,12 @@ async function main(): Promise<void> {
   // server will clear /sharedSession + UI surfaces when our TCP drops —
   // which is the only mechanism that survives `kill -9` / OOM.
   await registerCrashCleanup({ sharedSession: true, uiSurfaces: true });
+  // Defensive re-assertion at 8s in case a previous wrapper-pty's
+  // onDisconnect fires server-side after we've already written IDLE.
+  // See wrapper/src/index.ts:runDaemon for the full race explanation.
+  setTimeout(() => {
+    void setStatus("IDLE").catch(() => {});
+  }, 8_000).unref();
 
   if (parsed.resumeSessionId) {
     console.log(
@@ -146,6 +152,12 @@ async function main(): Promise<void> {
     // Cancel the server-side onDisconnect — we already wrote OFFLINE, no
     // need for the server to fire it again when our TCP closes.
     await clearCrashCleanup();
+    // Grace period so the cancel reaches the server before our TCP closes.
+    // Without this, the server fires the (uncanceled-from-its-POV)
+    // onDisconnect on top of our shutdown writes — a race observed on
+    // 2026-05-19 that left /status=OFFLINE for a healthy daemon after
+    // a LaunchAgent restart.
+    await new Promise((r) => setTimeout(r, 250));
   };
 
   // Build CLI args for `claude`. Takeover mode forces dontAsk so the watch
