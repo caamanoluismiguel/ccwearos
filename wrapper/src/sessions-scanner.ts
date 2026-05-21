@@ -237,11 +237,24 @@ export function scanRecentSessions(
   return top.map((c) => {
     const sessionId = basename(c.path, ".jsonl");
     const meta = readJsonlMeta(c.path, sessionId);
-    const cwd = meta.cwd ?? unsanitizeCwd(c.dirName);
+    // cwd MUST be the path under which Claude Code stores this session's
+    // .jsonl — that's where `claude --resume <id>` looks. Claude Code uses
+    // the cwd of the FIRST turn as the storage path; if the user later
+    // `cd`-s mid-session the per-turn meta.cwd diverges from the storage
+    // dir, and a resume at meta.cwd would 404 ("No conversation found").
+    // Always use the dir-derived cwd for resumability. Bug observed
+    // 2026-05-20 with sessionId 926bea49 stored under ~ but with
+    // meta.cwd = ~/projects/isthmus-norte due to a mid-session cd.
+    const cwd = unsanitizeCwd(c.dirName);
+    // projectName is purely visual — prefer the last per-turn cwd's
+    // basename ("isthmus-norte" reads nicer than "luismiguelcaamano"
+    // for a session that ended in a project subdir). Falls back to the
+    // resume cwd's basename when meta has no cwd field.
+    const projectName = basename(meta.cwd ?? cwd);
     return {
       sessionId,
       cwd,
-      projectName: basename(cwd),
+      projectName,
       mtime: Math.round(c.mtime),
       active: activeMap.has(sessionId),
       shared: false, // filled by the caller once it knows /sharedSession

@@ -49,6 +49,18 @@
     "prompt": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
       ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && (!newData.exists() || (newData.hasChildren(['text', 'issuedAt']) && newData.child('text').isString() && newData.child('issuedAt').isNumber()))"
+    },
+
+    "_comment_claim": "Sprint 4n — tap-to-claim. Watch writes /claimRequest when the user taps a session row + confirms. Daemon reads, spawns `cc --resume <id>` via osascript, writes /claimResult. The wrapper bypasses these rules (Admin SDK). Watch needs WRITE on /claimRequest (full payload) and on /claimResult ONLY to null it after auto-dismiss (no replacement payload allowed).",
+
+    "claimRequest": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && (!newData.exists() || (newData.hasChildren(['sessionId', 'cwd', 'issuedAt']) && newData.child('sessionId').isString() && newData.child('cwd').isString() && newData.child('issuedAt').isNumber()))"
+    },
+
+    "claimResult": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && !newData.exists()"
     }
   }
 }
