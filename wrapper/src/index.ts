@@ -384,6 +384,15 @@ async function runDaemon(): Promise<void> {
   const stopPromptWatching = watchPrompts(async (p) => {
     if (busy) {
       console.log("[ccwearos] Busy — ignoring overlapping prompt:", p.text);
+      // Clear /prompt so the same dropped value doesn't get stuck in RTDB.
+      // Without this, the watch can't easily retry (same text + new TIMESTAMP
+      // would re-fire the listener, but a manual re-tap is cleaner). The
+      // user sees no response and naturally re-asks.
+      try {
+        await clearPrompt();
+      } catch (e) {
+        console.error("[ccwearos] clearPrompt failed in busy path:", e);
+      }
       return;
     }
     // Refuse voice prompts while a shared session (cc / share.ts) is alive
@@ -490,13 +499,26 @@ async function runDaemon(): Promise<void> {
     } catch (e) {
       console.error("[ccwearos] Voice run failed:", e);
     } finally {
-      activeRunner = null;
-      await setActivity(null);
-      await setTask(null);
-      await setPermissionPrompt(null);
-      await setStatus("IDLE");
-      await clearPrompt();
+      // CRITICAL: reset `busy` FIRST, before any await. If a downstream
+      // Firebase write throws (network blip, credential refresh failure —
+      // see historical `getaddrinfo ENOTFOUND oauth2.googleapis.com` in
+      // stderr log), this finally bails out and `busy` stays true forever.
+      // Once that happens every subsequent voice prompt is silently dropped
+      // as "Busy" until a daemon restart. Observed in production 2026-05-23.
       busy = false;
+      activeRunner = null;
+      try {
+        await setActivity(null);
+        await setTask(null);
+        await setPermissionPrompt(null);
+        await setStatus("IDLE");
+        await clearPrompt();
+      } catch (cleanupErr) {
+        console.error(
+          "[ccwearos] Post-run cleanup failed (state may be stale until next run):",
+          cleanupErr,
+        );
+      }
     }
   });
 
