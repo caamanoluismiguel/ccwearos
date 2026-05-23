@@ -23,6 +23,21 @@
 - **Tap Allow / Deny** when Claude asks for permission to fetch a URL, edit a file, run a bash command — no need to switch to your terminal.
 - **Speak a new task** by tapping "ask claude" on the watch. The daemon on your Mac runs `claude -p <text>` and streams the answer back to the watch.
 - **Continuity** — consecutive voice prompts use `--continue` so Claude remembers the prior turn. Say "olvida todo" / "new chat" to reset.
+- **Notifies on completion** — when a task finishes, the watch vibrates and auto-navigates to the response page (smart guard: only if you were on the Command or Metrics page — never interrupts you when you're reading Sessions or Followups).
+
+## Watch pages
+
+The watch UI is a 5-page horizontal pager. Pages that don't apply hide themselves automatically (Response and Followups appear only when there's a result; Sessions appears only when the wrapper has found Claude Code sessions on your Mac).
+
+| #   | Page          | What you see                                                                                                                                                                                                 |
+| --- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0   | **Command**   | Current status (`$ idle` / `$ running` / `$ awaiting permission`), activity verb (`✻ Crunching…`), task title, and the big CTA — `ask claude` when fresh, `continuar` mid-thread, `✗ detener` while running. |
+| 1   | **Metrics**   | Tokens used today, model + context window, session / weekly / monthly percentages, current monthly cost, reset times.                                                                                        |
+| 2   | **Response**  | Claude's last answer. `$ tl;dr` headline (adaptive font size) + scrollable body with inline markdown, a thin scroll-position bar on the right, and a fade overlay above the page dots.                       |
+| 3   | **Followups** | 2–3 tappable chips with Claude's suggested next prompts (or a bilingual fallback if Claude omitted them), plus a `↻ nueva conversación` reset button that prepends the reset phrase.                         |
+| 4   | **Sessions**  | Recent Claude Code sessions on your Mac, grouped by project, sorted newest-first. Tap any non-active session to confirm-and-resume it in a new Terminal window with full context loaded.                     |
+
+Long-press the `✗ detener` button (Page 0, during a running task) to force-reset the UI when the wrapper appears dead — writes `IDLE` directly to RTDB so you're not stuck in phantom-RUNNING.
 
 ## Why
 
