@@ -15,6 +15,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
@@ -30,6 +32,33 @@ val ClaudeRed = Color(0xFFFF453A)
 val ClaudeDim = Color(0xFFB8B8B8)
 
 val MonoFamily = FontFamily.Monospace
+
+// Sprint UI v6 — Named spacings replace magic numbers across the dashboard.
+// One source of truth so we can dial overall density without grepping for `.dp`.
+object WatchSpacing {
+    val micro = 1.dp
+    val tighten = 2.dp
+    val compact = 4.dp
+    val normal = 6.dp
+    val relaxed = 8.dp
+    val section = 10.dp
+    val pageBreak = 14.dp
+    val bottomBleed = 32.dp
+}
+
+// Sprint UI v6 — Semantic color tokens for opacity intents. The raw alphas
+// (0.55f, 0.75f, 0.88f) were scattered with no shared meaning; these names
+// (textSecondary, accentTertiary, divider, …) make the call sites readable.
+object WatchColors {
+    val accentPrimary = ClaudeCoral
+    val accentSecondary = ClaudeCoral.copy(alpha = 0.75f)
+    val accentTertiary = ClaudeCoral.copy(alpha = 0.55f)
+    val divider = ClaudeCoral.copy(alpha = 0.40f)
+    val textPrimary = Color.White
+    val textSecondary = Color.White.copy(alpha = 0.88f)
+    val textTertiary = Color.White.copy(alpha = 0.65f)
+    val textMuted = Color.White.copy(alpha = 0.55f)
+}
 
 fun shortNum(n: Long): String = when {
     n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
@@ -57,7 +86,11 @@ fun ClaudeMascot(
         ),
         label = "mascot-bounce",
     )
-    Canvas(modifier = modifier.size(width = width, height = width * 0.72f)) {
+    Canvas(
+        modifier = modifier
+            .size(width = width, height = width * 0.72f)
+            .semantics { contentDescription = "Claude Code mascot" },
+    ) {
         val w = size.width
         val h = size.height
         val p = w / 14f                      // grid pixel width

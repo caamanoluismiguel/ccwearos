@@ -11,10 +11,14 @@ import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WrapperStatus
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -98,6 +102,54 @@ class CcwearosViewModel(
     // text contains a RESET_PHRASES match.
     private val _sentInSession = MutableStateFlow(false)
     val sentInSession: StateFlow<Boolean> = _sentInSession.asStateFlow()
+
+    // v7 — Task completion event. Fires ONCE per "wasWorking → IDLE + response"
+    // transition. UI collects this and triggers haptic + auto-nav to Page 2.
+    //
+    // CRITICAL: this state lives in the ViewModel (not a Composable's
+    // `remember`) because WearApp.kt routes through AnimatedContent keyed by
+    // `status`. Every IDLE↔RUNNING transition re-creates DashboardScreen and
+    // wipes any composable-scoped state — so the "I was just RUNNING" memory
+    // would never survive a real completion. ViewModel scope outlives screen
+    // routing, so the transition watcher stays continuous.
+    private val _taskCompleted = MutableSharedFlow<Unit>(
+        replay = 0,
+        extraBufferCapacity = 1,
+    )
+    val taskCompleted: SharedFlow<Unit> = _taskCompleted.asSharedFlow()
+
+    init {
+        viewModelScope.launch {
+            var previousStatus: WrapperStatus? = null
+            var lastFiredResponse: String? = null
+
+            combine(status, response) { s, r -> s to r }
+                .collect { (currentStatus, currentResponse) ->
+                    val wasWorking = previousStatus == WrapperStatus.RUNNING ||
+                        previousStatus == WrapperStatus.AWAITING_PERMISSION
+
+                    // Preserve "was working" memory across the transient
+                    // (IDLE + null response) gap the wrapper produces between
+                    // clearing stale state and writing the new response.
+                    val inTransientIdleGap = wasWorking &&
+                        currentStatus == WrapperStatus.IDLE &&
+                        currentResponse.isNullOrBlank()
+                    if (!inTransientIdleGap) {
+                        previousStatus = currentStatus
+                    }
+
+                    val completed = wasWorking &&
+                        currentStatus == WrapperStatus.IDLE &&
+                        !currentResponse.isNullOrBlank() &&
+                        currentResponse != lastFiredResponse
+                    if (completed) {
+                        lastFiredResponse = currentResponse
+                        previousStatus = currentStatus
+                        _taskCompleted.emit(Unit)
+                    }
+                }
+        }
+    }
 
     // Claude Code TUI permission prompts use numbered selection ("1. Yes",
     // "2. Yes, ...", "3. No"). Typing the digit + Enter is the most reliable

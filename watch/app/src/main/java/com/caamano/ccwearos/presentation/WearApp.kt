@@ -79,6 +79,7 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                     onStop = vm::stop,
                     onForceReset = vm::forceReset,
                     onClaim = vm::requestClaimConfirmation,
+                    taskCompleted = vm.taskCompleted,
                 )
             }
         }

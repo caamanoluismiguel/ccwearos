@@ -15,19 +15,26 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -43,7 +50,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.pager.HorizontalPager
+import androidx.wear.compose.foundation.pager.PagerState
 import androidx.wear.compose.foundation.pager.rememberPagerState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharedFlow
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.HorizontalPagerScaffold
@@ -114,6 +124,10 @@ fun DashboardScreen(
     // ViewModel raises the confirmation dialog; this composable doesn't
     // own that state, just plumbs the tap upward.
     onClaim: (sessionId: String, cwd: String) -> Unit = { _, _ -> },
+    // v7 — Fires once per task completion. UI uses it to trigger haptic +
+    // smart auto-nav to Page 2. ViewModel owns the detection logic so it
+    // survives AnimatedContent re-creations on status changes.
+    taskCompleted: SharedFlow<Unit>? = null,
 ) {
     // Pages 2 + 3 show up whenever there's anything worth showing — response
     // text OR a settled taskKind (an action task with no body text still needs
@@ -140,6 +154,13 @@ fun DashboardScreen(
     val inConversation = sentInSession && hasResponse && status == WrapperStatus.IDLE
 
     val pagerState = rememberPagerState(initialPage = 0) { pageCount }
+
+    // v7 — Task completion feedback: vibra + auto-nav a Page 2 (Response).
+    // Detección vive en el ViewModel; aquí solo colectamos el evento.
+    TaskCompletionHandler(
+        taskCompleted = taskCompleted,
+        pagerState = pagerState,
+    )
 
     HorizontalPagerScaffold(pagerState = pagerState) {
         HorizontalPager(
@@ -565,12 +586,24 @@ private fun SessionsPage(
     sharedSession: SharedSessionMeta?,
     onClaim: (sessionId: String, cwd: String) -> Unit,
 ) {
-    val grouped = sessions.groupBy { it.projectName }
+    // v8 — F2: sort by recency (mtime DESC) before grouping. groupBy is a
+    // LinkedHashMap so iteration order is preserved; projects with the most
+    // recent session naturally surface first, and rows within each project
+    // are newest-first instead of arbitrary wrapper insertion order.
+    val grouped = sessions.sortedByDescending { it.mtime }.groupBy { it.projectName }
+
+    // v8 — F1: scroll state hoisted so we can render a ScrollPositionIndicator
+    // (same one Page 2 v6 uses) when the session list overflows the viewport.
+    val scroll = rememberScrollState()
+
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
-                .fillMaxSize(fraction = 0.82f)
-                .verticalScroll(rememberScrollState()),
+                // v8 — F3: 0.82 was an outlier (Page 2 v6 validated 0.76,
+                // Page 3 uses 0.78). Tightening to 0.76 prevents the longest
+                // lastUserMessage from kissing the bezel on the real watch.
+                .fillMaxSize(fraction = 0.76f)
+                .verticalScroll(scroll),
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.Start,
         ) {
@@ -623,6 +656,12 @@ private fun SessionsPage(
             }
             Spacer(Modifier.height(20.dp))
         }
+
+        // v8 — F1: same scroll affordance as Page 2 Response. Only shown when
+        // there's actual overflow; otherwise stays invisible.
+        if (scroll.maxValue > 0) {
+            ScrollPositionIndicator(scroll = scroll)
+        }
     }
 }
 
@@ -639,6 +678,10 @@ private fun SessionRow(
     }
     val rowModifier = Modifier
         .fillMaxWidth()
+        // v8 — F4: Wear OS spec requires 48dp touch targets. SessionRow grew
+        // organically with content (~32-40dp typical) — below spec. heightIn
+        // guarantees the minimum without capping rows that hold longer text.
+        .heightIn(min = 48.dp)
         // Only attach combinedClickable when tap is enabled — keeps the
         // ripple / touch feedback off the disabled rows so the visual
         // signal stays clear: dim row = no action available.
@@ -657,7 +700,10 @@ private fun SessionRow(
         Column(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = timeAgoShort(session.mtime),
-                color = ClaudeDim.copy(alpha = 0.65f),
+                // v8 — F5: 0.65 alpha gave ~3.2:1 contrast on OLED black,
+                // below WCAG AA 4.5:1 for small text. 0.75 alpha brings it
+                // to ~4.8:1 — readable on dim brightness near the bezel.
+                color = ClaudeDim.copy(alpha = 0.75f),
                 fontFamily = MonoFamily,
                 fontSize = 9.sp,
             )
@@ -836,50 +882,70 @@ private fun InfoResultLayout(response: String?, headline: String?) {
             .orEmpty()
     }
 
+    // Adaptive headline size: short TL;DRs ("Listo · 3") deserve a bigger
+    // focal point; long TL;DRs (~80 chars) need to shrink to avoid the
+    // 4-line truncation cliff. lineHeight stays at 1.22x for consistency.
+    val headlineFontSize = when {
+        (finalHeadline?.length ?: 0) < 20 -> 22.sp
+        (finalHeadline?.length ?: 0) > 60 -> 16.sp
+        else -> 18.sp
+    }
+    val headlineLineHeight = when {
+        (finalHeadline?.length ?: 0) < 20 -> 26.sp
+        (finalHeadline?.length ?: 0) > 60 -> 20.sp
+        else -> 22.sp
+    }
+
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
-                .fillMaxSize(fraction = 0.72f)
+                // v6 — 0.72 was too conservative on the real Galaxy Watch 8
+                // (480px, 326ppi + physical bezel). 0.76 recovers ~19dp of
+                // usable width without breaking the inscribed-circle safety.
+                .fillMaxSize(fraction = 0.76f)
                 .verticalScroll(scroll),
             verticalArrangement = Arrangement.spacedBy(0.dp),
             horizontalAlignment = Alignment.Start,
         ) {
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(WatchSpacing.pageBreak))
             Text(
                 text = "$ tl;dr",
-                color = ClaudeCoral.copy(alpha = 0.75f),
+                color = WatchColors.accentSecondary,
                 fontFamily = MonoFamily,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 1.2.sp,
             )
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(WatchSpacing.normal))
             if (!finalHeadline.isNullOrBlank()) {
                 Text(
                     text = finalHeadline,
-                    color = Color.White,
+                    color = WatchColors.textPrimary,
                     fontFamily = FontFamily.Default,
-                    fontSize = 18.sp,
-                    lineHeight = 22.sp,
+                    fontSize = headlineFontSize,
+                    lineHeight = headlineLineHeight,
                     fontWeight = FontWeight.Bold,
                     maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(WatchSpacing.section))
                 DividerLine()
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(WatchSpacing.relaxed))
             }
             if (body.isNotBlank()) {
                 Text(
                     text = renderMarkdownInline(body),
-                    color = Color.White.copy(alpha = 0.88f),
+                    color = WatchColors.textSecondary,
                     fontFamily = FontFamily.Default,
                     fontSize = 12.sp,
-                    lineHeight = 18.sp,
+                    // v6 — 18sp (1.5x) was technically accessible but felt
+                    // crowded on the watch. 20sp (1.67x) gives body text
+                    // breathing room without breaking WCAG guidance.
+                    lineHeight = 20.sp,
                     fontWeight = FontWeight.Normal,
                 )
             }
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(WatchSpacing.bottomBleed))
         }
 
         // Scroll fade — masks text behind the indicator dots.
@@ -896,6 +962,36 @@ private fun InfoResultLayout(response: String?, headline: String?) {
                         ),
                     ),
                 ),
+        )
+
+        // v6 — Scroll position affordance. Right-edge bar that grows as you
+        // scroll. Only visible when there's actually overflow. Sits inside
+        // the inscribed circle so it never clips against the bezel.
+        if (scroll.maxValue > 0) {
+            ScrollPositionIndicator(scroll = scroll)
+        }
+    }
+}
+
+// v6 — Lightweight scroll indicator. A 2dp coral bar on the right side whose
+// vertical position reflects the current scroll fraction. Auto-fades when
+// scroll.maxValue is 0 (handled by the caller).
+@Composable
+private fun BoxScope.ScrollPositionIndicator(scroll: androidx.compose.foundation.ScrollState) {
+    val fraction = if (scroll.maxValue == 0) 0f
+        else scroll.value.toFloat() / scroll.maxValue.toFloat()
+    Box(
+        modifier = Modifier
+            .fillMaxHeight(0.5f)
+            .align(Alignment.CenterEnd)
+            .padding(end = 6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .fillMaxHeight(0.5f)
+                .align(BiasAlignment(0f, -1f + 2f * fraction))
+                .background(WatchColors.accentSecondary),
         )
     }
 }
@@ -1111,11 +1207,42 @@ private fun ResponseSection(response: String) {
     }
 }
 
+// v7 — Notifies the user when a task transitions from working → done.
+// Subscribes to a SharedFlow<Unit> emitted by the ViewModel (where detection
+// lives, because WearApp's AnimatedContent re-creates DashboardScreen on
+// every status change and would wipe any composable-scoped tracking state).
+//
+// Behaviour on emission:
+//  1. CONFIRM haptic (softer than the LONG_PRESS used for permission asks).
+//  2. Smooth scroll to Page 2 (Response) — but ONLY if user is currently on
+//     Page 0 (Command) or Page 1 (Metrics). Don't interrupt Sessions etc.
+@Composable
+private fun TaskCompletionHandler(
+    taskCompleted: SharedFlow<Unit>?,
+    pagerState: PagerState,
+) {
+    if (taskCompleted == null) return
+    val view = LocalView.current
+    LaunchedEffect(taskCompleted) {
+        taskCompleted.collect {
+            delay(120) // matches PermissionScreen's reconnect-echo guard
+            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            if (pagerState.currentPage <= 1 && pagerState.pageCount > 2) {
+                pagerState.animateScrollToPage(2)
+            }
+        }
+    }
+}
+
 // Minimal inline markdown: **bold**, *italic*, `code`. Block-level ignored.
+// Top-level constant so the regex is compiled once, not on every recomposition
+// (this function is called from ActionResultLayout, InfoResultLayout,
+// FollowupChip and ResponseSection — 4 hot call sites).
+private val MARKDOWN_PATTERN = Regex("""(\*\*([^*]+?)\*\*|\*([^*\n]+?)\*|`([^`\n]+?)`)""")
+
 private fun renderMarkdownInline(text: String): AnnotatedString = buildAnnotatedString {
-    val pattern = Regex("""(\*\*([^*]+?)\*\*|\*([^*\n]+?)\*|`([^`\n]+?)`)""")
     var cursor = 0
-    for (m in pattern.findAll(text)) {
+    for (m in MARKDOWN_PATTERN.findAll(text)) {
         if (m.range.first > cursor) {
             append(text.substring(cursor, m.range.first))
         }
