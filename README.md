@@ -211,6 +211,10 @@ If you're on a real watch with a mic, tap **ask claude** on the watch, allow the
 
 **Stream-json over TUI parsing.** Daemon mode uses `claude -p --output-format=stream-json --verbose`, which gives structured events with `model`, `total_cost_usd`, `usage.input_tokens`, `modelUsage[].contextWindow`, `rate_limit_event.resetsAt`. Way more reliable than parsing the interactive TUI.
 
+**AnimatedContent needs a `contentKey` for status flips.** The watch's top-level `AnimatedContent` switches between `PermissionScreen`, `OfflineScreen` and `DashboardScreen` based on status. If you key it on `status` directly, every `RUNNING ↔ IDLE` transition (i.e., every task completion) re-creates the dashboard composable — `rememberPagerState` resets to page 0 and any `LaunchedEffect` subscribers (notably the `SharedFlow` that drives the task-completion haptic + auto-nav to the response page) get cancelled mid-emission. Pass a `contentKey` lambda that collapses dashboard-eligible statuses under a single key so the dashboard instance persists across normal flips.
+
+**Reset critical flags BEFORE awaits in `finally`.** The wrapper's voice-run finally block clears six pieces of state in sequence; the `busy = false` reset used to sit at the bottom. A transient Firebase OAuth token-refresh failure could throw on any of the earlier awaits, exit the finally early and leave `busy = true` forever — every subsequent voice prompt then dropped silently as "Busy" until the daemon was restarted. Put the flag reset first; wrap the rest in its own try/catch.
+
 ## Limitations
 
 - The wrapper has to run on your Mac. If the Mac is off, the watch shows OFFLINE — there's no cloud relay.
