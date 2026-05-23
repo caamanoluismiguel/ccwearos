@@ -1,0 +1,46 @@
+# Keep wrapper / watch / actions dependencies fresh without me babysitting.
+# Three ecosystems live in this repo; each gets its own monthly schedule.
+
+version: 2
+
+updates:
+  # Wrapper — Node.js + TypeScript
+  - package-ecosystem: "npm"
+    directory: "/wrapper"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Bogota"
+    open-pull-requests-limit: 5
+    groups:
+      types-and-tooling:
+        patterns:
+          - "@types/*"
+          - "typescript"
+          - "vitest"
+      firebase:
+        patterns:
+          - "firebase-admin"
+          - "@firebase/*"
+
+  # Watch — Gradle (Kotlin / Compose / Firebase BoM / Android plugins)
+  - package-ecosystem: "gradle"
+    directory: "/watch"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Bogota"
+    open-pull-requests-limit: 5
+    groups:
+      androidx-and-compose:
+        patterns:
+          - "androidx.*"
+          - "org.jetbrains.kotlin*"
+
+  # GitHub Actions (none today but ready for when a CI workflow lands)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
