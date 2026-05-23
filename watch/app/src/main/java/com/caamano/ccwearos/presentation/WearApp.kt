@@ -51,6 +51,22 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                         fadeOut(animationSpec = tween(180))
                 }
             },
+            // CRITICAL (Sprint 4q): collapse IDLE / RUNNING / others into one
+            // "dashboard" content key so DashboardScreen is NOT re-created on
+            // every IDLE↔RUNNING flip. Without this, the v7 task-completion
+            // SharedFlow subscriber (inside TaskCompletionHandler) gets
+            // cancelled mid-emission and the haptic + auto-nav to Page 2 are
+            // silently lost. The PagerState would also reset to initialPage=0
+            // on every transition, breaking user navigation. PermissionScreen
+            // and OfflineScreen still get their own keys so the AnimatedContent
+            // crossfade still fires when entering/leaving those screens.
+            contentKey = { status ->
+                when (status) {
+                    WrapperStatus.AWAITING_PERMISSION -> "permission"
+                    WrapperStatus.OFFLINE -> "offline"
+                    else -> "dashboard"
+                }
+            },
             label = "screen",
         ) { s ->
             when (s) {
