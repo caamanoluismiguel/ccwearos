@@ -17,6 +17,8 @@ A Wear OS app that bridges **Claude Code** on your Mac to your **Galaxy Watch 8*
 
 > If you've ever wished you could approve Claude Code's permission prompts without context-switching back to your terminal, this is that.
 
+> _Built by a designer, not a developer. Every architectural decision was mine. Every line of code was Claude's. 8 days from `git init` to running on a Galaxy Watch 8 — Sprint 0 → 4q in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). The unusual provenance is part of the experiment; [`CLAUDE.md`](CLAUDE.md) captures what disciplined human direction of an AI codegen layer looks like in practice._
+
 ---
 
 ## Why this exists
@@ -237,5 +239,6 @@ MIT — see [`LICENSE`](LICENSE). Build whatever you want with it.
 
 <p align="center">
   Built with <a href="https://www.anthropic.com/claude-code">Claude Code</a> on a Galaxy Watch 8.<br/>
+  Directed by <a href="https://brutoperodecidido.com">Luis Miguel Caamaño</a> · the full lesson at <a href="https://brutoperodecidido.com/work/ccwearos">brutoperodecidido.com</a>.<br/>
   Issues, PRs, and weird use cases welcome.
 </p>
