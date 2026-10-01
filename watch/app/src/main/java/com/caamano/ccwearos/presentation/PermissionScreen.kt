@@ -35,6 +35,14 @@ fun PermissionScreen(
     prompt: String?,
     onAllow: () -> Unit,
     onDeny: () -> Unit,
+    // false while the watch has no live Firebase connection (.info/connected).
+    // Answers must not be tappable then: an offline write is queued and
+    // replayed later, when it could land on a different prompt.
+    connected: Boolean = true,
+    // true once the user answered the current prompt (keyed on
+    // /permissionPromptId by the ViewModel). Both buttons disable so a double
+    // tap can't write /command twice.
+    answered: Boolean = false,
 ) {
     val view = LocalView.current
     LaunchedEffect(prompt) {
