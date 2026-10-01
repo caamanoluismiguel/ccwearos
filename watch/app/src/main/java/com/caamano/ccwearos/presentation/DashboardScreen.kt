@@ -1,10 +1,5 @@
 package com.caamano.ccwearos.presentation
 
-import android.app.Activity
-import android.content.Intent
-import android.speech.RecognizerIntent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateIntAsState
@@ -12,32 +7,45 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -47,31 +55,26 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.items
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.foundation.pager.HorizontalPager
 import androidx.wear.compose.foundation.pager.PagerState
 import androidx.wear.compose.foundation.pager.rememberPagerState
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.SharedFlow
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.HorizontalPagerScaffold
+import androidx.wear.compose.material3.Icon
+import androidx.wear.compose.material3.MaterialTheme
+import androidx.wear.compose.material3.ScreenScaffold
+import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
-import android.view.HapticFeedbackConstants
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.runtime.remember
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalView
-import androidx.wear.compose.material3.Card
-import androidx.wear.compose.material3.CardDefaults
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.lazy.transformedHeight
+import androidx.wear.tooling.preview.devices.WearDevices
+import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.RecentSession
@@ -79,26 +82,41 @@ import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WrapperStatus
+import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
+import com.caamano.ccwearos.presentation.theme.CcPalette
+import com.caamano.ccwearos.presentation.theme.StatusColors
+import com.caamano.ccwearos.presentation.ui.ArcGauge
+import com.caamano.ccwearos.presentation.ui.CompletionRing
+import com.caamano.ccwearos.presentation.ui.HairlineDivider
+import com.caamano.ccwearos.presentation.ui.MascotState
+import com.caamano.ccwearos.presentation.ui.MonoLabel
+import com.caamano.ccwearos.presentation.ui.PixelIcons
+import com.caamano.ccwearos.presentation.ui.PixelMascot
+import com.caamano.ccwearos.presentation.ui.StatusDot
+import com.caamano.ccwearos.presentation.ui.labelRes
+import com.caamano.ccwearos.presentation.ui.pixelIcon
+import com.caamano.ccwearos.presentation.ui.rememberVoiceInput
+import com.caamano.ccwearos.presentation.ui.statusColor
+import com.caamano.ccwearos.presentation.ui.toMascotState
+import com.caamano.ccwearos.presentation.ui.usageColor
 import java.text.NumberFormat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharedFlow
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DASHBOARD — up to 5-page horizontal Pager IA
 //
-// Page 0 — COMMAND: glanceable status + primary action (ask button).
-//           Button label is dynamic: "ask claude" cold, "continuar" when a
-//           prior response exists and we're IDLE. Disabled when /sharedSession
-//           is alive (`cc` script owns the pty — two would clobber RTDB).
-// Page 1 — METRICS: daily token counter + session/weekly/cost data.
-// Page 2 — RESPONSE: last Claude reply, scrollable. Only exists when there
-//           is a response to read.
-// Page 3 — FOLLOWUP: contextual "what next?" chips Claude suggested + a reset
-//           button. Same trigger as Page 2 (hasResult).
-// Page 4 — SESSIONS: read-only list of Claude sessions on the Mac, grouped
-//           by project. Shows /recentSessions populated by the wrapper's
-//           sessions-scanner. No tap actions in V1.
+// Page 0 — COMMAND: mascot (the living status) + state in words + activity +
+//           one primary action ("Preguntar" / "Seguir" / "Detener").
+// Page 1 — METRICS: session % and weekly % arc gauges, tokens today demoted.
+// Page 2 — RESPONSE: last Claude reply (only when there is one).
+// Page 3 — FOLLOWUP: contextual "¿Y ahora qué?" chips + reset.
+// Page 4 — SESSIONS: Mac sessions grouped by project; tap to resume.
 //
-// HorizontalPagerScaffold handles HorizontalPageIndicator (dots, BottomCenter)
-// automatically without any additional composables.
+// Every scrolling page is a ScreenScaffold + TransformingLazyColumn, which
+// brings rotary-crown scrolling and the system scroll indicator for free.
+// TimeText comes from the AppScaffold in WearApp (ScreenScaffold's
+// timeText = null means "use the app-level one").
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
@@ -120,109 +138,116 @@ fun DashboardScreen(
     onAskWithReset: (String) -> Unit = {},
     onStop: () -> Unit = {},
     onForceReset: () -> Unit = {},
-    // Sprint 4n — invoked when a session row is tapped on Page 5. The
-    // ViewModel raises the confirmation dialog; this composable doesn't
-    // own that state, just plumbs the tap upward.
+    // Invoked when a session row is tapped on the Sessions page. The
+    // ViewModel raises the confirmation dialog.
     onClaim: (sessionId: String, cwd: String) -> Unit = { _, _ -> },
-    // v7 — Fires once per task completion. UI uses it to trigger haptic +
-    // smart auto-nav to Page 2. ViewModel owns the detection logic so it
-    // survives AnimatedContent re-creations on status changes.
+    // Fires once per task completion (detected in the ViewModel so it
+    // survives AnimatedContent re-creations on status changes).
     taskCompleted: SharedFlow<Unit>? = null,
 ) {
-    // Pages 2 + 3 show up whenever there's anything worth showing — response
-    // text OR a settled taskKind (an action task with no body text still needs
-    // its ✓/✗ confirmation card and a "¿y ahora qué?" follow-up surface).
-    // Page 4 shows up whenever the wrapper has surfaced any recent sessions
-    // from disk (almost always true on a Mac that's been using Claude Code).
     val hasResponse = !response.isNullOrBlank()
     val hasResult = hasResponse || taskKind != null
     val hasSessions = recentSessions.isNotEmpty()
     val pageCount = when {
         hasResult && hasSessions -> 5
         hasResult -> 4
-        hasSessions -> 3 // Command + Metrics + Sessions, skip Response/Followup
+        hasSessions -> 3 // Command + Metrics + Sessions
         else -> 2
     }
 
-    // "Continuar" label only when ALL three are true:
-    //   1. THIS app session sent a regular prompt (sentInSession) — so app
-    //      reopens feel fresh ("ask claude") even if /response still in RTDB.
-    //   2. A response actually came back (hasResponse).
-    //   3. Wrapper is at rest (IDLE) — mid-run hides the button anyway.
-    // askWithReset() flips sentInSession=false explicitly, so right after a
-    // user-initiated reset the CTA also reverts to "ask claude".
+    // "Seguir" only when this app session sent a prompt, a response came
+    // back, and the wrapper is at rest.
     val inConversation = sentInSession && hasResponse && status == WrapperStatus.IDLE
 
     val pagerState = rememberPagerState(initialPage = 0) { pageCount }
 
-    // v7 — Task completion feedback: vibra + auto-nav a Page 2 (Response).
-    // Detección vive en el ViewModel; aquí solo colectamos el evento.
+    // Transient "just finished" mascot state (Done / Error) + ring trigger.
+    var finishState by remember { mutableStateOf<MascotState?>(null) }
+    var ringTrigger by remember { mutableIntStateOf(0) }
+    LaunchedEffect(finishState) {
+        when (finishState) {
+            MascotState.Done -> { delay(2_500); finishState = null }
+            MascotState.Error -> { delay(4_000); finishState = null }
+            else -> Unit
+        }
+    }
+
     TaskCompletionHandler(
         taskCompleted = taskCompleted,
         pagerState = pagerState,
+        response = response,
+        taskKind = taskKind,
+        onFinished = { failed ->
+            finishState = if (failed) MascotState.Error else MascotState.Done
+            if (!failed) ringTrigger++
+        },
     )
 
-    HorizontalPagerScaffold(pagerState = pagerState) {
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize(),
-        ) { page ->
-            // When there's no response yet but recent sessions exist, the
-            // Sessions page slides into slot 2 (right after Metrics) instead
-            // of slot 4 — keeps the indicator from showing dead pages.
-            val sessionsIndex = if (hasResult) 4 else 2
-            when (page) {
-                0 -> CommandPage(
-                    status = status,
-                    activity = activity,
-                    task = task,
-                    toolEvents = toolEvents,
-                    inConversation = inConversation,
-                    sharedSession = sharedSession,
-                    onAsk = onAsk,
-                    onStop = onStop,
-                    onForceReset = onForceReset,
-                )
-                1 -> MetricsPage(
-                    metrics = metrics,
-                    claudeStatus = claudeStatus,
-                )
-                sessionsIndex -> SessionsPage(
-                    sessions = recentSessions,
-                    sharedSession = sharedSession,
-                    onClaim = onClaim,
-                )
-                2 -> ResponsePage(
-                    response = response,
-                    taskKind = taskKind,
-                    headline = headline,
-                    toolEvents = toolEvents,
-                )
-                3 -> FollowupPage(
-                    followups = followups,
-                    taskKind = taskKind,
-                    headline = headline,
-                    onAsk = onAsk,
-                    onAskWithReset = onAskWithReset,
-                )
-                else -> Box(Modifier.fillMaxSize())
+    val mascotState = when {
+        status != WrapperStatus.IDLE -> status.toMascotState()
+        finishState != null -> finishState!!
+        else -> MascotState.Idle
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        HorizontalPagerScaffold(pagerState = pagerState) {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+            ) { page ->
+                // With no result yet, Sessions slides into slot 2.
+                val sessionsIndex = if (hasResult) 4 else 2
+                when (page) {
+                    0 -> CommandPage(
+                        status = status,
+                        mascotState = mascotState,
+                        activity = activity,
+                        task = task,
+                        toolEvents = toolEvents,
+                        inConversation = inConversation,
+                        sharedSession = sharedSession,
+                        onAsk = onAsk,
+                        onStop = onStop,
+                        onForceReset = onForceReset,
+                    )
+                    1 -> MetricsPage(metrics = metrics, claudeStatus = claudeStatus)
+                    sessionsIndex -> SessionsPage(
+                        sessions = recentSessions,
+                        sharedSession = sharedSession,
+                        onClaim = onClaim,
+                    )
+                    2 -> ResponsePage(
+                        response = response,
+                        taskKind = taskKind,
+                        headline = headline,
+                        toolEvents = toolEvents,
+                    )
+                    3 -> FollowupPage(
+                        followups = followups,
+                        taskKind = taskKind,
+                        headline = headline,
+                        onAsk = onAsk,
+                        onAskWithReset = onAskWithReset,
+                    )
+                    else -> Box(Modifier.fillMaxSize())
+                }
             }
         }
+        CompletionRing(trigger = ringTrigger)
     }
 }
 
+// Horizontal inset for non-list pages: keeps text inside the round bezel at
+// any screen size (≈12% of the screen width per side).
+@Composable
+private fun roundInset() = (LocalConfiguration.current.screenWidthDp * 0.12f).dp
+
 // ─── PAGE 0: COMMAND ─────────────────────────────────────────────────────────
-// Full screen = glance + action. Everything visible at once, zero scroll.
-// Layout: top-safe spacer → header → status → activity/task → spacer → button → bottom-safe
-//
-// NOVA: The ask button sits at a fixed bottom position inside a fillMaxSize Column
-// with verticalArrangement = SpaceBetween, so the status cluster floats top-left
-// (terminal feel) and the CTA anchors bottom-center. No FAB layering needed
-// because there's no scroll to fight against.
 
 @Composable
 private fun CommandPage(
     status: WrapperStatus,
+    mascotState: MascotState,
     activity: String?,
     task: String?,
     toolEvents: List<ToolEvent>,
@@ -232,119 +257,201 @@ private fun CommandPage(
     onStop: () -> Unit,
     onForceReset: () -> Unit,
 ) {
-    // ARIA: Inscribed-square (0.72×) centers all content safely inside the round bezel.
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    ScreenScaffold { _ ->
         Column(
-            modifier = Modifier.fillMaxSize(fraction = 0.72f),
-            verticalArrangement = Arrangement.SpaceBetween,
-            horizontalAlignment = Alignment.Start,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = roundInset()),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // ── Top cluster: brand + status + live activity ──────────────────
-            Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                Spacer(Modifier.height(14.dp))
-                ClaudeHeader()
-                Spacer(Modifier.height(8.dp))
-                StatusPrompt(status)
+            // Small rounds (~192dp) have no room for the detail line.
+            val roomy = LocalConfiguration.current.screenHeightDp >= 200
+            Spacer(Modifier.height(if (roomy) 10.dp else 4.dp))
+            PixelMascot(state = mascotState, size = 32.dp)
+            Spacer(Modifier.height(6.dp))
+            StateWord(mascotState)
 
-                // When a tool is actively running, prefer the tool-derived
-                // activity verb (already synthesized in the daemon — comes
-                // through `activity`) and show the tool's arg below as a
-                // concrete progress hint ("parser.ts", "for dir in /tmp …").
-                val latestTool = toolEvents.lastOrNull()
-                if (status == WrapperStatus.RUNNING && !activity.isNullOrBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    ActivityLine(activity, leadingGlyph = latestTool?.toolGlyph())
-                    if (!latestTool?.arg.isNullOrBlank()) {
-                        Spacer(Modifier.height(1.dp))
-                        Text(
-                            text = latestTool.arg!!.take(36),
-                            color = ClaudeDim.copy(alpha = 0.6f),
-                            fontFamily = MonoFamily,
-                            fontSize = 9.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+            // Activity is gated on RUNNING: after a Wear OS freeze the last
+            // emission can linger until Firebase reconnects.
+            val running = status == WrapperStatus.RUNNING
+            val latestTool = toolEvents.lastOrNull()
+            if (running && !activity.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                ActivityLine(activity, latestTool)
+                val detail = latestTool?.arg?.takeIf { it.isNotBlank() } ?: task?.takeIf { it.isNotBlank() }
+                if (detail != null && roomy) {
+                    Text(
+                        text = detail.take(48),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = MonoFamily,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                // Gate task on RUNNING — same as ActivityLine above. Without
-                // this gate, Wear OS freezing the app mid-run leaves the
-                // StateFlow's last emission stuck in memory; when the screen
-                // wakes up, the stale task ("explain photosynthesis") shows
-                // for a moment before Firebase reconnects and pushes null.
-                if (status == WrapperStatus.RUNNING && !task.isNullOrBlank()) {
-                    Spacer(Modifier.height(2.dp))
-                    TaskLine(task)
-                }
+            } else if (running && !task.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = task,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    maxLines = if (roomy) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
 
-            // ── Bottom cluster: ask button (IDLE only) ───────────────────────
-            // ARIA: SpaceBetween pushes the button to the bottom of the column,
-            // giving it a stable home regardless of how many status lines appear.
-            // When not IDLE, an empty box holds the space so the top cluster
-            // doesn't reflow on status change.
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                when {
-                    // Shared session active → ask button would clobber the
-                    // wrapper's pty. Show a disabled placeholder + hint.
-                    sharedSession != null -> SharedSessionBlock(sharedSession)
-                    status == WrapperStatus.IDLE ->
-                        AskRow(inConversation = inConversation, onAsk = onAsk)
-                    status == WrapperStatus.RUNNING ->
-                        StopButton(onClick = onStop, onLongClick = onForceReset)
-                    else -> {
-                        // Placeholder preserves button-zone height so the
-                        // status cluster doesn't jump on IDLE ↔ other states.
-                        Spacer(Modifier.height(48.dp))
-                    }
-                }
-                Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(10.dp))
+            when {
+                // Shared session: the ask button would clobber the wrapper's pty.
+                sharedSession != null -> SharedSessionBlock(sharedSession)
+                status == WrapperStatus.IDLE -> AskButton(inConversation = inConversation, onAsk = onAsk)
+                status == WrapperStatus.RUNNING -> StopButton(onClick = onStop, onLongClick = onForceReset)
+                else -> Spacer(Modifier.height(52.dp))
             }
+            // Clears the pager's page indicator.
+            Spacer(Modifier.height(if (roomy) 18.dp else 14.dp))
         }
     }
 }
 
 @Composable
-private fun StopButton(onClick: () -> Unit, onLongClick: () -> Unit) {
-    // Shown on Page 0 while status == RUNNING. Two affordances:
-    //  - Tap: send ETX via /command -> wrapper kills the runner cleanly.
-    //  - Long-press (>=500ms): force-reset RTDB state directly from the
-    //    watch -- covers the case where status=RUNNING is phantom
-    //    (wrapper died, SIGINT goes nowhere). Without this the user has
-    //    no recovery short of force-quitting the app. Watch audit CRITICAL#2.
-    val view = LocalView.current
+private fun StateWord(state: MascotState) {
+    val word = stringResource(state.labelRes())
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.semantics(mergeDescendants = true) { },
     ) {
-        Box(
-            modifier = Modifier
-                .size(width = 140.dp, height = 48.dp)
-                .border(
-                    BorderStroke(1.dp, ClaudeRed.copy(alpha = 0.65f)),
-                    shape = RoundedCornerShape(24.dp),
+        // Decorative: the word next to it already carries the meaning.
+        StatusDot(color = state.statusColor(), description = null)
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = word,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun ActivityLine(activity: String, tool: ToolEvent?) {
+    AnimatedContent(
+        targetState = activity to tool?.pixelIcon(),
+        transitionSpec = {
+            fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(180))
+        },
+        label = "activity",
+    ) { (text, icon) ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(12.dp),
                 )
-                .clip(RoundedCornerShape(24.dp))
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = {
-                        // Extra haptic so the user knows the destructive
-                        // long-press fired (vs. a normal tap that just
-                        // dimmed the button).
-                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        onLongClick()
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
+                Spacer(Modifier.width(6.dp))
+            }
             Text(
-                text = "✗ detener",
-                color = ClaudeRed,
-                fontFamily = MonoFamily,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
+                text = text,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AskButton(inConversation: Boolean, onAsk: (String) -> Unit) {
+    val voice = rememberVoiceInput(onText = onAsk)
+    val label = stringResource(if (inConversation) R.string.action_continue else R.string.action_ask)
+    val prompt = stringResource(if (inConversation) R.string.voice_prompt_continue else R.string.voice_prompt_ask)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Button(
+            onClick = { voice.launch(prompt) },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+            contentPadding = PaddingValues(horizontal = 14.dp),
+            modifier = Modifier
+                .fillMaxWidth(0.86f)
+                .height(52.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = PixelIcons.Mic,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(text = label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            }
+        }
+        VoiceUnavailableNote(visible = voice.unavailable)
+    }
+}
+
+@Composable
+private fun VoiceUnavailableNote(visible: Boolean) {
+    if (!visible) return
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = stringResource(R.string.voice_unavailable),
+        color = StatusColors.error,
+        style = MaterialTheme.typography.bodySmall,
+        textAlign = TextAlign.Center,
+    )
+}
+
+@Composable
+private fun StopButton(onClick: () -> Unit, onLongClick: () -> Unit) {
+    // Tap: SIGINT via /command (wrapper kills the runner cleanly).
+    // Long-press (≥500ms): force-reset RTDB from the watch; the recovery path
+    // when status=RUNNING is phantom because the wrapper died.
+    val context = LocalContext.current
+    val description = stringResource(R.string.action_stop_cd)
+    val shape = RoundedCornerShape(26.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(0.86f)
+            .height(52.dp)
+            .clip(shape)
+            .border(BorderStroke(1.dp, StatusColors.error), shape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    Haptics.error(context)
+                    onLongClick()
+                },
+            )
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = PixelIcons.Stop,
+                contentDescription = null,
+                tint = StatusColors.error,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = stringResource(R.string.action_stop),
+                color = StatusColors.error,
+                style = MaterialTheme.typography.labelLarge,
             )
         }
     }
@@ -352,96 +459,198 @@ private fun StopButton(onClick: () -> Unit, onLongClick: () -> Unit) {
 
 @Composable
 private fun SharedSessionBlock(meta: SharedSessionMeta) {
-    // cc (wrapper-pty) sessions: user is in the Terminal — we can't send
-    // prompts but the watch already receives permissions via the wrapper.
-    // hook (/ccwearos): user's standalone Claude — the PreToolUse hook will
-    // route permissions to the watch, so we proactively say "ready to answer".
+    // cc (wrapper-pty): user is in the Terminal; permissions reach the watch
+    // through the wrapper. hook (/ccwearos): standalone Claude, the
+    // PreToolUse hook routes permissions here.
     val (header, hint) = when (meta.kind) {
-        "hook" -> "📟 puente activo" to "permisos vienen al reloj"
-        "wrapper-pty" -> "📟 sesión compartida" to "activa en tu Mac · cc"
-        else -> "📟 sesión compartida" to "activa en tu Mac"
+        "hook" -> R.string.shared_hook_title to R.string.shared_hook_hint
+        "wrapper-pty" -> R.string.shared_pty_title to R.string.shared_pty_hint
+        else -> R.string.shared_pty_title to R.string.shared_hint
     }
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = header,
-            color = ClaudeAmber,
-            fontFamily = MonoFamily,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-        )
-        Spacer(Modifier.height(4.dp))
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.semantics(mergeDescendants = true) { },
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = PixelIcons.Link,
+                contentDescription = null,
+                tint = StatusColors.waiting,
+                modifier = Modifier.size(12.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = stringResource(header),
+                color = StatusColors.waiting,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        }
         Text(
             text = meta.cwd.substringAfterLast("/").ifBlank { meta.cwd },
-            color = ClaudeDim.copy(alpha = 0.75f),
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.bodySmall,
             fontFamily = MonoFamily,
-            fontSize = 9.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.height(2.dp))
         Text(
-            text = hint,
-            color = ClaudeDim.copy(alpha = 0.55f),
-            fontFamily = MonoFamily,
-            fontSize = 8.sp,
+            text = stringResource(hint),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
         )
     }
 }
 
 // ─── PAGE 1: METRICS ─────────────────────────────────────────────────────────
-// The numbers. Daily token count (big), claude status line (detail).
-// No scroll — fits comfortably in the inscribed square.
 
 @Composable
-private fun MetricsPage(
-    metrics: Metrics,
-    claudeStatus: ClaudeStatus?,
-) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier.fillMaxSize(fraction = 0.72f),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.Start,
+private fun MetricsPage(metrics: Metrics, claudeStatus: ClaudeStatus?) {
+    val listState = rememberTransformingLazyColumnState()
+    val sessionPct = claudeStatus?.sessionPct
+    val weeklyPct = claudeStatus?.weeklyPct
+    val hasGauges = sessionPct != null || weeklyPct != null
+
+    ScreenScaffold(scrollState = listState) { contentPadding ->
+        TransformingLazyColumn(
+            state = listState,
+            contentPadding = contentPadding,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            // Big focal number — 28sp to claim the page's attention budget.
-            BigTokens(metrics.dailyTokens, fontSize = 28.sp)
-            Spacer(Modifier.height(10.dp))
-            DividerLine()
-            Spacer(Modifier.height(8.dp))
-            if (claudeStatus != null && hasAnyData(claudeStatus)) {
-                ClaudeStatusSection(claudeStatus)
+            if (hasGauges) {
+                item { UsageGauges(sessionPct = sessionPct, weeklyPct = weeklyPct) }
+                item { TokensToday(metrics.dailyTokens, prominent = false) }
             } else {
-                StatusLine(metrics)
+                item { TokensToday(metrics.dailyTokens, prominent = true) }
             }
-            Spacer(Modifier.height(10.dp))
-            // "$ metrics" demoted to a footer label — keeps the focal number
-            // at the top and clarifies which page you're on without competing.
+            if (claudeStatus != null) {
+                val modelLine = buildString {
+                    claudeStatus.model?.let { append(it.lowercase()) }
+                    claudeStatus.contextSize?.let {
+                        if (isNotEmpty()) append(" · ")
+                        append(it.lowercase()).append(" ctx")
+                    }
+                }
+                if (modelLine.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = modelLine,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                claudeStatus.monthlyCost?.let { cost ->
+                    item { CostBlock(cost = cost, resets = claudeStatus.monthlyResets) }
+                }
+            }
+            if (!hasGauges) {
+                item {
+                    Text(
+                        text = stringResource(
+                            R.string.metrics_week_month,
+                            shortNum(metrics.weeklyTokens),
+                            shortNum(metrics.monthlyTokens),
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = MonoFamily,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsageGauges(sessionPct: Double?, weeklyPct: Double?) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+    ) {
+        sessionPct?.let { UsageGauge(label = stringResource(R.string.metrics_session), pct = it) }
+        weeklyPct?.let { UsageGauge(label = stringResource(R.string.metrics_week), pct = it) }
+    }
+}
+
+@Composable
+private fun UsageGauge(label: String, pct: Double) {
+    val value = formatPct(pct)
+    ArcGauge(
+        fraction = (pct / 100.0).toFloat(),
+        valueText = value,
+        label = label,
+        color = usageColor(pct),
+        description = stringResource(R.string.metrics_gauge_cd, label, value),
+        diameter = 68.dp,
+    )
+}
+
+@Composable
+private fun TokensToday(value: Long, prominent: Boolean) {
+    val target = value.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val animated by animateIntAsState(
+        targetValue = target,
+        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
+        label = "today-tokens",
+    )
+    // Tabular numerals (theme display/numeral styles) keep the count-up from
+    // jittering. Past 100k, the compact form keeps 34sp inside the bezel.
+    val text = if (animated >= 100_000) shortNum(animated.toLong())
+    else NumberFormat.getIntegerInstance().format(animated)
+    val label = "${stringResource(R.string.metrics_tokens)} ${stringResource(R.string.metrics_today)}"
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { },
+    ) {
+        Text(
+            text = text,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = if (prominent) MaterialTheme.typography.displayLarge
+            else MaterialTheme.typography.numeralExtraSmall,
+            maxLines = 1,
+        )
+        MonoLabel(text = label)
+    }
+}
+
+@Composable
+private fun CostBlock(cost: String, resets: String?) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { },
+    ) {
+        Text(
+            text = cost,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.displaySmall,
+            maxLines = 1,
+        )
+        if (!resets.isNullOrBlank()) {
             Text(
-                text = "$ metrics",
-                color = ClaudeCoral.copy(alpha = 0.55f),
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
-                letterSpacing = 0.8.sp,
+                text = stringResource(R.string.metrics_resets, resets),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
             )
         }
     }
 }
 
-// ─── PAGE 2: RESPONSE ────────────────────────────────────────────────────────
-// Dedicated scrollable reading surface. Scroll fade gradient at bottom signals
-// that there's more to read. This page is the only place that scrolls.
-
 // ─── PAGE 3: FOLLOWUP — "¿Y ahora qué?" ──────────────────────────────────────
-// Contextual next-actions surface. Shows up after a response settles. Two
-// tiers of options:
-//   1. Claude-suggested chips (from /followups) — tap = send that text as the
-//      next prompt; wrapper auto-continues the session via --continue.
-//   2. A single fixed "↻ nueva conversación" button — explicit reset path
-//      without having to remember the voice phrase. Routes to onAskWithReset
-//      which prepends "nueva conversación, " before sending /prompt.
-// Note: there is NO "continuar" button here. Page 0's CTA already plays that
-// role (it re-labels to "continuar" when inConversation = true).
+// Claude-suggested chips (tap = send as next prompt, wrapper continues the
+// session) + an explicit voice reset ("Nueva conversación").
 
 @Composable
 private fun FollowupPage(
@@ -451,134 +660,107 @@ private fun FollowupPage(
     onAsk: (String) -> Unit,
     onAskWithReset: (String) -> Unit,
 ) {
-    // Fallback chips when Claude didn't generate any (common for action runs
-    // where the prompt-prefix's "Followups:" block gets eaten by tool output).
-    // Choose language by sniffing the headline: contains ¿ or accent → Spanish.
+    // Fallback chips when Claude didn't generate any. These are prompts sent
+    // back to Claude, so they follow the conversation language (sniffed from
+    // the headline), not the watch locale.
     val effectiveFollowups: List<String> = remember(followups, taskKind, headline) {
         if (followups.isNotEmpty()) return@remember followups
-        val isSpanish = headline?.any { c -> c == '¿' || c == 'á' || c == 'é' || c == 'í' || c == 'ó' || c == 'ú' || c == 'ñ' } == true
+        val isSpanish = headline?.any { c -> c in "¿áéíóúñ" } == true
         when (taskKind) {
-            TaskKind.ACTION -> if (isSpanish)
-                listOf("Más detalles", "Otra cosa", "Deshacer")
-            else
-                listOf("More details", "Something else", "Undo")
-            else -> if (isSpanish)
-                listOf("Más detalles", "Otra cosa")
-            else
-                listOf("More details", "Something else")
+            TaskKind.ACTION -> if (isSpanish) listOf("Más detalles", "Otra cosa", "Deshacer")
+            else listOf("More details", "Something else", "Undo")
+            else -> if (isSpanish) listOf("Más detalles", "Otra cosa")
+            else listOf("More details", "Something else")
         }
     }
-    val resetLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val text = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull()
-            if (!text.isNullOrBlank()) onAskWithReset(text)
-        }
-    }
+    val voice = rememberVoiceInput(onText = onAskWithReset)
+    val resetPrompt = stringResource(R.string.voice_prompt_reset)
+    val listState = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize(fraction = 0.78f)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.Top,
-            horizontalAlignment = Alignment.CenterHorizontally,
+    ScreenScaffold(scrollState = listState) { contentPadding ->
+        TransformingLazyColumn(
+            state = listState,
+            contentPadding = contentPadding,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            Spacer(Modifier.height(14.dp))
-            Text(
-                text = "¿y ahora qué?",
-                color = ClaudeDim,
-                fontFamily = MonoFamily,
-                fontSize = 11.sp,
-                letterSpacing = 0.8.sp,
-            )
-            Spacer(Modifier.height(10.dp))
-
-            if (effectiveFollowups.isNotEmpty()) {
-                effectiveFollowups.forEach { suggestion ->
-                    FollowupChip(text = suggestion, onTap = { onAsk(suggestion) })
-                    Spacer(Modifier.height(6.dp))
-                }
-                Spacer(Modifier.height(4.dp))
-                DividerLine()
-                Spacer(Modifier.height(10.dp))
-            }
-
-            // Reset is always available — explicit way to start fresh without
-            // remembering "nueva conversación" as a voice phrase.
-            Button(
-                onClick = {
-                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                        putExtra(
-                            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
-                        )
-                        putExtra(RecognizerIntent.EXTRA_PROMPT, "Nueva conversación")
-                    }
-                    resetLauncher.launch(intent)
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.Transparent,
-                    contentColor = ClaudeAmber,
-                ),
-                border = BorderStroke(1.dp, ClaudeAmber.copy(alpha = 0.55f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Wear OS spec: 48dp min for touch targets. 40dp was a
-                    // squeak under spec, easy to miss on a moving wrist.
-                    .heightIn(min = 48.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
+            item {
                 Text(
-                    text = "↻ nueva conversación",
-                    fontFamily = MonoFamily,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
+                    text = stringResource(R.string.followups_title),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.titleSmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { heading() },
                 )
             }
-            Spacer(Modifier.height(16.dp))
+            items(effectiveFollowups) { suggestion ->
+                Button(
+                    onClick = { onAsk(suggestion) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    transformation = SurfaceTransformation(spec),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .transformedHeight(this, spec),
+                ) {
+                    Text(
+                        text = suggestion,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            item {
+                Button(
+                    onClick = { voice.launch(resetPrompt) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                    transformation = SurfaceTransformation(spec),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .transformedHeight(this, spec),
+                ) {
+                    Icon(
+                        imageVector = PixelIcons.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.followups_new),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (voice.unavailable) {
+                item { VoiceUnavailableNote(visible = true) }
+            }
         }
     }
 }
 
-@Composable
-private fun FollowupChip(text: String, onTap: () -> Unit) {
-    Button(
-        onClick = onTap,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.White.copy(alpha = 0.07f),
-            contentColor = Color.White,
-        ),
-        border = BorderStroke(1.dp, ClaudeCoral.copy(alpha = 0.45f)),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            // Wear OS 48dp spec — 38dp was below spec, hard to tap reliably.
-            .heightIn(min = 48.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Text(
-            text = text,
-            fontFamily = FontFamily.Default,
-            fontSize = 12.sp,
-            lineHeight = 15.sp,
-            fontWeight = FontWeight.Normal,
-            color = Color.White.copy(alpha = 0.92f),
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
+// ─── PAGE 4: SESSIONS ────────────────────────────────────────────────────────
+// Every Claude Code session the wrapper scanner found, grouped by project,
+// newest first. Coral = shared via cc, green = active process, grey = past.
+// Past sessions are tappable (resume in a new Terminal on the Mac).
 
-// ─── PAGE 5: SESSIONS — read-only Mac session list ───────────────────────────
-// Lists every Claude Code session the wrapper scanner found, grouped by
-// project. Active processes get a green dot, the currently `cc`-shared one
-// gets a coral dot, the rest are dim. No tap actions in V1 — claiming /
-// resuming sessions from the watch is a Tier 2 follow-up.
+private sealed interface SessionEntry {
+    data class Header(val project: String) : SessionEntry
+    data class Item(val session: RecentSession) : SessionEntry
+}
 
 @Composable
 private fun SessionsPage(
@@ -586,81 +768,62 @@ private fun SessionsPage(
     sharedSession: SharedSessionMeta?,
     onClaim: (sessionId: String, cwd: String) -> Unit,
 ) {
-    // v8 — F2: sort by recency (mtime DESC) before grouping. groupBy is a
-    // LinkedHashMap so iteration order is preserved; projects with the most
-    // recent session naturally surface first, and rows within each project
-    // are newest-first instead of arbitrary wrapper insertion order.
-    val grouped = sessions.sortedByDescending { it.mtime }.groupBy { it.projectName }
+    val entries = remember(sessions) {
+        sessions.sortedByDescending { it.mtime }
+            .groupBy { it.projectName }
+            .flatMap { (project, list) ->
+                listOf(SessionEntry.Header(project)) + list.map { SessionEntry.Item(it) }
+            }
+    }
+    val listState = rememberTransformingLazyColumnState()
 
-    // v8 — F1: scroll state hoisted so we can render a ScrollPositionIndicator
-    // (same one Page 2 v6 uses) when the session list overflows the viewport.
-    val scroll = rememberScrollState()
-
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier
-                // v8 — F3: 0.82 was an outlier (Page 2 v6 validated 0.76,
-                // Page 3 uses 0.78). Tightening to 0.76 prevents the longest
-                // lastUserMessage from kissing the bezel on the real watch.
-                .fillMaxSize(fraction = 0.76f)
-                .verticalScroll(scroll),
-            verticalArrangement = Arrangement.Top,
-            horizontalAlignment = Alignment.Start,
+    ScreenScaffold(scrollState = listState) { contentPadding ->
+        TransformingLazyColumn(
+            state = listState,
+            contentPadding = contentPadding,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "sesiones",
-                    color = ClaudeCoral,
-                    fontFamily = MonoFamily,
-                    fontSize = 11.sp,
-                    letterSpacing = 0.8.sp,
-                )
-                Spacer(Modifier.padding(horizontal = 4.dp))
-                Text(
-                    text = "· ${sessions.size}",
-                    color = ClaudeDim.copy(alpha = 0.6f),
-                    fontFamily = MonoFamily,
-                    fontSize = 9.sp,
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            for ((projectName, projectSessions) in grouped) {
-                Text(
-                    text = projectName,
-                    color = ClaudeDim,
-                    fontFamily = MonoFamily,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                )
-                Spacer(Modifier.height(4.dp))
-                for (sess in projectSessions) {
-                    val isShared = sess.sessionId == sharedSession?.sessionId
-                    SessionRow(
-                        session = sess,
-                        isShared = isShared,
-                        // Sprint 4n — tap to claim. Active sessions
-                        // (green dot) and the currently-shared one (coral)
-                        // are NOT claimable: the underlying `claude
-                        // --resume` would fail because another Claude
-                        // process holds the file lock.
-                        onTap = if (sess.active || isShared) {
-                            null
-                        } else {
-                            { onClaim(sess.sessionId, sess.cwd) }
-                        },
-                    )
-                    Spacer(Modifier.height(4.dp))
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics(mergeDescendants = true) { heading() },
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    MonoLabel(stringResource(R.string.sessions_title), color = MaterialTheme.colorScheme.primary)
+                    MonoLabel(" · ${sessions.size}")
                 }
-                Spacer(Modifier.height(8.dp))
             }
-            Spacer(Modifier.height(20.dp))
-        }
-
-        // v8 — F1: same scroll affordance as Page 2 Response. Only shown when
-        // there's actual overflow; otherwise stays invisible.
-        if (scroll.maxValue > 0) {
-            ScrollPositionIndicator(scroll = scroll)
+            items(entries) { entry ->
+                when (entry) {
+                    is SessionEntry.Header -> Text(
+                        text = entry.project,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = MonoFamily,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                            .semantics { heading() },
+                    )
+                    is SessionEntry.Item -> {
+                        val sess = entry.session
+                        val isShared = sess.sessionId == sharedSession?.sessionId
+                        SessionRow(
+                            session = sess,
+                            isShared = isShared,
+                            // Active / shared sessions hold the file lock, so
+                            // `claude --resume` would fail: not claimable.
+                            onTap = if (sess.active || isShared) null else {
+                                { onClaim(sess.sessionId, sess.cwd) }
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -671,49 +834,45 @@ private fun SessionRow(
     isShared: Boolean,
     onTap: (() -> Unit)?,
 ) {
-    val dotColor = when {
-        isShared -> ClaudeCoral
-        session.active -> ClaudeGreen
-        else -> ClaudeDim.copy(alpha = 0.35f)
+    val (dotColor, stateRes) = when {
+        isShared -> CcPalette.Coral to R.string.session_shared
+        session.active -> StatusColors.running to R.string.session_active
+        else -> StatusColors.idle to R.string.session_past
     }
-    val rowModifier = Modifier
-        .fillMaxWidth()
-        // v8 — F4: Wear OS spec requires 48dp touch targets. SessionRow grew
-        // organically with content (~32-40dp typical) — below spec. heightIn
-        // guarantees the minimum without capping rows that hold longer text.
-        .heightIn(min = 48.dp)
-        // Only attach combinedClickable when tap is enabled — keeps the
-        // ripple / touch feedback off the disabled rows so the visual
-        // signal stays clear: dim row = no action available.
-        .let { if (onTap != null) it.combinedClickable(onClick = onTap) else it }
+    val stateWord = stringResource(stateRes)
+    val ago = timeAgoShort(session.mtime)
+    val rowDescription = listOfNotNull(stateWord, ago, session.lastUserMessage).joinToString(", ")
     Row(
-        modifier = rowModifier,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .let { if (onTap != null) it.combinedClickable(onClick = onTap) else it }
+            .clearAndSetSemantics {
+                contentDescription = rowDescription
+                if (onTap != null) role = Role.Button
+            }
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Box(
-            modifier = Modifier
-                .padding(top = 5.dp)
-                .size(6.dp)
-                .background(dotColor, shape = RoundedCornerShape(3.dp)),
+        StatusDot(
+            color = dotColor,
+            description = null,
+            modifier = Modifier.padding(top = 4.dp),
         )
-        Spacer(Modifier.padding(horizontal = 4.dp))
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.fillMaxWidth()) {
             Text(
-                text = timeAgoShort(session.mtime),
-                // v8 — F5: 0.65 alpha gave ~3.2:1 contrast on OLED black,
-                // below WCAG AA 4.5:1 for small text. 0.75 alpha brings it
-                // to ~4.8:1 — readable on dim brightness near the bezel.
-                color = ClaudeDim.copy(alpha = 0.75f),
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
+                text = "$stateWord · $ago",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
             )
             session.lastUserMessage?.let { msg ->
                 Text(
                     text = msg,
-                    color = Color.White.copy(alpha = 0.85f),
-                    fontFamily = FontFamily.Default,
-                    fontSize = 11.sp,
-                    lineHeight = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -722,18 +881,20 @@ private fun SessionRow(
     }
 }
 
-// "hace 2m", "hace 1h", "ayer", "hace 3d" — tight format for the round screen.
+// "hace 2 min", "hace 1 h", "ayer", "hace 3 d".
+@Composable
 private fun timeAgoShort(mtime: Long): String {
-    val nowMs = System.currentTimeMillis()
-    val diffSec = ((nowMs - mtime) / 1000L).coerceAtLeast(0)
+    val diffSec = ((System.currentTimeMillis() - mtime) / 1000L).coerceAtLeast(0)
     return when {
-        diffSec < 60 -> "ahora"
-        diffSec < 3600 -> "hace ${diffSec / 60}m"
-        diffSec < 86_400 -> "hace ${diffSec / 3600}h"
-        diffSec < 172_800 -> "ayer"
-        else -> "hace ${diffSec / 86_400}d"
+        diffSec < 60 -> stringResource(R.string.time_now)
+        diffSec < 3600 -> stringResource(R.string.time_minutes, (diffSec / 60).toInt())
+        diffSec < 86_400 -> stringResource(R.string.time_hours, (diffSec / 3600).toInt())
+        diffSec < 172_800 -> stringResource(R.string.time_yesterday)
+        else -> stringResource(R.string.time_days, (diffSec / 86_400).toInt())
     }
 }
+
+// ─── PAGE 2: RESPONSE ────────────────────────────────────────────────────────
 
 @Composable
 private fun ResponsePage(
@@ -745,32 +906,21 @@ private fun ResponsePage(
     when (taskKind) {
         TaskKind.ACTION -> ActionResultLayout(response, toolEvents)
         TaskKind.INFO -> InfoResultLayout(response, headline)
-        null -> {
-            // Pre-classification or no-result state: show what we have.
-            if (response.isNullOrBlank()) {
-                EmptyResultLayout()
-            } else {
-                InfoResultLayout(response, headline)
-            }
-        }
+        null -> if (response.isNullOrBlank()) EmptyResultLayout() else InfoResultLayout(response, headline)
     }
 }
 
-// ─── ACTION VARIANT ──────────────────────────────────────────────────────────
-// "Did it work?" focal layout: large ✓ or ✗ + 1-line outcome + tool chips.
-// No scrolling body — the user just needs to know the action settled.
+private val FAILURE_PATTERN =
+    Regex("\\b(error|failed|canceled|cancelled|denied|aborted)\\b", RegexOption.IGNORE_CASE)
 
+/** Action runs that mention a failure word are treated as failed. */
+private fun responseLooksFailed(response: String?): Boolean =
+    response?.let { FAILURE_PATTERN.containsMatchIn(it) } ?: false
+
+// "Did it work?": large pixel ✓ / ✗, one outcome line, tool breadcrumbs.
 @Composable
-private fun ActionResultLayout(
-    response: String?,
-    toolEvents: List<ToolEvent>,
-) {
-    val failed = remember(response) {
-        response?.let { r ->
-            Regex("\\b(error|failed|canceled|cancelled|denied|aborted)\\b", RegexOption.IGNORE_CASE)
-                .containsMatchIn(r)
-        } ?: false
-    }
+private fun ActionResultLayout(response: String?, toolEvents: List<ToolEvent>) {
+    val failed = remember(response) { responseLooksFailed(response) }
     val outcomeLine = remember(response) {
         response
             ?.split(Regex("\\n{2,}"))
@@ -779,38 +929,40 @@ private fun ActionResultLayout(
             ?.replace(Regex("^\\*?\\*?TL;?DR:?\\*?\\*?\\s*[:—-]?\\s*", RegexOption.IGNORE_CASE), "")
             ?.take(140)
     }
+    val listState = rememberTransformingLazyColumnState()
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier.fillMaxSize(fraction = 0.72f),
-            verticalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally,
+    ScreenScaffold(scrollState = listState) { contentPadding ->
+        TransformingLazyColumn(
+            state = listState,
+            contentPadding = contentPadding,
+            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+            modifier = Modifier.fillMaxSize(),
         ) {
-            Text(
-                text = if (failed) "✗" else "✓",
-                color = if (failed) ClaudeRed else ClaudeGreen,
-                fontFamily = MonoFamily,
-                fontSize = 44.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(6.dp))
+            item {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (failed) PixelIcons.Cross else PixelIcons.Check,
+                        contentDescription = stringResource(if (failed) R.string.result_failed else R.string.result_ok),
+                        tint = if (failed) StatusColors.error else StatusColors.running,
+                        modifier = Modifier.size(56.dp),
+                    )
+                }
+            }
             if (!outcomeLine.isNullOrBlank()) {
-                Text(
-                    text = renderMarkdownInline(outcomeLine),
-                    color = Color.White.copy(alpha = 0.92f),
-                    fontFamily = FontFamily.Default,
-                    fontSize = 13.sp,
-                    lineHeight = 17.sp,
-                    fontWeight = FontWeight.Normal,
-                    textAlign = TextAlign.Center,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(10.dp))
+                item {
+                    Text(
+                        text = renderMarkdownInline(outcomeLine),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
             if (toolEvents.isNotEmpty()) {
-                ToolChipRow(toolEvents)
-                Spacer(Modifier.height(20.dp))
+                item { ToolChipRow(toolEvents) }
             }
         }
     }
@@ -818,6 +970,7 @@ private fun ActionResultLayout(
 
 @Composable
 private fun ToolChipRow(events: List<ToolEvent>) {
+    // Decorative breadcrumbs, not buttons: plain bordered boxes.
     LazyRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
@@ -825,272 +978,110 @@ private fun ToolChipRow(events: List<ToolEvent>) {
     ) {
         items(events.size) { i ->
             val ev = events[i]
-            Card(
-                onClick = { /* no-op for now; chip is decorative */ },
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color.Transparent,
-                    contentColor = ClaudeCoral,
-                ),
-                border = BorderStroke(1.dp, ClaudeCoral.copy(alpha = 0.55f)),
-                modifier = Modifier.heightIn(min = 22.dp),
+            Row(
+                modifier = Modifier
+                    .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outline), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                Icon(
+                    imageVector = ev.pixelIcon(),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(12.dp),
+                )
+                Spacer(Modifier.width(4.dp))
                 Text(
-                    text = "${ev.toolGlyph()} ${ev.shortLabel()}",
-                    color = ClaudeCoral.copy(alpha = 0.92f),
-                    fontFamily = MonoFamily,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    text = ev.shortLabel(),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.labelMedium,
                 )
             }
         }
     }
 }
 
-// ─── INFO VARIANT ────────────────────────────────────────────────────────────
-// TL;DR-first layout. Big headline up top, scrollable details below.
-
+// TL;DR-first: headline up top, scrollable body below.
 @Composable
 private fun InfoResultLayout(response: String?, headline: String?) {
-    val scroll = rememberScrollState()
-    // Compute headline + body once per response change.
     val finalHeadline = remember(headline, response) {
         when {
             !headline.isNullOrBlank() -> headline.take(120)
             response.isNullOrBlank() -> null
-            else -> {
-                // Fallback: first sentence of the response.
-                val cleaned = response.replace(
-                    Regex("^\\s*\\*{0,2}TL;?DR:?\\*{0,2}\\s*[:—-]?\\s*", RegexOption.IGNORE_CASE),
-                    "",
-                )
-                cleaned.split(Regex("\\.\\s+|\\n\\n")).firstOrNull()?.trim()?.take(120)
-            }
+            else -> response
+                .replace(Regex("^\\s*\\*{0,2}TL;?DR:?\\*{0,2}\\s*[:—-]?\\s*", RegexOption.IGNORE_CASE), "")
+                .split(Regex("\\.\\s+|\\n\\n")).firstOrNull()?.trim()?.take(120)
         }
     }
-    val body = remember(response, finalHeadline) {
+    val paragraphs = remember(response) {
         response
-            ?.replace(
-                Regex(
-                    "^\\s*\\*{0,2}TL;?DR:?\\*{0,2}\\s*[:—-]?\\s*[^\\n]+\\n?",
-                    RegexOption.IGNORE_CASE,
-                ),
-                "",
-            )
+            ?.replace(Regex("^\\s*\\*{0,2}TL;?DR:?\\*{0,2}\\s*[:—-]?\\s*[^\\n]+\\n?", RegexOption.IGNORE_CASE), "")
             ?.trim()
             .orEmpty()
+            .split(Regex("\\n{2,}"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
     }
+    // Short TL;DRs get a bigger focal point; long ones shrink to avoid the
+    // 4-line truncation cliff.
+    val headlineStyle = when {
+        (finalHeadline?.length ?: 0) < 20 -> MaterialTheme.typography.titleLarge
+        (finalHeadline?.length ?: 0) > 60 -> MaterialTheme.typography.titleSmall
+        else -> MaterialTheme.typography.titleMedium
+    }
+    val listState = rememberTransformingLazyColumnState()
 
-    // Adaptive headline size: short TL;DRs ("Listo · 3") deserve a bigger
-    // focal point; long TL;DRs (~80 chars) need to shrink to avoid the
-    // 4-line truncation cliff. lineHeight stays at 1.22x for consistency.
-    val headlineFontSize = when {
-        (finalHeadline?.length ?: 0) < 20 -> 22.sp
-        (finalHeadline?.length ?: 0) > 60 -> 16.sp
-        else -> 18.sp
-    }
-    val headlineLineHeight = when {
-        (finalHeadline?.length ?: 0) < 20 -> 26.sp
-        (finalHeadline?.length ?: 0) > 60 -> 20.sp
-        else -> 22.sp
-    }
-
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier
-                // v6 — 0.72 was too conservative on the real Galaxy Watch 8
-                // (480px, 326ppi + physical bezel). 0.76 recovers ~19dp of
-                // usable width without breaking the inscribed-circle safety.
-                .fillMaxSize(fraction = 0.76f)
-                .verticalScroll(scroll),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-            horizontalAlignment = Alignment.Start,
+    ScreenScaffold(scrollState = listState) { contentPadding ->
+        TransformingLazyColumn(
+            state = listState,
+            contentPadding = contentPadding,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            Spacer(Modifier.height(WatchSpacing.pageBreak))
-            Text(
-                text = "$ tl;dr",
-                color = WatchColors.accentSecondary,
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 1.2.sp,
-            )
-            Spacer(Modifier.height(WatchSpacing.normal))
+            item { MonoLabel(stringResource(R.string.response_tldr), modifier = Modifier.fillMaxWidth()) }
             if (!finalHeadline.isNullOrBlank()) {
-                Text(
-                    text = finalHeadline,
-                    color = WatchColors.textPrimary,
-                    fontFamily = FontFamily.Default,
-                    fontSize = headlineFontSize,
-                    lineHeight = headlineLineHeight,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(WatchSpacing.section))
-                DividerLine()
-                Spacer(Modifier.height(WatchSpacing.relaxed))
+                item {
+                    Text(
+                        text = finalHeadline,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = headlineStyle,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { heading() },
+                    )
+                }
+                if (paragraphs.isNotEmpty()) {
+                    item { HairlineDivider(Modifier.padding(vertical = 4.dp)) }
+                }
             }
-            if (body.isNotBlank()) {
+            items(paragraphs) { paragraph ->
                 Text(
-                    text = renderMarkdownInline(body),
+                    text = renderMarkdownInline(paragraph),
                     color = WatchColors.textSecondary,
-                    fontFamily = FontFamily.Default,
-                    fontSize = 12.sp,
-                    // v6 — 18sp (1.5x) was technically accessible but felt
-                    // crowded on the watch. 20sp (1.67x) gives body text
-                    // breathing room without breaking WCAG guidance.
-                    lineHeight = 20.sp,
-                    fontWeight = FontWeight.Normal,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            Spacer(Modifier.height(WatchSpacing.bottomBleed))
         }
-
-        // Scroll fade — masks text behind the indicator dots.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.0f to Color.Transparent,
-                            0.75f to Color.Transparent,
-                            0.90f to Color.Black,
-                            1.0f to Color.Black,
-                        ),
-                    ),
-                ),
-        )
-
-        // v6 — Scroll position affordance. Right-edge bar that grows as you
-        // scroll. Only visible when there's actually overflow. Sits inside
-        // the inscribed circle so it never clips against the bezel.
-        if (scroll.maxValue > 0) {
-            ScrollPositionIndicator(scroll = scroll)
-        }
-    }
-}
-
-// v6 — Lightweight scroll indicator. A 2dp coral bar on the right side whose
-// vertical position reflects the current scroll fraction. Auto-fades when
-// scroll.maxValue is 0 (handled by the caller).
-@Composable
-private fun BoxScope.ScrollPositionIndicator(scroll: androidx.compose.foundation.ScrollState) {
-    val fraction = if (scroll.maxValue == 0) 0f
-        else scroll.value.toFloat() / scroll.maxValue.toFloat()
-    Box(
-        modifier = Modifier
-            .fillMaxHeight(0.5f)
-            .align(Alignment.CenterEnd)
-            .padding(end = 6.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .width(2.dp)
-                .fillMaxHeight(0.5f)
-                .align(BiasAlignment(0f, -1f + 2f * fraction))
-                .background(WatchColors.accentSecondary),
-        )
     }
 }
 
 @Composable
 private fun EmptyResultLayout() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier.fillMaxSize(fraction = 0.72f),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
+    ScreenScaffold { _ ->
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                text = "$ no output yet",
-                color = ClaudeDim.copy(alpha = 0.5f),
-                fontFamily = MonoFamily,
-                fontSize = 11.sp,
+                text = stringResource(R.string.response_empty),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
             )
         }
     }
 }
 
-// ─── SHARED COMPOSABLES ───────────────────────────────────────────────────────
-
-@Composable
-private fun ClaudeHeader() {
-    // Brand anchor: mascot + "claude code" mono label — present on every page
-    // that needs identity (Command page). 10sp keeps it small and unobtrusive.
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        ClaudeMascot(width = 18.dp)
-        Spacer(Modifier.padding(horizontal = 4.dp))
-        Text(
-            text = "claude code",
-            color = ClaudeCoral,
-            fontFamily = MonoFamily,
-            fontSize = 10.sp,
-            letterSpacing = 0.5.sp,
-        )
-    }
-}
-
-@Composable
-private fun StatusPrompt(status: WrapperStatus) {
-    val (label, color) = when (status) {
-        WrapperStatus.IDLE -> "idle" to Color.White.copy(alpha = 0.7f)
-        WrapperStatus.RUNNING -> "running" to ClaudeGreen
-        WrapperStatus.AWAITING_PERMISSION -> "prompt" to ClaudeAmber
-        WrapperStatus.OFFLINE -> "offline" to ClaudeRed
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "$ $label",
-            color = color,
-            fontFamily = MonoFamily,
-            fontSize = 11.sp,
-        )
-        Spacer(Modifier.padding(horizontal = 1.dp))
-        BlinkingCursor(color = color, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun ActivityLine(activity: String, leadingGlyph: String? = null) {
-    // NOVA: Fade-crossfade on content change (220ms in / 180ms out).
-    // 12sp up from 10sp — now the dominant text on the Command page since
-    // BigTokens has been moved to its own Metrics page.
-    val glyph = leadingGlyph ?: "✻"
-    AnimatedContent(
-        targetState = "$glyph $activity",
-        transitionSpec = {
-            fadeIn(animationSpec = tween(220)) togetherWith
-                fadeOut(animationSpec = tween(180))
-        },
-        label = "activity",
-    ) { value ->
-        Text(
-            text = value,
-            color = ClaudeCoral.copy(alpha = 0.85f),
-            fontFamily = MonoFamily,
-            fontSize = 12.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-// Map a tool name to a single-char glyph that fits the terminal aesthetic.
-// Used on both the Command page (activity verb prefix) and the Action result
-// page (chip leaders).
-private fun ToolEvent.toolGlyph(): String = when (tool.replace("\\s+".toRegex(), "")) {
-    "Bash" -> "⌘"
-    "Edit", "Write" -> "✎"
-    "Read" -> "▤"
-    "Grep" -> "⌕"
-    "Glob" -> "⌕"
-    "WebFetch", "WebSearch" -> "⊕"
-    "Task" -> "▦"
-    else -> "▪"
-}
+// ─── SHARED ──────────────────────────────────────────────────────────────────
 
 private fun ToolEvent.shortLabel(): String = when (tool.replace("\\s+".toRegex(), "")) {
     "Bash" -> "bash"
@@ -1105,280 +1096,164 @@ private fun ToolEvent.shortLabel(): String = when (tool.replace("\\s+".toRegex()
     else -> tool.lowercase()
 }
 
-@Composable
-private fun TaskLine(task: String) {
-    Text(
-        text = task.lowercase(),
-        color = Color.White.copy(alpha = 0.62f),
-        fontFamily = MonoFamily,
-        fontSize = 9.sp,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-    )
-}
-
-@Composable
-private fun BigTokens(value: Long, fontSize: androidx.compose.ui.unit.TextUnit = 24.sp) {
-    val target = value.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-    val animated by animateIntAsState(
-        targetValue = target,
-        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
-        label = "today-tokens",
-    )
-    // ARIA: BigTokens is the focal element on the Metrics page — Bold + large.
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            text = NumberFormat.getIntegerInstance().format(animated),
-            color = Color.White,
-            fontFamily = MonoFamily,
-            fontSize = fontSize,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = "tokens · today",
-            color = ClaudeDim.copy(alpha = 0.55f),
-            fontFamily = MonoFamily,
-            fontSize = 9.sp,
-        )
-    }
-}
-
-@Composable
-private fun DividerLine() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(ClaudeCoral.copy(alpha = 0.35f)),
-    )
-}
-
-@Composable
-private fun StatusLine(metrics: Metrics) {
-    Text(
-        text = "w ${shortNum(metrics.weeklyTokens)}  ·  m ${shortNum(metrics.monthlyTokens)}",
-        color = ClaudeDim.copy(alpha = 0.65f),
-        fontFamily = MonoFamily,
-        fontSize = 9.sp,
-    )
-}
-
-@Composable
-private fun ResponseSection(response: String) {
-    // ARIA: Same design as v1 — "$ OUTPUT" label as section header, 12sp body,
-    // 1.5× line-height, paragraphs split on double-newline.
-    val paragraphs = response.split(Regex("\\n{2,}")).filter { it.isNotBlank() }
-
-    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        Text(
-            text = "$ output",
-            color = ClaudeCoral.copy(alpha = 0.75f),
-            fontFamily = MonoFamily,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 1.2.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-
-        if (paragraphs.size > 1) {
-            paragraphs.forEachIndexed { index, paragraph ->
-                Text(
-                    text = renderMarkdownInline(paragraph.trim()),
-                    color = Color.White.copy(alpha = 0.90f),
-                    fontFamily = FontFamily.Default,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                    fontWeight = FontWeight.Normal,
-                )
-                if (index < paragraphs.lastIndex) {
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
-        } else {
-            Text(
-                text = renderMarkdownInline(response.trim()),
-                color = Color.White.copy(alpha = 0.90f),
-                fontFamily = FontFamily.Default,
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-                fontWeight = FontWeight.Normal,
-            )
-        }
-    }
-}
-
-// v7 — Notifies the user when a task transitions from working → done.
-// Subscribes to a SharedFlow<Unit> emitted by the ViewModel (where detection
-// lives, because WearApp's AnimatedContent re-creates DashboardScreen on
-// every status change and would wipe any composable-scoped tracking state).
-//
-// Behaviour on emission:
-//  1. CONFIRM haptic (softer than the LONG_PRESS used for permission asks).
-//  2. Smooth scroll to Page 2 (Response) — but ONLY if user is currently on
-//     Page 0 (Command) or Page 1 (Metrics). Don't interrupt Sessions etc.
+// Task completion: Haptics.done (or Haptics.error when an action run failed),
+// the mascot hop / ring via [onFinished], then auto-nav to Response if the
+// user is on Command or Metrics. Nav waits a beat so the moment is seen.
 @Composable
 private fun TaskCompletionHandler(
     taskCompleted: SharedFlow<Unit>?,
     pagerState: PagerState,
+    response: String?,
+    taskKind: TaskKind?,
+    onFinished: (failed: Boolean) -> Unit,
 ) {
     if (taskCompleted == null) return
-    val view = LocalView.current
+    val context = LocalContext.current
+    val currentResponse by rememberUpdatedState(response)
+    val currentKind by rememberUpdatedState(taskKind)
+    val currentOnFinished by rememberUpdatedState(onFinished)
     LaunchedEffect(taskCompleted) {
         taskCompleted.collect {
-            delay(120) // matches PermissionScreen's reconnect-echo guard
-            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            delay(120) // reconnect-echo guard, matches PermissionScreen
+            // Only action runs are judged by failure words: an info answer
+            // that *explains* an error isn't a failed run.
+            val failed = currentKind == TaskKind.ACTION && responseLooksFailed(currentResponse)
+            if (failed) Haptics.error(context) else Haptics.done(context)
+            currentOnFinished(failed)
             if (pagerState.currentPage <= 1 && pagerState.pageCount > 2) {
+                delay(900)
                 pagerState.animateScrollToPage(2)
             }
         }
     }
 }
 
-// Minimal inline markdown: **bold**, *italic*, `code`. Block-level ignored.
-// Top-level constant so the regex is compiled once, not on every recomposition
-// (this function is called from ActionResultLayout, InfoResultLayout,
-// FollowupChip and ResponseSection — 4 hot call sites).
+// Minimal inline markdown: **bold**, *italic*, `code`. Compiled once.
 private val MARKDOWN_PATTERN = Regex("""(\*\*([^*]+?)\*\*|\*([^*\n]+?)\*|`([^`\n]+?)`)""")
 
 private fun renderMarkdownInline(text: String): AnnotatedString = buildAnnotatedString {
     var cursor = 0
     for (m in MARKDOWN_PATTERN.findAll(text)) {
-        if (m.range.first > cursor) {
-            append(text.substring(cursor, m.range.first))
-        }
+        if (m.range.first > cursor) append(text.substring(cursor, m.range.first))
         when {
             m.groupValues[2].isNotEmpty() ->
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                    append(m.groupValues[2])
-                }
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(m.groupValues[2]) }
             m.groupValues[3].isNotEmpty() ->
-                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                    append(m.groupValues[3])
-                }
+                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(m.groupValues[3]) }
             m.groupValues[4].isNotEmpty() ->
-                withStyle(
-                    SpanStyle(
-                        fontFamily = FontFamily.Monospace,
-                        background = Color.White.copy(alpha = 0.08f),
-                    ),
-                ) {
+                withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = CcPalette.SurfaceHigh)) {
                     append(" ${m.groupValues[4]} ")
                 }
         }
         cursor = m.range.last + 1
     }
-    if (cursor < text.length) {
-        append(text.substring(cursor))
-    }
-}
-
-@Composable
-private fun AskRow(
-    inConversation: Boolean = false,
-    onAsk: (String) -> Unit,
-) {
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val text = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull()
-            if (!text.isNullOrBlank()) onAsk(text)
-        }
-    }
-    // Dual-label CTA: cold-start says "ask claude"; once a response exists and
-    // we're IDLE, the wrapper will auto-continue via `claude --continue`, so we
-    // re-label to "continuar" to signal "this is a thread, not a fresh ask".
-    val label = if (inConversation) "continuar" else "ask claude"
-    val voicePrompt = if (inConversation) "Continuar conversación" else "Ask Claude"
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        Button(
-            onClick = {
-                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(
-                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
-                    )
-                    putExtra(RecognizerIntent.EXTRA_PROMPT, voicePrompt)
-                }
-                launcher.launch(intent)
-            },
-            colors = ButtonDefaults.buttonColors(
-                containerColor = ClaudeCoral,
-                contentColor = Color.Black,
-            ),
-            modifier = Modifier.size(width = 140.dp, height = 48.dp),
-        ) {
-            Text(
-                text = label,
-                fontFamily = MonoFamily,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.Black,
-            )
-        }
-    }
-}
-
-private fun hasAnyData(s: ClaudeStatus): Boolean =
-    s.model != null ||
-        s.sessionPct != null ||
-        s.weeklyPct != null ||
-        s.monthlyCost != null
-
-@Composable
-private fun ClaudeStatusSection(s: ClaudeStatus) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        val modelLine = buildString {
-            if (s.model != null) append(s.model.lowercase())
-            if (s.contextSize != null) {
-                if (isNotEmpty()) append(" · ")
-                append(s.contextSize.lowercase()).append(" ctx")
-            }
-        }
-        if (modelLine.isNotEmpty()) {
-            Text(
-                text = modelLine,
-                color = ClaudeCoral.copy(alpha = 0.85f),
-                fontFamily = MonoFamily,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.4.sp,
-            )
-        }
-
-        val usageParts = buildList {
-            if (s.sessionPct != null) add("session ${formatPct(s.sessionPct)}")
-            if (s.weeklyPct != null) add("weekly ${formatPct(s.weeklyPct)}")
-        }
-        if (usageParts.isNotEmpty()) {
-            Text(
-                text = usageParts.joinToString("  ·  "),
-                color = Color.White.copy(alpha = 0.78f),
-                fontFamily = MonoFamily,
-                fontSize = 10.sp,
-            )
-        }
-
-        if (s.monthlyCost != null) {
-            val tail = if (!s.monthlyResets.isNullOrBlank()) {
-                " · resets ${s.monthlyResets}"
-            } else ""
-            Text(
-                text = "${s.monthlyCost}$tail",
-                color = ClaudeDim.copy(alpha = 0.72f),
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
-            )
-        }
-    }
+    if (cursor < text.length) append(text.substring(cursor))
 }
 
 private fun formatPct(v: Double): String {
     val rounded = if (v >= 10.0) v.toInt().toString() else "%.1f".format(v).trimEnd('0').trimEnd('.')
     return "$rounded%"
+}
+
+// ─── PREVIEWS ────────────────────────────────────────────────────────────────
+
+@Composable
+private fun PreviewCommand(status: WrapperStatus, mascotState: MascotState, inConversation: Boolean = false) {
+    CCWEAROSTheme {
+        CommandPage(
+            status = status,
+            mascotState = mascotState,
+            activity = if (status == WrapperStatus.RUNNING) "Editando parser.ts" else null,
+            task = if (status == WrapperStatus.RUNNING) "arregla el test del parser" else null,
+            toolEvents = if (status == WrapperStatus.RUNNING) listOf(ToolEvent("Edit", "src/parser.ts")) else emptyList(),
+            inConversation = inConversation,
+            sharedSession = null,
+            onAsk = {},
+            onStop = {},
+            onForceReset = {},
+        )
+    }
+}
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Page 0 · Listo")
+@Composable
+private fun PreviewCommandIdle() = PreviewCommand(WrapperStatus.IDLE, MascotState.Idle)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Page 0 · Trabajando")
+@Composable
+private fun PreviewCommandRunning() = PreviewCommand(WrapperStatus.RUNNING, MascotState.Running)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Page 0 · Esperando permiso")
+@Composable
+private fun PreviewCommandWaiting() = PreviewCommand(WrapperStatus.AWAITING_PERMISSION, MascotState.Waiting)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Page 0 · Terminado")
+@Composable
+private fun PreviewCommandDone() = PreviewCommand(WrapperStatus.IDLE, MascotState.Done, inConversation = true)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Page 0 · Error")
+@Composable
+private fun PreviewCommandError() = PreviewCommand(WrapperStatus.IDLE, MascotState.Error)
+
+@Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true, name = "Page 0 · Compartida (small)")
+@Composable
+private fun PreviewCommandShared() {
+    CCWEAROSTheme {
+        CommandPage(
+            status = WrapperStatus.RUNNING,
+            mascotState = MascotState.Running,
+            activity = null,
+            task = null,
+            toolEvents = emptyList(),
+            inConversation = false,
+            sharedSession = SharedSessionMeta(cwd = "/Users/me/projects/CCWEAROS", kind = "hook"),
+            onAsk = {},
+            onStop = {},
+            onForceReset = {},
+        )
+    }
+}
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Metrics")
+@Composable
+private fun PreviewMetrics() {
+    CCWEAROSTheme {
+        MetricsPage(
+            metrics = Metrics(dailyTokens = 48_210, weeklyTokens = 1_204_000, monthlyTokens = 4_800_000),
+            claudeStatus = ClaudeStatus(
+                model = "Opus",
+                contextSize = "1M",
+                sessionPct = 24.0,
+                weeklyPct = 81.0,
+                monthlyCost = "$12.40",
+                monthlyResets = "1 nov",
+            ),
+        )
+    }
+}
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Response · info")
+@Composable
+private fun PreviewResponseInfo() {
+    CCWEAROSTheme {
+        ResponsePage(
+            response = "**TL;DR:** El parser falla con tablas vacías.\n\nEl regex de celdas asume al menos una columna.\n\nLo arreglé con un guard.",
+            taskKind = TaskKind.INFO,
+            headline = "El parser falla con tablas vacías",
+            toolEvents = emptyList(),
+        )
+    }
+}
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Response · action")
+@Composable
+private fun PreviewResponseAction() {
+    CCWEAROSTheme {
+        ResponsePage(
+            response = "Listo: tests en verde (72/72).",
+            taskKind = TaskKind.ACTION,
+            headline = null,
+            toolEvents = listOf(ToolEvent("Read", "a.ts"), ToolEvent("Edit", "a.ts"), ToolEvent("Bash", "npm test")),
+        )
+    }
 }
