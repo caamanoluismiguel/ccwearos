@@ -35,10 +35,14 @@ function buildDeps(overrides: Partial<ClaimHandlerDeps> = {}): {
       auditEntries.push(e);
     },
     isPidAlive: () => false,
-    spawn: (cmd, args) => {
+    spawn: async (cmd, args) => {
       spawnCalls.push({ cmd, args });
       return { status: 0, signal: null, stderr: "" };
     },
+    resolveSessionCwd: (id) =>
+      id === "550e8400-e29b-41d4-a716-446655440000"
+        ? "/Users/luis/projects/real-session-cwd"
+        : null,
     commandMaxAgeSeconds: 60,
     tsxBin: "/wrapper/node_modules/.bin/tsx",
     shareScript: "/wrapper/scripts/share.ts",
@@ -109,13 +113,63 @@ describe("handleClaimRequest", () => {
     expect(spawnCalls).toHaveLength(0);
   });
 
-  it("rejects empty cwd (would land in $HOME)", async () => {
-    const { deps, claimResults, spawnCalls } = buildDeps();
+  it("ignores an empty watch cwd and uses the locally resolved one", async () => {
+    const { deps, spawnCalls } = buildDeps();
     const result = await handleClaimRequest(validClaim({ cwd: "" }), deps);
 
-    expect(result.decision).toBe("malformed");
+    expect(result.decision).toBe("ok");
+    expect(spawnCalls[0]?.args.join(" ")).toContain(
+      "/Users/luis/projects/real-session-cwd",
+    );
+  });
+
+  it("refuses a session that is unknown on this Mac (no spawn, no audit)", async () => {
+    const { deps, claimResults, spawnCalls, auditEntries, busyState } =
+      buildDeps({ resolveSessionCwd: async () => null });
+    const result = await handleClaimRequest(validClaim(), deps);
+
+    expect(result.decision).toBe("unknown-session");
     expect(spawnCalls).toHaveLength(0);
-    expect(claimResults[0]?.reason).toMatch(/cwd/);
+    expect(auditEntries).toHaveLength(0);
+    expect(claimResults[0]?.ok).toBe(false);
+    expect(claimResults[0]?.reason).toMatch(/no encontrada/);
+    expect(busyState.current).toBe(false);
+  });
+
+  it("never uses a forged watch cwd", async () => {
+    const { deps, spawnCalls } = buildDeps();
+    await handleClaimRequest(
+      validClaim({ cwd: "/tmp/attacker-controlled" }),
+      deps,
+    );
+    const allArgs = spawnCalls[0]?.args.join(" ") ?? "";
+    expect(allArgs).not.toContain("/tmp/attacker-controlled");
+    expect(allArgs).toContain("/Users/luis/projects/real-session-cwd");
+  });
+
+  it("single-flight holds across awaits: a second claim racing in is refused", async () => {
+    // Real busy accessors + a slow readSharedSession: claim B arrives while
+    // claim A is still awaiting, and must be refused (only one spawn).
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((r) => {
+      releaseRead = r;
+    });
+    const { deps, spawnCalls, claimResults } = buildDeps({
+      readSharedSession: async () => {
+        await readGate;
+        return null;
+      },
+    });
+    const a = handleClaimRequest(validClaim(), deps);
+    const b = handleClaimRequest(validClaim(), deps);
+    const bResult = await b;
+    releaseRead();
+    const aResult = await a;
+
+    expect(bResult.decision).toBe("busy");
+    expect(aResult.decision).toBe("ok");
+    expect(spawnCalls).toHaveLength(1);
+    expect(claimResults.some((r) => r?.ok === false)).toBe(true);
   });
 
   it("drops a stale claim silently (no /claimResult write)", async () => {
@@ -163,7 +217,7 @@ describe("handleClaimRequest", () => {
 
   it("writes ok:false + deny audit on osascript non-zero exit", async () => {
     const { deps, claimResults, auditEntries } = buildDeps({
-      spawn: () => ({
+      spawn: async () => ({
         status: 1,
         signal: null,
         stderr: "execution error: Not authorized to send Apple events",
@@ -179,7 +233,7 @@ describe("handleClaimRequest", () => {
 
   it("surfaces SIGTERM (timeout) with an actionable hint", async () => {
     const { deps, claimResults } = buildDeps({
-      spawn: () => ({ status: null, signal: "SIGTERM", stderr: "" }),
+      spawn: async () => ({ status: null, signal: "SIGTERM", stderr: "" }),
     });
     await handleClaimRequest(validClaim(), deps);
     expect(claimResults[0]?.reason).toMatch(/Automation/);
@@ -227,18 +281,17 @@ describe("handleClaimRequest", () => {
 
   it("busy flag is released after spawn failure", async () => {
     const { deps, busyState } = buildDeps({
-      spawn: () => ({ status: 1, signal: null, stderr: "boom" }),
+      spawn: async () => ({ status: 1, signal: null, stderr: "boom" }),
     });
     await handleClaimRequest(validClaim(), deps);
     expect(busyState.current).toBe(false);
   });
 
-  it("forwards the claim's cwd to buildShellCommand (not the daemon's cwd)", async () => {
-    const { deps, spawnCalls } = buildDeps();
-    await handleClaimRequest(
-      validClaim({ cwd: "/Users/luis/with spaces/proj" }),
-      deps,
-    );
+  it("forwards the locally resolved cwd to buildShellCommand (spaces survive)", async () => {
+    const { deps, spawnCalls } = buildDeps({
+      resolveSessionCwd: () => "/Users/luis/with spaces/proj",
+    });
+    await handleClaimRequest(validClaim(), deps);
     // The cwd should appear, quoted, in the shell command that osascript
     // gets to type. We grep the -e args for the cd substring.
     const allArgs = spawnCalls[0]?.args.join(" ") ?? "";

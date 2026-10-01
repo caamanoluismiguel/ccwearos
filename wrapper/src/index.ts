@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
@@ -11,6 +10,7 @@ import {
   clearStaleState,
   db,
   initFirebase,
+  publishPermissionPrompt,
   readSharedSession,
   registerCrashCleanup,
   sendFcmWake,
@@ -37,7 +37,10 @@ import type { SharedSessionMeta } from "./types/schema.js";
 import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
-import { handleClaimRequest } from "./claim-handler.js";
+import { handleClaimRequest, spawnAsync } from "./claim-handler.js";
+import { resolveSessionCwd } from "./claim-cwd.js";
+import { ActivePrompt, consumeCommand } from "./command-consumer.js";
+import { STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
@@ -93,6 +96,10 @@ async function runInteractive(): Promise<void> {
     void setStatus("IDLE").catch(() => {});
   }, 8_000).unref();
 
+  // One-time id of the permission prompt currently on the watch. Only a
+  // /command echoing it may answer (see src/command-consumer.ts).
+  const activePrompt = new ActivePrompt();
+
   const runner = startClaude({
     onStatus: (s) => {
       void setStatus(s);
@@ -101,7 +108,10 @@ async function runInteractive(): Promise<void> {
       void writeMetrics(m);
     },
     onPermission: (prompt) => {
-      void setPermissionPrompt(prompt);
+      void activePrompt.publish(
+        () => publishPermissionPrompt(prompt),
+        (e) => console.error("[ccwearos] publishPermissionPrompt failed:", e),
+      );
       void setStatus("AWAITING_PERMISSION");
       void sendFcmWake("permission");
     },
@@ -124,23 +134,33 @@ async function runInteractive(): Promise<void> {
     },
   });
 
+  // Allowlisted bytes only (allow / deny / stop); answers must echo the
+  // active prompt id. Rejected commands never reach the pty.
   const stopWatching = watchCommands(async (cmd) => {
-    const ageSec = (Date.now() - cmd.issuedAt) / 1000;
-    if (ageSec > config.commandMaxAgeSeconds) {
-      console.warn(
-        `[ccwearos] Ignoring stale command (age ${ageSec.toFixed(1)}s):`,
-        cmd.text,
-      );
-      await clearCommand();
-      return;
-    }
-    console.log(
-      "[ccwearos] Received command from watch:",
-      JSON.stringify(cmd.text),
+    await consumeCommand(
+      cmd,
+      activePrompt,
+      { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
+      {
+        clearCommand,
+        clearPrompt: () => setPermissionPrompt(null),
+        answer: (bytes) => {
+          console.log(
+            "[ccwearos] Permission answer from watch:",
+            JSON.stringify(bytes),
+          );
+          runner.send(bytes);
+        },
+        // Interactive mode has always forwarded STOP as ETX to the pty
+        // (Claude handles it like Ctrl+C).
+        stop: async () => {
+          console.log("[ccwearos] SIGINT from watch");
+          runner.send(STOP);
+          await setPermissionPrompt(null);
+        },
+        warn: (m) => console.warn(`[ccwearos] ${m}`),
+      },
     );
-    runner.send(cmd.text);
-    await clearCommand();
-    await setPermissionPrompt(null);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
@@ -190,6 +210,8 @@ async function runDaemon(): Promise<void> {
   // Active runner for the current voice task. Permission responses from the
   // watch (via /command) get routed into runner.send() while it's alive.
   let activeRunner: VoiceRunner | null = null;
+  // One-time id of the voice run's permission prompt currently on the watch.
+  const activePrompt = new ActivePrompt();
   // Currently-shared session (from `cc` / scripts/share.ts), if any. While
   // non-null we refuse voice prompts to avoid two pty's writing to the same
   // RTDB paths and clobbering each other. The watch's Page 0 button is also
@@ -275,6 +297,9 @@ async function runDaemon(): Promise<void> {
     // PreToolUse hook polling /command for the watch's Allow/Deny. The
     // daemon must NOT consume that write — yield ownership while a hook
     // share is active.
+    // TODO(integrate): treat stale hook locks via isSharedSessionStale
+    // (src/shared-session.ts) — a dead hook's lock must not make the daemon
+    // yield /command forever.
     if (sharedSession?.kind === "hook") {
       console.log(
         `[ccwearos] /command ignored (hook share active for ${sharedSession.cwd}): ${cmd.text}`,
@@ -291,54 +316,56 @@ async function runDaemon(): Promise<void> {
       );
       return;
     }
-    if (!activeRunner) {
+    const runner = activeRunner;
+    if (!runner) {
       await clearCommand();
       return;
     }
-    const ageSec = (Date.now() - cmd.issuedAt) / 1000;
-    if (ageSec > config.commandMaxAgeSeconds) {
-      console.warn(
-        `[ccwearos] Stale permission cmd (age ${ageSec.toFixed(1)}s):`,
-        cmd.text,
-      );
-      await clearCommand();
-      return;
-    }
-    // Cancel/Stop: watch sends \x03 (ETX, SIGINT) when the user taps the
-    // detener button on Page 0. Kill the runner — Claude exits cleanly.
-    if (cmd.text === "\x03") {
-      console.log("[ccwearos] SIGINT from watch — stopping current run");
-      void appendAuditEntry({
-        ts: Date.now(),
-        kind: "voice",
-        tool: "(cancel)",
-        args: "",
-        decision: "deny",
-        source: "watch",
-      });
-      activeRunner.kill();
-      await clearCommand();
-      await setPermissionPrompt(null);
-      await setActivity(null);
-      await setStatus("IDLE");
-      return;
-    }
-    console.log(
-      "[ccwearos] Permission response from watch:",
-      JSON.stringify(cmd.text),
+    // Allowlist + one-time prompt id (src/command-consumer.ts). Rejected
+    // commands are logged and cleared, never written to the pty.
+    const outcome = await consumeCommand(
+      cmd,
+      activePrompt,
+      { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
+      {
+        clearCommand,
+        clearPrompt: () => setPermissionPrompt(null),
+        answer: (bytes, decision) => {
+          console.log(
+            "[ccwearos] Permission response from watch:",
+            JSON.stringify(bytes),
+          );
+          void appendAuditEntry({
+            ts: Date.now(),
+            kind: "voice",
+            tool: "(voice-permission)",
+            args: JSON.stringify(bytes),
+            decision,
+            source: "watch",
+          });
+          runner.send(bytes);
+        },
+        // Cancel/Stop: watch sends \x03 (ETX, SIGINT) when the user taps the
+        // detener button on Page 0. Kill the runner — Claude exits cleanly.
+        stop: async () => {
+          console.log("[ccwearos] SIGINT from watch — stopping current run");
+          void appendAuditEntry({
+            ts: Date.now(),
+            kind: "voice",
+            tool: "(cancel)",
+            args: "",
+            decision: "deny",
+            source: "watch",
+          });
+          runner.kill();
+          await setPermissionPrompt(null);
+          await setActivity(null);
+          await setStatus("IDLE");
+        },
+        warn: (m) => console.warn(`[ccwearos] ${m}`),
+      },
     );
-    void appendAuditEntry({
-      ts: Date.now(),
-      kind: "voice",
-      tool: "(voice-permission)",
-      args: cmd.text.slice(0, 60),
-      decision: cmd.text.trim().startsWith("1") ? "allow" : "deny",
-      source: "watch",
-    });
-    activeRunner.send(cmd.text);
-    await clearCommand();
-    await setPermissionPrompt(null);
-    await setStatus("RUNNING");
+    if (outcome.kind === "answer") await setStatus("RUNNING");
   });
 
   // Sprint 4n — watch-initiated tap-to-claim. When the user taps a session
@@ -362,14 +389,11 @@ async function runDaemon(): Promise<void> {
       clearClaimRequest,
       appendAuditEntry,
       isPidAlive,
-      spawn: (cmd, args, options) => {
-        const r = spawnSync(cmd, args as readonly string[], options);
-        return {
-          status: r.status,
-          signal: r.signal,
-          stderr: String(r.stderr ?? ""),
-        };
-      },
+      // Async: a 30s osascript must not block voice prompts / /command.
+      spawn: spawnAsync,
+      // The watch's claim.cwd is ignored — cwd comes from the session's
+      // local transcript (src/claim-cwd.ts).
+      resolveSessionCwd: (sessionId) => resolveSessionCwd(sessionId),
       commandMaxAgeSeconds: config.commandMaxAgeSeconds,
       tsxBin: TSX_BIN,
       shareScript: SHARE_SCRIPT,
@@ -399,6 +423,9 @@ async function runDaemon(): Promise<void> {
     // — both would spawn Claude in pty and clobber the same RTDB paths. The
     // watch UI also disables Page 0's button based on the same signal, but
     // this is a defensive double-check in case stale UI state slips through.
+    // TODO(integrate): treat stale hook locks via isSharedSessionStale
+    // (src/shared-session.ts) — a dead hook's lock must not block voice
+    // prompts forever.
     if (sharedSession) {
       console.log(
         `[ccwearos] /sharedSession active in ${sharedSession.cwd} — voice prompt dropped: ${p.text}`,
@@ -453,7 +480,11 @@ async function runDaemon(): Promise<void> {
           onStatus: (s) => void setStatus(s),
           onMetrics: (m) => void writeMetrics(m),
           onPermission: (prompt) => {
-            void setPermissionPrompt(prompt);
+            void activePrompt.publish(
+              () => publishPermissionPrompt(prompt),
+              (e) =>
+                console.error("[ccwearos] publishPermissionPrompt failed:", e),
+            );
             void setStatus("AWAITING_PERMISSION");
             void sendFcmWake("permission");
           },
@@ -507,6 +538,7 @@ async function runDaemon(): Promise<void> {
       // as "Busy" until a daemon restart. Observed in production 2026-05-23.
       busy = false;
       activeRunner = null;
+      activePrompt.clear();
       try {
         await setActivity(null);
         await setTask(null);

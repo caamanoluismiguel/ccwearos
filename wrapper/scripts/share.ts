@@ -32,8 +32,9 @@ import {
   clearCommand,
   clearCrashCleanup,
   clearStaleState,
+  db,
   initFirebase,
-  readSharedSession,
+  publishPermissionPrompt,
   registerCrashCleanup,
   sendFcmWake,
   setActivity,
@@ -46,13 +47,18 @@ import {
   watchCommands,
   writeMetrics,
 } from "../src/firebase.js";
+import { ActivePrompt, consumeCommand } from "../src/command-consumer.js";
 import { isPidAlive } from "../src/pid-utils.js";
+import { claimSharedSession } from "../src/share-lock.js";
 import { startSessionScanner } from "../src/sessions-scanner.js";
 import { parseShareArgs, type ShareArgs } from "../src/share-args.js";
 import type { SharedSessionMeta } from "../src/types/schema.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+// True once our transaction committed /sharedSession = us.
+let ownsSharedSession = false;
 
 async function main(): Promise<void> {
   let parsed: ShareArgs;
@@ -64,24 +70,14 @@ async function main(): Promise<void> {
   }
   initFirebase();
 
-  // Reject if another shared session is alive. Clean stale locks
-  // (PID dead) so a previous crash doesn't permanently block the user.
-  const existing = await readSharedSession();
-  if (existing) {
-    if (isPidAlive(existing.pid)) {
-      console.error(
-        `[cc] Another shared session is already active (pid=${existing.pid}, cwd=${existing.cwd}).`,
-      );
-      console.error(
-        `[cc] Close that one first, or run plain \`${config.claudeCliCommand}\` here without watch monitoring.`,
-      );
-      process.exit(2);
-    }
-    console.warn(
-      `[cc] Stale /sharedSession lock from pid=${existing.pid} — clearing.`,
-    );
-    await setSharedSession(null);
-  }
+  // Register Firebase server-side cleanup BEFORE we touch /sharedSession. If
+  // we get SIGKILL'd or the Mac crashes between acquiring the lock and clean
+  // shutdown, the server clears /sharedSession + UI surfaces when our TCP
+  // drops — the only mechanism that survives `kill -9` / OOM. Registering
+  // after the write (the old order) left a window where a crash stranded
+  // the lock. If we then fail to acquire, we cancel it before exiting so we
+  // don't wipe the live owner's lock.
+  await registerCrashCleanup({ sharedSession: true, uiSurfaces: true });
 
   const cwd = process.cwd();
   // In takeover mode we already know the sessionId — pre-seed /sharedSession
@@ -95,15 +91,32 @@ async function main(): Promise<void> {
     startedAt: Date.now(),
     kind: "wrapper-pty",
   };
-  await setSharedSession(meta);
+  // Atomic acquire: the transaction re-runs against the server value, so two
+  // `cc`s starting together can't both see "free" (the old read-then-write
+  // could). A lock whose owner pid is dead is taken over (stale crash lock).
+  const tx = await db()
+    .ref("/sharedSession")
+    .transaction((cur: SharedSessionMeta | null) =>
+      claimSharedSession(cur, meta, isPidAlive),
+    );
+  if (!tx.committed) {
+    const existing = tx.snapshot.val() as SharedSessionMeta | null;
+    console.error(
+      `[cc] Another shared session is already active (pid=${existing?.pid ?? "?"}, cwd=${existing?.cwd ?? "?"}).`,
+    );
+    console.error(
+      `[cc] Close that one first, or run plain \`${config.claudeCliCommand}\` here without watch monitoring.`,
+    );
+    // Not ours — cancel the onDisconnect so our exit doesn't clear the live
+    // owner's /sharedSession or UI surfaces.
+    await clearCrashCleanup();
+    await new Promise((r) => setTimeout(r, 250));
+    process.exit(2);
+  }
+  ownsSharedSession = true;
   await clearCommand();
   await setStatus("IDLE");
 
-  // Register Firebase server-side cleanup BEFORE we do any real work. If we
-  // get SIGKILL'd or the Mac crashes between here and clean shutdown, the
-  // server will clear /sharedSession + UI surfaces when our TCP drops —
-  // which is the only mechanism that survives `kill -9` / OOM.
-  await registerCrashCleanup({ sharedSession: true, uiSurfaces: true });
   // Defensive re-assertion at 8s in case a previous wrapper-pty's
   // onDisconnect fires server-side after we've already written IDLE.
   // See wrapper/src/index.ts:runDaemon for the full race explanation.
@@ -168,6 +181,10 @@ async function main(): Promise<void> {
     ? ["--resume", parsed.resumeSessionId, "--permission-mode", "dontAsk"]
     : [];
 
+  // One-time id of the permission prompt currently on the watch; only a
+  // /command echoing it may answer (src/command-consumer.ts).
+  const activePrompt = new ActivePrompt();
+
   const runner = startClaude(
     {
       onStatus: (s) => {
@@ -177,7 +194,10 @@ async function main(): Promise<void> {
         void writeMetrics(m);
       },
       onPermission: (prompt) => {
-        void setPermissionPrompt(prompt);
+        void activePrompt.publish(
+          () => publishPermissionPrompt(prompt),
+          (e) => console.error("[cc] publishPermissionPrompt failed:", e),
+        );
         void setStatus("AWAITING_PERMISSION");
         void sendFcmWake("permission");
       },
@@ -202,42 +222,46 @@ async function main(): Promise<void> {
     { extraArgs },
   );
 
-  // Permission responses + freeform stdin from the watch arrive via /command.
-  // The interactive runner already accepts these via runner.send(text).
+  // Permission answers + STOP from the watch arrive via /command. Only the
+  // allowlisted bytes pass, and answers must echo the active prompt id —
+  // a leaked watch UID must not be able to type into this pty.
   const stopWatching = watchCommands(async (cmd) => {
-    const ageSec = (Date.now() - cmd.issuedAt) / 1000;
-    if (ageSec > config.commandMaxAgeSeconds) {
-      console.warn(`[cc] Stale command (age ${ageSec.toFixed(1)}s) — dropped.`);
-      await clearCommand();
-      return;
-    }
-    // SIGINT cancel from the watch: tear down the shared session cleanly.
-    if (cmd.text === "\x03") {
-      console.log("[cc] SIGINT from watch — closing shared session");
-      void appendAuditEntry({
-        ts: Date.now(),
-        kind: "cc",
-        tool: "(cancel)",
-        args: "",
-        decision: "deny",
-        source: "watch",
-      });
-      await clearCommand();
-      await setPermissionPrompt(null);
-      runner.kill();
-      return;
-    }
-    void appendAuditEntry({
-      ts: Date.now(),
-      kind: "cc",
-      tool: "(cc-permission)",
-      args: cmd.text.slice(0, 60),
-      decision: cmd.text.trim().startsWith("1") ? "allow" : "deny",
-      source: "watch",
-    });
-    runner.send(cmd.text);
-    await clearCommand();
-    await setPermissionPrompt(null);
+    await consumeCommand(
+      cmd,
+      activePrompt,
+      { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
+      {
+        clearCommand,
+        clearPrompt: () => setPermissionPrompt(null),
+        answer: (bytes, decision) => {
+          void appendAuditEntry({
+            ts: Date.now(),
+            kind: "cc",
+            tool: "(cc-permission)",
+            args: JSON.stringify(bytes),
+            decision,
+            source: "watch",
+          });
+          runner.send(bytes);
+        },
+        // SIGINT cancel from the watch: tear down the shared session cleanly.
+        // Awaited audit: runner.kill() → onExit → process.exit.
+        stop: async () => {
+          console.log("[cc] SIGINT from watch — closing shared session");
+          await appendAuditEntry({
+            ts: Date.now(),
+            kind: "cc",
+            tool: "(cancel)",
+            args: "",
+            decision: "deny",
+            source: "watch",
+          }).catch(() => {});
+          await setPermissionPrompt(null);
+          runner.kill();
+        },
+        warn: (m) => console.warn(`[cc] ${m}`),
+      },
+    );
   });
 
   // Fire-and-forget: once Claude has booted, read its sessionId from disk
@@ -302,10 +326,14 @@ async function main(): Promise<void> {
 
 main().catch(async (err) => {
   console.error("[cc] Fatal:", err);
-  try {
-    await setSharedSession(null);
-  } catch {
-    // best effort
+  // Only clear the lock if we actually hold it — a failure before/while
+  // acquiring must not wipe another live session's /sharedSession.
+  if (ownsSharedSession) {
+    try {
+      await setSharedSession(null);
+    } catch {
+      // best effort
+    }
   }
   process.exit(1);
 });
