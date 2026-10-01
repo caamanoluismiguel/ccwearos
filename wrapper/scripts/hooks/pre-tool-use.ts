@@ -23,12 +23,22 @@ console.log = (...args: unknown[]): void => {
 //   - Otherwise (no share, or different session) we exit 0 immediately so
 //     Claude falls back to its built-in Terminal permission prompt.
 //
-// Output contract (Claude Code hook format):
-//   stdout JSON: { "hookSpecificOutput": { "permissionDecision": "allow"|"deny"|"ask" } }
+// Output contract — PreToolUse decision control, verified 2026-10-01 against
+// https://code.claude.com/docs/en/hooks#pretooluse-decision-control :
+//   stdout JSON: { "hookSpecificOutput": { "hookEventName": "PreToolUse",
+//     "permissionDecision": "allow"|"deny"|"ask",
+//     "permissionDecisionReason": "..." } }
+//   - "allow" bypasses the permission system for this call (no Terminal
+//     prompt, works under any mode); deny RULES in settings still win.
+//   - "deny" blocks the call; the reason is shown to Claude.
+//   - "ask" shows Claude's normal permission dialog regardless of mode.
+//   - Exit 0 with no JSON = "defer" (normal permission flow) — what every
+//     pass-through below does for sessions we don't bridge.
 //   exit 0 always (we never want to crash a Claude session because of us).
 //
-// Polling budget: 55s. Claude Code defaults to a 60s hook timeout; we leave
-// 5s buffer so the script can finish writing JSON before the host kills it.
+// Polling budget: 55s. Kept short on purpose (the documented PreToolUse
+// default timeout is 600s): after 55s we hand the decision back to the
+// Terminal with "ask" instead of blocking Claude for minutes.
 //
 // Permission prompt protocol (one-time ids, see src/command-guard.ts):
 //   - publishPermissionPrompt() writes /permissionPrompt + a fresh
@@ -55,7 +65,11 @@ import {
   setStatus,
 } from "../../src/firebase.js";
 import { checkCommand } from "../../src/command-guard.js";
-import { describeToolCall } from "../../src/shared-session.js";
+import {
+  describeToolCall,
+  hookDecision,
+  type HookOutput,
+} from "../../src/shared-session.js";
 import type {
   PendingCommand,
   SharedSessionMeta,
@@ -83,17 +97,7 @@ interface HookInput {
   cwd?: string;
 }
 
-interface HookOutput {
-  // New format (Claude Code SKILL docs).
-  hookSpecificOutput?: {
-    permissionDecision?: "allow" | "deny" | "ask";
-  };
-  // Older top-level format some CLI versions still parse:
-  // "approve" / "block" / undefined-for-defer.
-  decision?: "approve" | "block";
-  reason?: string;
-  systemMessage?: string;
-}
+const decision = hookDecision;
 
 const POLL_INTERVAL_MS = 500;
 const POLL_BUDGET_MS = 55_000;
@@ -380,7 +384,9 @@ async function main(): Promise<void> {
       `[ccwearos-hook] publish failed: ${(e as Error).message} — falling through to ask\n`,
     );
     await cleanup("publish-failed");
-    await emit({ hookSpecificOutput: { permissionDecision: "ask" } });
+    await emit(
+      decision("ask", "No se pudo enviar el permiso al reloj; confirma aquí"),
+    );
   }
 
   const debug = !!process.env["CCWEAROS_HOOK_DEBUG"];
@@ -414,7 +420,7 @@ async function main(): Promise<void> {
       source: "auto",
     });
     await emit({
-      hookSpecificOutput: { permissionDecision: "ask" },
+      ...decision("ask", "El reloj no respondió a tiempo; confirma aquí"),
       systemMessage:
         "CCWEAROS watch did not respond in time — defaulting to ask",
     });
@@ -424,12 +430,9 @@ async function main(): Promise<void> {
   // "1\r" / "2\r" = allow, "" / ESC = deny.
   const head = reply!.trim().charAt(0);
   if (head === "1" || head === "2") {
-    // ALLOW path: per Claude Code docs and observed CLI v2.1.143 behaviour,
-    // `exit 0` with NO stdout is interpreted as "proceed without prompting"
-    // — the most reliable way to skip the user's Terminal permission UI.
-    // Emitting JSON with permissionDecision=allow was being treated as a
-    // hint that did NOT skip the prompt; bare exit 0 does.
-    dlog("emit: bare exit 0 (allow)");
+    // ALLOW path: an explicit "allow" decision. A bare exit 0 is "defer"
+    // per the docs — Claude then runs its own permission check (Terminal
+    // double-confirm, or auto-deny under dontAsk). "allow" skips it.
     await appendAuditEntry({
       ts: Date.now(),
       kind: "hook",
@@ -438,11 +441,9 @@ async function main(): Promise<void> {
       decision: "allow",
       source: "watch",
     });
-    await exitWith(0);
+    await emit(decision("allow", "Aprobado desde el reloj"));
   }
-  // DENY path: stderr JSON + exit 2 — the canonical "block" signal from
-  // Claude Code hook docs.
-  dlog("emit: stderr JSON + exit 2 (deny)");
+  // DENY path: explicit "deny" decision; the reason is shown to Claude.
   await appendAuditEntry({
     ts: Date.now(),
     kind: "hook",
@@ -451,13 +452,7 @@ async function main(): Promise<void> {
     decision: "deny",
     source: "watch",
   });
-  process.stderr.write(
-    JSON.stringify({
-      decision: "block",
-      reason: "denied via CCWEAROS watch",
-    }) + "\n",
-  );
-  await exitWith(2);
+  await emit(decision("deny", "Rechazado desde el reloj"));
 }
 
 main().catch(async (err) => {

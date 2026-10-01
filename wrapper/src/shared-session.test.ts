@@ -4,6 +4,7 @@ import {
   PROMPT_MAX_CHARS,
   describeToolCall,
   findClaudeAncestorPid,
+  hookDecision,
   isClaudeComm,
   isSharedSessionStale,
   staleLockRemover,
@@ -134,6 +135,20 @@ describe("describeToolCall", () => {
     expect(describeToolCall("WebFetch", { url: "https://a.b", prompt: "hi" })).toBe(
       "WebFetch: url=https://a.b · prompt=hi",
     );
+  });
+});
+
+describe("hookDecision", () => {
+  it("emits the documented PreToolUse decision-control shape", () => {
+    expect(JSON.parse(JSON.stringify(hookDecision("allow", "Aprobado desde el reloj")))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        permissionDecisionReason: "Aprobado desde el reloj",
+      },
+    });
+    expect(hookDecision("deny", "r").hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(hookDecision("ask", "r").hookSpecificOutput.hookEventName).toBe("PreToolUse");
   });
 });
 

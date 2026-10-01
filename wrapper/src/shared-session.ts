@@ -87,6 +87,35 @@ export function findClaudeAncestorPid(
   return null;
 }
 
+// --- PreToolUse hook output --------------------------------------------
+
+// Schema verified 2026-10-01 against
+// https://code.claude.com/docs/en/hooks#pretooluse-decision-control :
+// "allow" bypasses the permission system for the call (deny rules still
+// apply), "deny" blocks it and shows the reason to Claude, "ask" shows the
+// normal permission dialog regardless of mode.
+export interface HookOutput {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse";
+    permissionDecision: "allow" | "deny" | "ask";
+    permissionDecisionReason: string;
+  };
+  systemMessage?: string;
+}
+
+export function hookDecision(
+  permissionDecision: "allow" | "deny" | "ask",
+  permissionDecisionReason: string,
+): HookOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision,
+      permissionDecisionReason,
+    },
+  };
+}
+
 // --- PreToolUse hook prompt formatting ---------------------------------
 
 export const PROMPT_MAX_CHARS = 1500;
