@@ -1,5 +1,8 @@
 package com.caamano.ccwearos.tile
 
+import com.caamano.ccwearos.presentation.permission.Risk
+import com.caamano.ccwearos.presentation.permission.classifyRisk
+
 import java.util.Locale
 
 // Pure, Android-free model shared by the Status Tile and the complications.
@@ -51,7 +54,7 @@ object TileMapper {
                 TileState.Awaiting(
                     promptPreview = promptPreview(prompt),
                     promptId = id,
-                    quickActions = !id.isNullOrBlank() && !RiskClassifier.isRisky(prompt),
+                    quickActions = !id.isNullOrBlank() && !RiskClassifier.isRisky(prompt) && fullyVisible(prompt),
                 )
             }
             else -> TileState.Offline
@@ -60,6 +63,19 @@ object TileMapper {
 
     fun clampPct(raw: Double): Int? =
         if (raw.isNaN()) null else raw.coerceIn(0.0, 100.0).toInt()
+
+    /**
+     * True when the tile preview shows the whole prompt. Allow/Deny chips only
+     * appear then: nothing gets approved from the tile without being readable
+     * there. Longer prompts get "Abrir" for the full permission screen.
+     */
+    fun fullyVisible(prompt: String?): Boolean {
+        val text = prompt.orEmpty()
+        val lines = text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        return lines.isNotEmpty() && lines.size <= 2 && text.trim().length <= TILE_PROMPT_MAX_CHARS
+    }
+
+    const val TILE_PROMPT_MAX_CHARS = 90
 
     /** First two non-blank lines of the prompt, trimmed. */
     fun promptPreview(prompt: String?): String =
@@ -156,8 +172,12 @@ object RiskClassifier {
         """\bgit\s+clean\s+-[a-z]*f""",
     ).map { Regex(it, RegexOption.IGNORE_CASE) }
 
+    // Union with the full-screen classifier so the tile is never more
+    // permissive than the permission screen (which also catches writes
+    // outside the project and unreadable prompts).
     fun isRisky(prompt: String?): Boolean {
         if (prompt.isNullOrBlank()) return true
+        if (classifyRisk(prompt) == Risk.RISKY) return true
         return patterns.any { it.containsMatchIn(prompt) }
     }
 }

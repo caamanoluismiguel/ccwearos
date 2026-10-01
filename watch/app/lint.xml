@@ -5,4 +5,7 @@
         <ignore path="res/drawable/tile_preview.png" />
         <ignore path="res/drawable-round/tile_preview.png" />
     </issue>
+    <!-- Lint 8.x ActivityIconColorDetector NPEs on binary drawables
+         (read(...) must not be null) and aborts the whole run. -->
+    <issue id="ActivityIconColor" severity="ignore" />
 </lint>

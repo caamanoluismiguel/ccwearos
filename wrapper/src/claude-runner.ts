@@ -8,7 +8,7 @@ import {
   extractActivity,
   extractClaudeStatus,
   extractCurrentTask,
-  extractPermissionPrompt,
+  PermissionPromptTracker,
   extractResponseLines,
   extractSessionCumulative,
   extractTokenCounts,
@@ -75,7 +75,7 @@ export function startClaude(
 
   const store = createMetricsStore();
   let metricsTimer: NodeJS.Timeout | null = null;
-  let lastPromptEmitted: string | null = null;
+  const promptTracker = new PermissionPromptTracker();
   // If we've emitted a permission prompt but Claude's output has gone quiet
   // (no prompt patterns) for PROMPT_IDLE_MS, assume the user answered via the
   // terminal (not the watch) and downgrade status back to RUNNING so the watch
@@ -159,11 +159,8 @@ export function startClaude(
       }
     }
 
-    const prompt = extractPermissionPrompt(data);
-    if (prompt && prompt !== lastPromptEmitted) {
-      lastPromptEmitted = prompt;
-      events.onPermission(prompt);
-    }
+    const prompt = promptTracker.feed(data);
+    if (prompt) events.onPermission(prompt);
 
     const activity = extractActivity(data);
     if (activity && activity !== lastActivityEmitted) {
@@ -241,8 +238,8 @@ export function startClaude(
     // If a permission prompt is currently active and the user just typed
     // *anything* in the terminal, assume they're answering Claude there and
     // clear the watch permission state. The watch will route back to dashboard.
-    if (lastPromptEmitted !== null) {
-      lastPromptEmitted = null;
+    if (promptTracker.lastEmitted !== null) {
+      promptTracker.reset();
       events.onStatus("RUNNING");
     }
   };
@@ -269,7 +266,7 @@ export function startClaude(
   return {
     send(input) {
       pty.write(input);
-      lastPromptEmitted = null;
+      promptTracker.reset();
       events.onStatus("RUNNING");
     },
     kill() {

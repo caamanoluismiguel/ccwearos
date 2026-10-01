@@ -79,6 +79,37 @@
         <receiver
             android:name=".notifications.PermissionActionReceiver"
             android:exported="false" />
+        <service
+            android:name=".tile.StatusTileService"
+            android:exported="true"
+            android:label="@string/tile_status_label"
+            android:description="@string/tile_status_description"
+            android:icon="@drawable/ic_complication_mascot"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tile_preview" />
+        </service>
+
+        <service
+            android:name=".complication.StatusComplicationService"
+            android:exported="true"
+            android:label="@string/complication_status_label"
+            android:icon="@drawable/ic_complication_mascot"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,RANGED_VALUE" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="300" />
+        </service>
     </application>
 
 </manifest>

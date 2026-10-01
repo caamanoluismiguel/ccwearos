@@ -92,9 +92,19 @@ class TileMapperTest {
         assertEquals(TileState.Offline, TileMapper.map(snap("garbage"), true))
     }
 
-    @Test fun safe_prompt_with_id_gets_quick_actions() {
+    @Test fun safe_fully_visible_prompt_with_id_gets_quick_actions() {
+        val s = TileMapper.map(snap("AWAITING_PERMISSION", "Bash: npm test\n\nRun the tests", "p1"), true)
+        assertEquals(TileState.Awaiting("Bash: npm test\nRun the tests", "p1", quickActions = true), s)
+    }
+
+    @Test fun safe_prompt_with_hidden_lines_only_opens_app() {
+        // Nothing gets approved from the tile without being readable there.
         val s = TileMapper.map(snap("AWAITING_PERMISSION", "Bash\n\nnpm test\nthird", "p1"), true)
-        assertEquals(TileState.Awaiting("Bash\nnpm test", "p1", quickActions = true), s)
+        assertEquals(TileState.Awaiting("Bash\nnpm test", "p1", quickActions = false), s)
+    }
+
+    @Test fun unreadable_prompt_marker_is_risky() {
+        assertTrue(RiskClassifier.isRisky("Permission requested (details not visible, check the terminal)"))
     }
 
     @Test fun risky_prompt_only_opens_app() {

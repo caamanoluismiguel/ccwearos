@@ -17,7 +17,7 @@ import {
   extractActivity,
   extractClaudeStatus,
   extractCurrentTask,
-  extractPermissionPrompt,
+  PermissionPromptTracker,
   extractResponseLines,
   extractSessionCumulative,
   extractTokenCounts,
@@ -123,7 +123,7 @@ export function runClaudeForVoice(
   let lastSessionCumulative = 0;
   let responseBuffer = "";
   let lastResponseEmitted = "";
-  let lastPromptEmitted: string | null = null;
+  const promptTracker = new PermissionPromptTracker();
   let lastActivity: string | null = null;
   let lastTask: string | null = null;
   const accumulatedStatus: ClaudeStatus = {
@@ -256,11 +256,8 @@ export function runClaudeForVoice(
     }
 
     // Permission prompt — surfaces to /permissionPrompt + AWAITING_PERMISSION.
-    const promptText = extractPermissionPrompt(data);
-    if (promptText && promptText !== lastPromptEmitted) {
-      lastPromptEmitted = promptText;
-      cb.onPermission(promptText);
-    }
+    const promptText = promptTracker.feed(data);
+    if (promptText) cb.onPermission(promptText);
 
     // Tool events first — they yield concrete activity strings ("Editing
     // parser.ts") that we prefer over Claude's whimsical "Crunching…".
@@ -355,7 +352,7 @@ export function runClaudeForVoice(
   return {
     send: (input) => {
       lastDataTime = Date.now();
-      lastPromptEmitted = null; // user answered — next prompt is fresh
+      promptTracker.reset(); // user answered — next prompt is fresh
       try {
         pty.write(input);
       } catch {

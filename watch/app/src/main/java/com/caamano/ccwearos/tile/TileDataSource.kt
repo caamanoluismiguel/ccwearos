@@ -65,7 +65,7 @@ object TileDataSource {
         if (snap.status != "AWAITING_PERMISSION") return false
         if (snap.permissionPromptId != expectedPromptId) return false
         // Denying is always safe; allowing re-checks risk on the fresh text.
-        if (allow && RiskClassifier.isRisky(snap.permissionPrompt)) return false
+        if (allow && (RiskClassifier.isRisky(snap.permissionPrompt) || !TileMapper.fullyVisible(snap.permissionPrompt))) return false
         val payload = mapOf<String, Any>(
             "text" to if (allow) ALLOW_TEXT else DENY_TEXT,
             "issuedAt" to ServerValue.TIMESTAMP,

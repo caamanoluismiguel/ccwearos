@@ -1,5 +1,8 @@
 package com.caamano.ccwearos.data
 
+import com.caamano.ccwearos.complication.ComplicationUpdater
+import com.caamano.ccwearos.tile.TileUpdater
+
 import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
@@ -149,6 +152,10 @@ class CcwearosForegroundService : Service() {
                 .distinctUntilChanged()
                 .collect { text ->
                     currentText = text
+                    // Tiles and complications can't listen; nudge them on
+                    // every visible state change (system throttles these).
+                    TileUpdater.requestUpdate(this@CcwearosForegroundService)
+                    ComplicationUpdater.requestUpdate(this@CcwearosForegroundService)
                     // Re-post the same id: refreshes both the content text and
                     // the Ongoing Activity status. Silent (channel is LOW).
                     val ctx = this@CcwearosForegroundService

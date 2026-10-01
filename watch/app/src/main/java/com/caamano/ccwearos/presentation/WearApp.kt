@@ -13,7 +13,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.wear.compose.material3.AppScaffold
+import androidx.wear.compose.material3.TimeText
+import com.caamano.ccwearos.R
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.caamano.ccwearos.data.WrapperStatus
 
@@ -48,6 +52,9 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
     val claimResult by vm.claimResult.collectAsStateWithLifecycle()
     val lastError by vm.lastError.collectAsStateWithLifecycle()
 
+    // App-level scaffold: one curved TimeText shared by every page (pages pass
+    // timeText = null to their ScreenScaffold and inherit this one).
+    AppScaffold(timeText = { TimeText() }) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AnimatedContent(
             targetState = route(status, prompt),
@@ -110,14 +117,15 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                 ClaimResultBanner(
                     ok = result.ok,
                     message = if (result.ok) {
-                        "sesión abierta en tu Mac"
+                        stringResource(R.string.claim_ok)
                     } else {
-                        result.reason ?: "no se pudo abrir"
+                        result.reason ?: stringResource(R.string.claim_failed)
                     },
                     onDismiss = vm::dismissClaimResult,
                 )
             }
         }
+    }
     }
 }
 

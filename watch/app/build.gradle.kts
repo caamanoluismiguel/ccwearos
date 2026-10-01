@@ -71,6 +71,12 @@ dependencies {
     // Wear Ongoing Activity (FGS notification surfaced on the watch face)
     implementation(libs.wear.ongoing)
 
+    // Tile + complication (see INTEGRATION-tile.md)
+    implementation("androidx.wear.tiles:tiles:1.5.0")
+    implementation("androidx.wear.protolayout:protolayout:1.3.0")
+    implementation("androidx.wear.protolayout:protolayout-expression:1.3.0")
+    implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.2.1")
+    implementation("androidx.concurrent:concurrent-futures-ktx:1.2.0")
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
 

@@ -72,8 +72,14 @@ private fun isWriteOutsideProject(parsed: ParsedPrompt): Boolean {
     return !PROJECT_ROOT.containsMatchIn(path) && !TEMP_ROOT.containsMatchIn(path)
 }
 
+// The wrapper sends this when it saw a permission box but couldn't read the
+// command (wrapper/src/parser.ts PERMISSION_DETAILS_UNAVAILABLE). Approving
+// something unseen always takes the deliberate hold.
+const val DETAILS_UNAVAILABLE_MARKER = "details not visible"
+
 fun classifyRisk(prompt: String?): Risk {
     if (prompt.isNullOrBlank()) return Risk.NORMAL
+    if (prompt.contains(DETAILS_UNAVAILABLE_MARKER, ignoreCase = true)) return Risk.RISKY
     if (RISKY_SHELL.any { it.containsMatchIn(prompt) }) return Risk.RISKY
     if (isWriteOutsideProject(parsePrompt(prompt))) return Risk.RISKY
     return Risk.NORMAL

@@ -56,4 +56,7 @@
     <string name="claim_confirm">Resume</string>
     <string name="claim_cancel">Cancel</string>
     <string name="claim_id">id %1$s…</string>
+    <string name="claim_ok">Session opened on your Mac</string>
+    <string name="claim_failed">Could not open</string>
+    <string name="tile_status_description">Claude status on your Mac and quick permissions</string>
 </resources>

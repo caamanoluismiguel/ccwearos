@@ -521,6 +521,37 @@ const NOISE_PATTERNS: RegExp[] = [
 // Plain ASCII. We tried zero-width joiner flanks but Claude Code's TUI input
 // editor strips the leading joiner, breaking lastIndexOf. The bare ASCII
 // token is astronomically unlikely to appear in any natural Claude response.
+// Claude's permission box often arrives split across several pty chunks, so
+// extracting from one chunk at a time mostly yields the "details not visible"
+// marker. The tracker keeps a rolling window of recent output and emits each
+// distinct prompt once; as more of a box arrives the emitted text can be
+// refined (partial -> full), and the newest box in the window wins. Call
+// reset() when the prompt is answered (watch tap or terminal keypress) so the
+// answered box isn't picked up again.
+export class PermissionPromptTracker {
+  private buf = "";
+  private last: string | null = null;
+
+  constructor(private readonly maxBuffer: number = 16_384) {}
+
+  get lastEmitted(): string | null {
+    return this.last;
+  }
+
+  feed(chunk: string): string | null {
+    this.buf = (this.buf + chunk).slice(-this.maxBuffer);
+    const prompt = extractPermissionPrompt(this.buf);
+    if (!prompt || prompt === this.last) return null;
+    this.last = prompt;
+    return prompt;
+  }
+
+  reset(): void {
+    this.buf = "";
+    this.last = null;
+  }
+}
+
 export const PROMPT_END_MARKER = "__CCWEAROS_PROMPT_END__";
 
 export function extractResponseAfterMarker(

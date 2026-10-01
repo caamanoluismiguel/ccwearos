@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="tile_status_label">Claude</string>
+    <string name="tile_status_label" translatable="false">Claude</string>
     <string name="tile_status_description">Estado de Claude en tu Mac y permisos rápidos</string>
-    <string name="complication_status_label">Claude</string>
+    <string name="complication_status_label" translatable="false">Claude</string>
 </resources>
