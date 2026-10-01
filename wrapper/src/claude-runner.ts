@@ -19,6 +19,11 @@ export interface RunnerEvents {
   onStatus: (status: WrapperStatus) => void;
   onMetrics: (metrics: Metrics) => void;
   onPermission: (prompt: string) => void;
+  // The user answered the active permission prompt in the terminal (any
+  // keypress while it was showing). Consumers must drop their ActivePrompt
+  // and conditionally clear RTDB (releaseActivePrompt) so a late watch tap
+  // can't type an answer into Claude's input box.
+  onPermissionCleared: () => void;
   onActivity: (text: string | null) => void;
   onTask: (text: string | null) => void;
   onResponse: (text: string) => void;
@@ -241,6 +246,7 @@ export function startClaude(
     if (promptTracker.lastEmitted !== null) {
       promptTracker.reset();
       events.onStatus("RUNNING");
+      events.onPermissionCleared();
     }
   };
   process.stdin.on("data", stdinListener);

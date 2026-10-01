@@ -19,12 +19,22 @@ import {
 } from "./command-guard.js";
 import type { PendingCommand } from "./types/schema.js";
 
+// Token returned by ActivePrompt.consume/release: which prompt was taken and
+// the publish counter at that moment, so the caller can later ask "has a
+// newer prompt been published since?" (see src/prompt-store.ts).
+export interface ConsumedPrompt {
+  id: string;
+  publishSeq: number;
+}
+
 export class ActivePrompt {
   private id: string | null = null;
   private pending: Promise<unknown> = Promise.resolve();
   // Bumped on every publish/clear so a publish that resolves AFTER a newer
   // publish or a clear can't resurrect a stale id.
   private seq = 0;
+  // Bumped on publish only — "a newer prompt exists" for supersededSince.
+  private publishSeq = 0;
 
   // `publish` is publishPermissionPrompt bound to the prompt text. The
   // returned promise never rejects (errors go to onError) so callers can
@@ -34,6 +44,7 @@ export class ActivePrompt {
     onError: (e: unknown) => void = () => {},
   ): Promise<void> {
     const mySeq = ++this.seq;
+    this.publishSeq++;
     const p = publish().then(
       (id) => {
         if (mySeq === this.seq) this.id = id;
@@ -56,15 +67,58 @@ export class ActivePrompt {
   // has read from RTDB, but the server ack for our own write can arrive
   // after the watch's /command lands in our listener.
   async current(): Promise<string | null> {
-    await this.pending;
+    await this.ready();
     return this.id;
+  }
+
+  async ready(): Promise<void> {
+    await this.pending;
+  }
+
+  // Synchronous read — callers pair it with consume() in the same tick.
+  peek(): string | null {
+    return this.id;
+  }
+
+  // Claim-once: takes the prompt iff `id` is still the active one. The
+  // first caller wins; a concurrent second caller (double tap, replay) gets
+  // null. Synchronous so no await can split check and take.
+  consume(id: string): ConsumedPrompt | null {
+    if (this.id === null || this.id !== id) return null;
+    this.id = null;
+    return { id, publishSeq: this.publishSeq };
+  }
+
+  // True if a prompt was published (or started publishing) after `token`
+  // was taken.
+  supersededSince(token: ConsumedPrompt): boolean {
+    return this.publishSeq !== token.publishSeq;
+  }
+
+  // Takes whatever prompt is active (after an in-flight publish settles),
+  // unless a newer publish started while we waited. Used when the user
+  // answers in the terminal instead of on the watch.
+  async release(): Promise<ConsumedPrompt | null> {
+    const startSeq = this.publishSeq;
+    await this.ready();
+    if (this.publishSeq !== startSeq) return null;
+    const id = this.id;
+    if (id === null) return null;
+    return this.consume(id);
   }
 }
 
 export type CommandOutcome =
   | { kind: "rejected"; reason: string }
   | { kind: "stop" }
-  | { kind: "answer"; bytes: string; decision: "allow" | "deny" };
+  | {
+      kind: "answer";
+      bytes: string;
+      decision: "allow" | "deny";
+      // Set by consumeCommand: Claude published a newer prompt while we
+      // answered, so callers must NOT downgrade status to RUNNING.
+      newerPrompt?: boolean;
+    };
 
 // Pure decision: what to do with this /command right now.
 export function decideCommand(
@@ -90,10 +144,17 @@ export function decideCommand(
   };
 }
 
+// Conditional clear: /permissionPrompt + /permissionPromptId only if the id
+// on RTDB is still `id` and nothing newer was published (`superseded`).
+// Production binding: clearPermissionPromptIf (src/prompt-store.ts).
+export type ClearPromptIf = (
+  id: string,
+  superseded: () => boolean,
+) => Promise<unknown>;
+
 export interface CommandSink {
   clearCommand: () => Promise<void>;
-  // setPermissionPrompt(null) — clears /permissionPrompt + /permissionPromptId.
-  clearPrompt: () => Promise<void>;
+  clearPrompt: ClearPromptIf;
   // Write the (already allowlisted) answer bytes to the pty, plus any
   // per-entry-point bookkeeping (audit, status).
   answer: (bytes: string, decision: "allow" | "deny") => void | Promise<void>;
@@ -108,12 +169,12 @@ export async function consumeCommand(
   opts: { now: number; maxAgeSeconds: number },
   sink: CommandSink,
 ): Promise<CommandOutcome> {
-  const outcome = decideCommand(
-    cmd,
-    await prompt.current(),
-    opts.now,
-    opts.maxAgeSeconds,
-  );
+  await prompt.ready();
+  // From here to prompt.consume() there is no await: two /command events
+  // waiting on the same publish resume one after the other, and the second
+  // sees the id already consumed (claim-once, first caller wins).
+  const activeId = prompt.peek();
+  const outcome = decideCommand(cmd, activeId, opts.now, opts.maxAgeSeconds);
   if (outcome.kind === "rejected") {
     sink.warn(
       `/command rejected (${outcome.reason}): ${JSON.stringify(String(cmd.text).slice(0, 40))}`,
@@ -127,11 +188,31 @@ export async function consumeCommand(
     await sink.stop();
     return outcome;
   }
-  // Consume the id BEFORE the await so a second tap that races in while we
-  // write can't match it too.
-  prompt.clear();
+  // Consume the id BEFORE writing to the pty so a second tap that races in
+  // can't match it too, and so a prompt Claude emits in reply to our bytes
+  // counts as newer (supersededSince).
+  const token = activeId === null ? null : prompt.consume(activeId);
+  if (token === null) {
+    sink.warn("/command rejected (already-consumed)");
+    await sink.clearCommand();
+    return { kind: "rejected", reason: "already-consumed" };
+  }
   await sink.answer(outcome.bytes, outcome.decision);
   await sink.clearCommand();
-  await sink.clearPrompt();
-  return outcome;
+  // Conditional: if Claude already published prompt N+1, leave it alone.
+  await sink.clearPrompt(token.id, () => prompt.supersededSince(token));
+  return { ...outcome, newerPrompt: prompt.supersededSince(token) };
+}
+
+// The user answered in the terminal (runner onPermissionCleared): drop the
+// local prompt so a late watch tap can't type into Claude's input, and
+// conditionally clear it on RTDB. Returns whether a prompt was released.
+export async function releaseActivePrompt(
+  prompt: ActivePrompt,
+  clearPrompt: ClearPromptIf,
+): Promise<boolean> {
+  const token = await prompt.release();
+  if (token === null) return false;
+  await clearPrompt(token.id, () => prompt.supersededSince(token));
+  return true;
 }

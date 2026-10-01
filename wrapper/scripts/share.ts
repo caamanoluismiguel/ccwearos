@@ -47,7 +47,12 @@ import {
   watchCommands,
   writeMetrics,
 } from "../src/firebase.js";
-import { ActivePrompt, consumeCommand } from "../src/command-consumer.js";
+import {
+  ActivePrompt,
+  consumeCommand,
+  releaseActivePrompt,
+} from "../src/command-consumer.js";
+import { clearPermissionPromptIf } from "../src/prompt-store.js";
 import { isPidAlive } from "../src/pid-utils.js";
 import { claimSharedSession } from "../src/share-lock.js";
 import { startSessionScanner } from "../src/sessions-scanner.js";
@@ -204,6 +209,13 @@ async function main(): Promise<void> {
         void setStatus("AWAITING_PERMISSION");
         void sendFcmWake("permission");
       },
+      // Answered in the Terminal: drop the watch prompt so a late tap can't
+      // type "1\r" into Claude's input box.
+      onPermissionCleared: () => {
+        void releaseActivePrompt(activePrompt, clearPermissionPromptIf).catch(
+          (e) => console.error("[cc] releasing prompt failed:", e),
+        );
+      },
       onActivity: (text) => {
         void setActivity(text);
       },
@@ -235,7 +247,7 @@ async function main(): Promise<void> {
       { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
       {
         clearCommand,
-        clearPrompt: () => setPermissionPrompt(null),
+        clearPrompt: clearPermissionPromptIf,
         answer: (bytes, decision) => {
           void appendAuditEntry({
             ts: Date.now(),

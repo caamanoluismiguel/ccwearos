@@ -39,7 +39,12 @@ import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
 import { handleClaimRequest, spawnAsync } from "./claim-handler.js";
 import { resolveSessionCwd } from "./claim-cwd.js";
-import { ActivePrompt, consumeCommand } from "./command-consumer.js";
+import {
+  ActivePrompt,
+  consumeCommand,
+  releaseActivePrompt,
+} from "./command-consumer.js";
+import { clearPermissionPromptIf } from "./prompt-store.js";
 import { STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
 import { isSharedSessionStale } from "./shared-session.js";
@@ -116,6 +121,11 @@ async function runInteractive(): Promise<void> {
       void setStatus("AWAITING_PERMISSION");
       void sendFcmWake("permission");
     },
+    onPermissionCleared: () => {
+      void releaseActivePrompt(activePrompt, clearPermissionPromptIf).catch(
+        (e) => console.error("[ccwearos] releasing prompt failed:", e),
+      );
+    },
     onActivity: (text) => {
       void setActivity(text);
     },
@@ -144,7 +154,7 @@ async function runInteractive(): Promise<void> {
       { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
       {
         clearCommand,
-        clearPrompt: () => setPermissionPrompt(null),
+        clearPrompt: clearPermissionPromptIf,
         answer: (bytes) => {
           console.log(
             "[ccwearos] Permission answer from watch:",
@@ -336,7 +346,7 @@ async function runDaemon(): Promise<void> {
       { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
       {
         clearCommand,
-        clearPrompt: () => setPermissionPrompt(null),
+        clearPrompt: clearPermissionPromptIf,
         answer: (bytes, decision) => {
           console.log(
             "[ccwearos] Permission response from watch:",
@@ -372,7 +382,11 @@ async function runDaemon(): Promise<void> {
         warn: (m) => console.warn(`[ccwearos] ${m}`),
       },
     );
-    if (outcome.kind === "answer") await setStatus("RUNNING");
+    // Don't downgrade to RUNNING if Claude already raised the next prompt —
+    // that would hide AWAITING_PERMISSION for prompt N+1.
+    if (outcome.kind === "answer" && !outcome.newerPrompt) {
+      await setStatus("RUNNING");
+    }
   });
 
   // Sprint 4n — watch-initiated tap-to-claim. When the user taps a session
