@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome pixel mascot for complications. The watch face tints it, so it
+     is a single white path; the eyes are holes (evenOdd). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M2,6h20v8h-20z M6,8v3h2v-3z M16,8v3h2v-3z M4,14h2v4h-2z M11,14h2v4h-2z M18,14h2v4h-2z" />
+</vector>
