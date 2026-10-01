@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.Text
@@ -34,11 +34,6 @@ import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.messaging.FirebaseMessaging
 
 class MainActivity : ComponentActivity() {
-
-    private val notificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            Log.i(TAG, "POST_NOTIFICATIONS granted=$granted")
-        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,7 +104,11 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.getBoolean(KEY_ASKED_NOTIFICATIONS, false)) return
         prefs.edit().putBoolean(KEY_ASKED_NOTIFICATIONS, true).apply()
-        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        // ActivityCompat rather than registerForActivityResult: no result
+        // handling is needed, and the latter trips lintVital's
+        // InvalidFragmentVersionForActivityResult on the transitive
+        // fragment 1.0 pulled in by play-services.
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
     }
 
     // Push the current FCM token to /fcmToken so the wrapper can target this
@@ -142,6 +141,7 @@ class MainActivity : ComponentActivity() {
         const val TAG = "ccwearos-main"
         const val PREFS = "ccwearos"
         const val KEY_ASKED_NOTIFICATIONS = "asked_post_notifications"
+        const val REQ_NOTIFICATIONS = 1
     }
 }
 
