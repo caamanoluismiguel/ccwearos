@@ -2,6 +2,9 @@
 
 **Stop alt-tabbing to approve Claude Code permissions. Tap your wrist.**
 
+> [!WARNING]
+> **Personal project, not ready for installs.** This runs on my own watch and Mac, and there's still open security work around how permission prompts are shown and answered. Please don't install it yet. You're welcome to read the code.
+
 <p align="center">
   <img src="docs/screenshots/demo.gif" alt="CCWEAROS — Wear OS bridge for Claude Code on macOS" width="640" />
 </p>
