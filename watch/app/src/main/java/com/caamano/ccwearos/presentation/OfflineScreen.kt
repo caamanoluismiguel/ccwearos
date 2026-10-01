@@ -1,52 +1,59 @@
 package com.caamano.ccwearos.presentation
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.wear.compose.material3.MaterialTheme
+import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
+import androidx.wear.tooling.preview.devices.WearDevices
+import com.caamano.ccwearos.R
+import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
+import com.caamano.ccwearos.presentation.ui.MascotState
+import com.caamano.ccwearos.presentation.ui.PixelMascot
 
+// The wrapper on the Mac isn't reachable. Grey, still mascot (no motion = no
+// life on the other end) + one plain sentence. TimeText comes from AppScaffold.
 @Composable
 fun OfflineScreen() {
-    // ARIA: Offline screen is a full-center composition — everything centered horizontally
-    // and vertically. 8dp spacing between elements matches the dashboard grid.
-    // The mascot breathes = false signals "dead / no connection" state.
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    ScreenScaffold { _ ->
         Column(
-            modifier = Modifier.fillMaxSize(fraction = 0.72f),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = (LocalConfiguration.current.screenWidthDp * 0.14f).dp)
+                .semantics(mergeDescendants = true) { },
             verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ClaudeMascot(width = 18.dp, breathe = false)
-                Spacer(Modifier.padding(horizontal = 4.dp))
-                Text("claude code", color = ClaudeCoral, fontFamily = MonoFamily, fontSize = 10.sp)
-            }
+            PixelMascot(state = MascotState.Offline, size = 32.dp)
             Text(
-                text = "$ offline",
-                color = ClaudeRed,
-                fontFamily = MonoFamily,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
+                text = stringResource(R.string.offline_title),
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
             )
             Text(
-                text = "wrapper not reachable",
-                color = ClaudeDim.copy(alpha = 0.65f),
-                fontFamily = MonoFamily,
-                fontSize = 9.sp,
+                text = stringResource(R.string.offline_hint),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,
             )
         }
     }
+}
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Offline")
+@Composable
+private fun PreviewOffline() {
+    CCWEAROSTheme { OfflineScreen() }
 }

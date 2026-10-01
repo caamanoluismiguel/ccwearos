@@ -1,4 +1,70 @@
 <resources>
     <string name="app_name">CCWEAROS</string>
-    <string name="hello_world">Hello, %1$s!</string>
+
+    <!-- Estado de Claude (Page 0, mascota, accesibilidad) -->
+    <string name="state_idle">Listo</string>
+    <string name="state_running">Trabajando</string>
+    <string name="state_waiting">Esperando permiso</string>
+    <string name="state_offline">Sin conexión</string>
+    <string name="state_done">Terminado</string>
+    <string name="state_error">Algo falló</string>
+    <string name="mascot_cd">Claude: %1$s</string>
+
+    <!-- Acciones -->
+    <string name="action_ask">Preguntar</string>
+    <string name="action_continue">Seguir</string>
+    <string name="action_stop">Detener</string>
+    <string name="action_stop_cd">Detener. Mantén presionado para reiniciar el estado</string>
+    <string name="voice_prompt_ask">¿Qué le pregunto a Claude?</string>
+    <string name="voice_prompt_continue">Seguir la conversación</string>
+    <string name="voice_prompt_reset">Nueva conversación</string>
+    <string name="voice_unavailable">Este reloj no tiene reconocimiento de voz</string>
+
+    <!-- Sesión compartida -->
+    <string name="shared_hook_title">Puente activo</string>
+    <string name="shared_hook_hint">Los permisos llegan al reloj</string>
+    <string name="shared_pty_title">Sesión compartida</string>
+    <string name="shared_pty_hint">Activa en tu Mac · cc</string>
+    <string name="shared_hint">Activa en tu Mac</string>
+
+    <!-- Métricas -->
+    <string name="metrics_today">hoy</string>
+    <string name="metrics_session">sesión</string>
+    <string name="metrics_week">semana</string>
+    <string name="metrics_tokens">tokens</string>
+    <string name="metrics_week_month">semana %1$s · mes %2$s</string>
+    <string name="metrics_resets">se reinicia %1$s</string>
+    <string name="metrics_gauge_cd">%1$s: %2$s usado</string>
+
+    <!-- Respuesta -->
+    <string name="response_tldr">resumen</string>
+    <string name="response_empty">Aún no hay respuesta</string>
+    <string name="result_ok">Listo</string>
+    <string name="result_failed">Falló</string>
+
+    <!-- Seguimiento -->
+    <string name="followups_title">¿Y ahora qué?</string>
+    <string name="followups_new">Nueva conversación</string>
+
+    <!-- Sesiones -->
+    <string name="sessions_title">sesiones</string>
+    <string name="session_active">activa</string>
+    <string name="session_shared">compartida</string>
+    <string name="session_past">anterior</string>
+    <string name="time_now">ahora</string>
+    <string name="time_minutes">hace %1$d min</string>
+    <string name="time_hours">hace %1$d h</string>
+    <string name="time_yesterday">ayer</string>
+    <string name="time_days">hace %1$d d</string>
+
+    <!-- Sin conexión -->
+    <string name="offline_title">Sin conexión con tu Mac</string>
+    <string name="offline_hint">Revisa que el daemon esté corriendo</string>
+
+    <!-- Retomar sesión -->
+    <string name="claim_title">Retomar sesión</string>
+    <string name="claim_body">Se abrirá una Terminal nueva en tu Mac con cc --resume</string>
+    <string name="claim_confirm">Retomar</string>
+    <string name="claim_cancel">Cancelar</string>
+    <string name="claim_id">id %1$s…</string>
 </resources>
