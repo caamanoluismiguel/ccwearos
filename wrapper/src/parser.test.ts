@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   extractFollowups,
@@ -6,6 +8,8 @@ import {
   extractTokenCount,
   extractTokenCounts,
   isAwaitingPermission,
+  PERMISSION_DETAILS_UNAVAILABLE,
+  PERMISSION_PROMPT_MAX_CHARS,
   PROMPT_END_MARKER,
 } from "./parser.js";
 
@@ -86,6 +90,121 @@ describe("extractPermissionPrompt", () => {
 
   it("trims whitespace around the matched line", () => {
     expect(extractPermissionPrompt("\n   Allow?   \n")).toBe("Allow?");
+  });
+});
+
+// Fixtures in fixtures/permission/ are sanitized slices of real Claude Code
+// 2.1.x pty output (same-length substitutions so wrap columns stay exact),
+// plus *-synthetic.txt boxes built in the same escape style.
+describe("extractPermissionPrompt — Claude Code permission box", () => {
+  const fixture = (name: string): string =>
+    readFileSync(
+      fileURLToPath(
+        new URL(`../fixtures/permission/${name}.txt`, import.meta.url),
+      ),
+      "utf8",
+    );
+
+  it("Bash: shows the command and Claude's description, not '❯ 1. Yes'", () => {
+    expect(extractPermissionPrompt(fixture("bash-simple"))).toBe(
+      "Bash: ls -la /Users/jdoe-example-user/projects/\n" +
+        "List all projects in the projects directory",
+    );
+  });
+
+  it("Bash: rows are separated by bare \\r, not \\n", () => {
+    const raw = fixture("bash-simple");
+    const box = raw.slice(raw.lastIndexOf("─".repeat(80)));
+    expect(box).not.toMatch(/\n[^\r\n]*Do you want/);
+    expect(box).toMatch(/\r[^\r\n]*Do you want to proceed\?/);
+    expect(extractPermissionPrompt(box)).toMatch(/^Bash: ls -la /);
+  });
+
+  it("Bash: re-joins a long command hard-wrapped mid-path and word-wrapped", () => {
+    expect(extractPermissionPrompt(fixture("bash-wrapped"))).toBe(
+      "Bash: ls /Users/jdoe-example-user/.claude/projects/" +
+        "-Users-jdoe-example-user-projects-CCWEAROS/memory/ 2>/dev/null" +
+        ' && echo "---" && ls /Users/jdoe-example-user/projects/ 2>/dev/null\n' +
+        "Check memory directory and projects folder",
+    );
+  });
+
+  it("Bash: multi-line script keeps its lines and relative indent", () => {
+    const got = extractPermissionPrompt(fixture("bash-heredoc-redraw"));
+    expect(got).toMatch(
+      /^Bash: for dir in \/Users\/jdoe-example-user\/projects\/\*\/; do\n {2}name=/,
+    );
+    expect(got).toContain('\n    grep -E \'"(name|description)"\' "$dir/package.json" | head -3\n  else\n');
+    expect(got).toContain("\ndone 2>/dev/null\nGet a brief overview of each project");
+    expect(got).not.toContain("Do you want");
+    expect(got).not.toContain("1. Yes");
+  });
+
+  it("Bash: caps at the max length but keeps the END of a chained command", () => {
+    const got = extractPermissionPrompt(fixture("bash-long-chain-synthetic"));
+    expect(got).not.toBeNull();
+    expect(got!.length).toBeLessThanOrEqual(PERMISSION_PROMPT_MAX_CHARS);
+    expect(got).toMatch(/^Bash: echo step-0 && echo step-1 /);
+    expect(got).toContain(" … ");
+    expect(got).toContain(
+      "echo step-119 && rm -rf ./build\nRun every build step then clean the build folder",
+    );
+  });
+
+  it("Edit: shows the file path, not the diff", () => {
+    expect(extractPermissionPrompt(fixture("edit-synthetic"))).toBe(
+      "Edit: src/services/billing.ts",
+    );
+  });
+
+  it("Write: shows the file path, not the content preview", () => {
+    expect(extractPermissionPrompt(fixture("write-synthetic"))).toBe(
+      "Write: scripts/deploy.sh",
+    );
+  });
+
+  it("Fetch: shows the URL and the fetch prompt", () => {
+    expect(extractPermissionPrompt(fixture("fetch"))).toBe(
+      "Fetch: https://www.example-site.io\n" +
+        "Summarize what this site is about, what it offers, and any key " +
+        "sections/products visible on the homepage.",
+    );
+  });
+
+  it("Web Search: shows the full (wrapped) query", () => {
+    expect(extractPermissionPrompt(fixture("web-search"))).toBe(
+      'Web Search: "mejores restaurantes asiaticos Bogota virales Instagram TikTok 2026"',
+    );
+  });
+
+  it("returns null for a normal TUI screen (spinner, input box, status bar)", () => {
+    expect(extractPermissionPrompt(fixture("no-permission-status"))).toBeNull();
+  });
+
+  it("flags a box whose top is not in the chunk instead of guessing", () => {
+    const got = extractPermissionPrompt(
+      "\r Do you want to proceed?\r ❯ 1. Yes\r   2. No\r",
+    );
+    expect(got).toContain(PERMISSION_DETAILS_UNAVAILABLE);
+  });
+
+  it("ignores 'Do you want to …?' in Claude's prose (no option list)", () => {
+    const rule = "─".repeat(80);
+    const chunk = `\r${rule}\r❯ \r${rule}\r⏺ Built it.\rDo you want to deploy now?\r`;
+    expect(extractPermissionPrompt(chunk)).toBeNull();
+  });
+
+  it("never forwards a bare '❯ 1. Yes' as the prompt text", () => {
+    expect(extractPermissionPrompt("\r❯ 1. Yes\r  2. No\r")).toBe(
+      PERMISSION_DETAILS_UNAVAILABLE,
+    );
+  });
+
+  it("uses the newest box when several are in the buffer", () => {
+    const got = extractPermissionPrompt(
+      fixture("bash-simple") + fixture("web-search"),
+    );
+    expect(got).toMatch(/^Web Search: /);
   });
 });
 

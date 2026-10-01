@@ -1,0 +1,8 @@
+[1B[38;2;87;105;247m────────────────────────────────────────────────────────────────────────────────[1B[39m [38;2;87;105;247m[1mTool use[22m[39m[K[2C[1B[K[2C[1B Web Search("mejores restaurantes asiaticos[1CBogota[1Cvirales[1CInstagram[1CTikTok[2C[1B  2026")[K[2C[1B [38;2;102;102;102mClaude[1Cwants to search the[1Cweb for: mejores restaurantes asiaticos Bogota [2C[1B[39m [38;2;102;102;102mvirales Instagram TikTok 2026[39m[K[2C[1B[K
+[1CDo[1Cyou[1Cwant[1Cto[1Cproceed?
+[1C[38;2;87;105;247m❯[1C[38;2;102;102;102m1.[1C[38;2;87;105;247mYes[39m
+[3C[38;2;102;102;102m2.[1C[39mYes,[1Cand[1Cdon't[1Cask[1Cagain[1Cfor[1C[1mWeb[1CSearch[1C[22mcommands[1Cin
+[6C[1m/Users/jdoe-example-user/projects/CCWEAROS/wrapper[22m
+[3C[38;2;102;102;102m3.[1C[39mNo
+
+[1C[38;2;102;102;102mEsc[1Cto[1Ccancel[1C·[1CTab[1Cto[1Camend[39m
