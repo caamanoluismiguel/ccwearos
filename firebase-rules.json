@@ -9,7 +9,7 @@
 
     "status": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
-      ".write": false
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && newData.val() === 'IDLE'"
     },
     "metrics": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
@@ -17,19 +17,19 @@
     },
     "permissionPrompt": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
-      ".write": false
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && !newData.exists()"
     },
     "permissionPromptId": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
-      ".write": false
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && !newData.exists()"
     },
     "activity": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
-      ".write": false
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && !newData.exists()"
     },
     "task": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
-      ".write": false
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && !newData.exists()"
     },
     "response": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
@@ -38,6 +38,13 @@
     "claudeStatus": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
       ".write": false
+    },
+
+    "_comment_force_reset": "Long-press force reset (CcwearosRepository.forceResetUi) does one multi-path update: status=IDLE and null on sharedSession, permissionPrompt, permissionPromptId, activity, task, command. The watch may ONLY write those exact values on those paths.",
+
+    "sharedSession": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && !newData.exists()"
     },
 
     "fcmToken": {

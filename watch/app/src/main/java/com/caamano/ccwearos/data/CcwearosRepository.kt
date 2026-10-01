@@ -138,6 +138,9 @@ class CcwearosRepository(
     // phantom and want to dismiss it" recovery affordance, bound to the
     // long-press on the stop button.
     override suspend fun forceResetUi() {
+        // Must match firebase-rules.json exactly: the watch may only write
+        // status='IDLE' and null on the other six paths. Any extra path or
+        // value fails the whole multi-path update with PERMISSION_DENIED.
         val updates = mapOf<String, Any?>(
             "status" to "IDLE",
             "sharedSession" to null,
