@@ -14,7 +14,7 @@
 //   - concurrent claim in-flight (claimBusy=true) → refuse (single-flight)
 //   - another wrapper-pty session alive → refuse (would deadlock at `claude --resume`)
 //   - session unknown on this Mac → refuse. The watch's `cwd` is NEVER
-//     trusted: the spawned cc runs with --permission-mode dontAsk, so the
+//     trusted: the spawned cc runs with --permission-mode default, so the
 //     cwd comes from the session's own local transcript (src/claim-cwd.ts).
 //   - osascript non-zero / timeout → bubble up stderr
 

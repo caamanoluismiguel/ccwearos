@@ -123,7 +123,7 @@ function install(): void {
   console.log("  5. Run /ccwearos-off to stop sharing.");
   console.log("");
   console.log("Leaving the Mac? /ccwearos-takeover opens a new Terminal");
-  console.log("under `cc` with permission-mode=dontAsk (no double-confirm).");
+  console.log("under `cc`, where every permission prompt goes to the watch.");
 }
 
 function uninstall(): void {

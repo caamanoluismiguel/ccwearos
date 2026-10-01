@@ -5,7 +5,7 @@
 
 export interface ShareArgs {
   // Set when `--resume <id>` (or `--resume=<id>`) is present. Triggers the
-  // takeover flow: share.ts will spawn `claude --resume <id> --permission-mode dontAsk`
+  // takeover flow: share.ts will spawn `claude --resume <id> --permission-mode default`
   // so the watch becomes the sole permission gate.
   resumeSessionId: string | null;
 }

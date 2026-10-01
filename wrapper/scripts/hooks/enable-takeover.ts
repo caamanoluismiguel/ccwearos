@@ -8,7 +8,7 @@
 //      PreToolUse hook bails immediately (kind !== "hook" → pass-through).
 //   3. Open a new Terminal.app (or iTerm.app, by $TERM_PROGRAM) window via
 //      osascript that runs `cc --resume <id>` — the wrapper-pty script
-//      with --permission-mode dontAsk forced, so the watch is the sole gate.
+//      with --permission-mode default, so every prompt is mirrored to the watch.
 //   4. Tell the user to close the old window; the new one is watch-owned.
 //
 // Why a new window (vs. relaunching inside the same Terminal):
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   if (!detected) {
     console.log("[ccwearos] ✗ No pude detectar el sessionId actual de Claude.");
     console.log(
-      "[ccwearos]   Mirá ~/.claude/sessions/ — si está vacío, no hay nada que resumir.",
+      "[ccwearos]   Mira ~/.claude/sessions/ — si está vacío, no hay nada que resumir.",
     );
     console.log(
       "[ccwearos]   Si Claude lo creó recién, esperá 1-2s y reintentá.",
@@ -258,11 +258,11 @@ async function main(): Promise<void> {
     );
     console.log(`[ccwearos]   Resumida: sessionId=${sessionId.slice(0, 8)}…`);
     console.log(
-      "[ccwearos]   Modo: permission-mode=dontAsk → el reloj es el único gate.",
+      "[ccwearos]   Modo: permission-mode=default → cada permiso llega al reloj.",
     );
     console.log("");
     console.log(
-      "[ccwearos] Esta Terminal queda read-only. Cerrala (Cmd+W) cuando vuelvas al Mac,",
+      "[ccwearos] Esta Terminal queda read-only. Ciérrala (Cmd+W) cuando vuelvas al Mac,",
     );
     console.log(
       "[ccwearos] o seguí leyéndola — la nueva ventana es la que el reloj controla.",

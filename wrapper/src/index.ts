@@ -42,6 +42,7 @@ import { resolveSessionCwd } from "./claim-cwd.js";
 import { ActivePrompt, consumeCommand } from "./command-consumer.js";
 import { STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
+import { isSharedSessionStale } from "./shared-session.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
 
@@ -250,7 +251,7 @@ async function runDaemon(): Promise<void> {
   const HEARTBEAT_MS = 30_000;
   const heartbeat = setInterval(() => {
     if (busy) return;
-    if (sharedSession !== null) return;
+    if (liveSharedSession() !== null) return;
     void db()
       .ref("/status")
       .transaction((current: string | null) => {
@@ -290,6 +291,12 @@ async function runDaemon(): Promise<void> {
     return RESET_PHRASES.some((p) => t.includes(p));
   };
 
+  // /sharedSession as last seen, minus locks whose owner is gone.
+  const liveSharedSession = (): SharedSessionMeta | null =>
+    sharedSession && !isSharedSessionStale(sharedSession, Date.now(), isPidAlive)
+      ? sharedSession
+      : null;
+
   // Permission responses from the watch: only forwarded if there's an active
   // runner. /command is otherwise unused in daemon mode.
   const stopCmdWatching = watchCommands(async (cmd) => {
@@ -297,12 +304,12 @@ async function runDaemon(): Promise<void> {
     // PreToolUse hook polling /command for the watch's Allow/Deny. The
     // daemon must NOT consume that write — yield ownership while a hook
     // share is active.
-    // TODO(integrate): treat stale hook locks via isSharedSessionStale
-    // (src/shared-session.ts) — a dead hook's lock must not make the daemon
-    // yield /command forever.
-    if (sharedSession?.kind === "hook") {
+    // A dead or silent hook lock (no heartbeat for 30 min, owner PID gone)
+    // must not make the daemon yield /command forever.
+    const liveShared = liveSharedSession();
+    if (liveShared?.kind === "hook") {
       console.log(
-        `[ccwearos] /command ignored (hook share active for ${sharedSession.cwd}): ${cmd.text}`,
+        `[ccwearos] /command ignored (hook share active for ${liveShared.cwd}): ${cmd.text}`,
       );
       return;
     }
@@ -310,9 +317,9 @@ async function runDaemon(): Promise<void> {
     // own /command watcher. If the daemon listener fires first and clears
     // /command, cc never reads the user's tap. Yield ownership here too —
     // cc's watchCommands callback consumes + clears.
-    if (sharedSession?.kind === "wrapper-pty") {
+    if (liveShared?.kind === "wrapper-pty") {
       console.log(
-        `[ccwearos] /command ignored (cc share active for ${sharedSession.cwd}): ${cmd.text}`,
+        `[ccwearos] /command ignored (cc share active for ${liveShared.cwd}): ${cmd.text}`,
       );
       return;
     }
@@ -423,12 +430,12 @@ async function runDaemon(): Promise<void> {
     // — both would spawn Claude in pty and clobber the same RTDB paths. The
     // watch UI also disables Page 0's button based on the same signal, but
     // this is a defensive double-check in case stale UI state slips through.
-    // TODO(integrate): treat stale hook locks via isSharedSessionStale
-    // (src/shared-session.ts) — a dead hook's lock must not block voice
-    // prompts forever.
-    if (sharedSession) {
+    // Stale locks (dead owner / no heartbeat) don't count, so a forgotten
+    // /ccwearos can't block voice prompts forever.
+    const liveShared = liveSharedSession();
+    if (liveShared) {
       console.log(
-        `[ccwearos] /sharedSession active in ${sharedSession.cwd} — voice prompt dropped: ${p.text}`,
+        `[ccwearos] /sharedSession active in ${liveShared.cwd} — voice prompt dropped: ${p.text}`,
       );
       await clearPrompt();
       return;

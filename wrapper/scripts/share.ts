@@ -19,7 +19,7 @@
 //   cc --resume <sessionId>
 //
 //   Resumes an existing Claude session under wrapper-pty control AND forces
-//   --permission-mode dontAsk so the watch is the sole permission gate (no
+//   --permission-mode default so prompts reach the watch via the pty (no
 //   Terminal double-confirm). The takeover flow opens this in a new Terminal
 //   window via osascript; see scripts/hooks/enable-takeover.ts.
 //
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
       `[cc] Takeover online — resuming sessionId=${parsed.resumeSessionId.slice(0, 8)}… (cwd=${cwd}, pid=${process.pid})`,
     );
     console.log(
-      `[cc] permission-mode=dontAsk: el reloj decide solo, sin doble-confirm en Terminal.`,
+      `[cc] permission-mode=default: cada permiso aparece en el reloj y lo respondes ahí.`,
     );
   } else {
     console.log(`[cc] Shared session online (cwd=${cwd}, pid=${process.pid})`);
@@ -173,12 +173,15 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 250));
   };
 
-  // Build CLI args for `claude`. Takeover mode forces dontAsk so the watch
-  // is the SOLE permission gate — no Terminal prompt fallback. Non-takeover
+  // Build CLI args for `claude`. Takeover mode forces `default`: the pty's
+  // permission prompts are mirrored to the watch and answered there. NOT
+  // dontAsk — that mode auto-denies every tool not pre-allowed by rules, so
+  // the watch would never see a prompt (code.claude.com/docs/en/permissions).
+  // Non-takeover
   // `cc` inherits whatever the user's settings.json defaultMode is (usually
   // safe-by-default with permission prompts).
   const extraArgs: string[] = parsed.resumeSessionId
-    ? ["--resume", parsed.resumeSessionId, "--permission-mode", "dontAsk"]
+    ? ["--resume", parsed.resumeSessionId, "--permission-mode", "default"]
     : [];
 
   // One-time id of the permission prompt currently on the watch; only a

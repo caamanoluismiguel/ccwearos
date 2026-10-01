@@ -1,7 +1,7 @@
 // Resolve a claimed sessionId to its working directory from LOCAL data only.
 //
 // The watch's /claimRequest carries a `cwd`, but the claim spawns
-// `cc --resume <id>` with `--permission-mode dontAsk` — trusting a cwd from
+// `cc --resume <id>` with `--permission-mode default` — trusting a cwd from
 // RTDB would let anyone who can write /claimRequest start an unattended
 // Claude in an arbitrary directory. Instead we look up the session's own
 // transcript (~/.claude/projects/<sanitized-cwd>/<sessionId>.jsonl), whose

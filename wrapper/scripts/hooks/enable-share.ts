@@ -96,7 +96,8 @@ async function main(): Promise<void> {
   // Claude will keep its Terminal prompt visible even after our hook returns
   // "allow" — the watch effectively becomes a double-confirm. Tell the user up
   // front about the canonical alternative: /ccwearos-takeover (one-step handoff
-  // to a new Terminal under wrapper-pty control with dontAsk pre-applied).
+  // to a new Terminal under wrapper-pty control, where the pty's prompt IS
+  // the watch's prompt).
   const mode = detectPermissionMode();
   if (mode && mode !== "dontAsk" && mode !== "bypassPermissions") {
     console.log("");
@@ -108,18 +109,14 @@ async function main(): Promise<void> {
     );
     console.log("");
     console.log(
-      "[ccwearos]    👉 Para irte del Mac sin doble-confirm, usá /ccwearos-takeover:",
+      "[ccwearos]    👉 Para irte del Mac sin doble-confirm, usa /ccwearos-takeover:",
     );
     console.log(
       "[ccwearos]       Abre una nueva Terminal con esta sesión resumida bajo `cc`",
     );
     console.log(
-      "[ccwearos]       (permission-mode=dontAsk → el reloj es el único gate).",
+      "[ccwearos]       (cada permiso aparece en el reloj y lo respondes ahí).",
     );
-    console.log(
-      "[ccwearos]    Alternativa manual: cerrar Claude y reabrir con",
-    );
-    console.log("[ccwearos]      claude --permission-mode dontAsk");
   }
   console.log("");
   console.log(
