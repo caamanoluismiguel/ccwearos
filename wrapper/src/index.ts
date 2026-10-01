@@ -47,7 +47,7 @@ import {
 import { clearPermissionPromptIf } from "./prompt-store.js";
 import { STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
-import { isSharedSessionStale } from "./shared-session.js";
+import { isSharedSessionStale, staleLockRemover } from "./shared-session.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
 
@@ -260,6 +260,34 @@ async function runDaemon(): Promise<void> {
   // in any other case, leaving correct states untouched.
   const HEARTBEAT_MS = 30_000;
   const heartbeat = setInterval(() => {
+    // Stale /sharedSession cleanup. liveSharedSession() already ignores a
+    // dead/silent lock, but leaving it in RTDB keeps the watch on
+    // "sesión compartida" with the ask button hidden. The transaction only
+    // deletes if the server still holds the SAME lock (pid + startedAt) and
+    // it is still stale — a refreshed heartbeat or new owner aborts it. Our
+    // /sharedSession 'value' listener keeps the local cache warm.
+    const seen = sharedSession;
+    if (seen && isSharedSessionStale(seen, Date.now(), isPidAlive)) {
+      const remove = staleLockRemover(seen, Date.now(), isPidAlive);
+      let removedLock = false;
+      void db()
+        .ref("/sharedSession")
+        .transaction((cur: SharedSessionMeta | null) => {
+          const next = remove(cur);
+          removedLock = cur !== null && next === null;
+          return next;
+        })
+        .then((res) => {
+          if (res.committed && removedLock) {
+            console.log(
+              `[ccwearos] Cleared stale /sharedSession (kind=${seen.kind}, pid=${seen.pid}, cwd=${seen.cwd}).`,
+            );
+          }
+        })
+        .catch(() => {
+          // best-effort; next tick retries.
+        });
+    }
     if (busy) return;
     if (liveSharedSession() !== null) return;
     void db()
