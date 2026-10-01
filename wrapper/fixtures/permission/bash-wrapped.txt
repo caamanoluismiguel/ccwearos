@@ -1,0 +1,4 @@
+[11A[38;2;87;105;247m────────────────────────────────────────────────────────────────────────────────[1C[1B[1mBash command[1B[22m[39m[K[1B   ls[1C/Users/jdoe-example-user/.claude/projects/-Users-jdoe-example-user-proj[1B   ects-CCWEAROS/memory/ 2>/dev/null && echo "---" && ls[K[2C[1B /Users/jdoe-example-user/projects/ 2>/dev/null[K[2C[1B [38;2;102;102;102mCheck memory directory and projects folder[2C[1B[39m[K[1C[1BDo you want to proceed?[K[1C[1B[38;2;87;105;247m❯[39m [38;2;102;102;102m1. [38;2;87;105;247mYes[39m[K[2C[1B [38;2;102;102;102m2. [39mYes, allow reading from [1mmemory[22m/ and[1C[1mprojects[22m/[1Cfrom[1Cthis[1Cproject
+[3C[38;2;102;102;102m3.[1C[39mNo
+
+[1C[38;2;102;102;102mEsc[1Cto[1Ccancel[1C·[1CTab[1Cto[1Camend[39m

@@ -1,0 +1,38 @@
+[12A[38;2;87;105;247m────────────────────────────────────────────────────────────────────────────────[1C[1B[1mBash command[1B[22m[39m[K[1B  [1Cfor[1Cdir[1Cin[1C/Users/jdoe-example-user/projects/*/;[1Cdo[1B     name=$(basename "$dir")[K[2C[1B   echo "=== $name ==="[K[2C[1B   if [ -f "$dir/README.md" ]; then[K[2C[1B     head -20 "$dir/README.md"[K[2C[1B   elif [ -f "$dir/CLAUDE.md" ]; then[2C[1B     head -15 "$dir/CLAUDE.md"[K[2C[1B   elif [ -f "$dir/package.json" ]; then[7C[1Bgrep[1C-E[1C'"(name|description)"'[1C"$dir/package.json"[1C|[1Chead -3[K
+[5Celse
+[7Cls[1C"$dir"[1C|[1Chead[1C-5
+[5Cfi
+[5Cecho[1C""
+[3Cdone[1C2>/dev/null
+[3C[38;2;102;102;102mGet[1Ca[1Cbrief[1Coverview[1Cof[1Ceach[1Cproject[39m
+
+[1CContains[1Cfor_statement
+
+[1CDo[1Cyou[1Cwant[1Cto[1Cproceed?
+[1C[38;2;87;105;247m❯[1C[38;2;102;102;102m1.[1C[38;2;87;105;247mYes[39m
+[3C[38;2;102;102;102m2.[1C[39mNo
+
+[1C[38;2;102;102;102mEsc[1Cto[1Ccancel[1C·[1CTab[1Cto[1Camend[39m
+[1C[4A[1D[4B[H[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[2K[1B[H[3Cfor[1Cdir[1Cin[1C/Users/jdoe-example-user/projects/*/;[1Cdo
+[5Cname=$(basename[1C"$dir")
+[5Cecho[1C"===[1C$name[1C==="
+[5Cif[1C[[1C-f[1C"$dir/README.md"[1C];[1Cthen
+[7Chead[1C-20[1C"$dir/README.md"
+[5Celif[1C[[1C-f[1C"$dir/CLAUDE.md"[1C];[1Cthen
+[7Chead[1C-15[1C"$dir/CLAUDE.md"
+[5Celif[1C[[1C-f[1C"$dir/package.json"[1C];[1Cthen
+[7Cgrep[1C-E[1C'"(name|description)"'[1C"$dir/package.json"[1C|[1Chead[1C-3
+[5Celse
+[7Cls[1C"$dir"[1C|[1Chead[1C-5
+[5Cfi
+[5Cecho[1C""
+[3Cdone[1C2>/dev/null
+[3C[38;2;102;102;102mGet[1Ca[1Cbrief[1Coverview[1Cof[1Ceach[1Cproject[39m
+
+[1CContains[1Cfor_statement
+
+[1CDo[1Cyou[1Cwant[1Cto[1Cproceed?
+[1C[38;2;87;105;247m❯[1C[38;2;102;102;102m1.[1C[38;2;87;105;247mYes[39m
+[3C[38;2;102;102;102m2.[1C[39mNo
+
+[1C[38;2;102;102;102mEsc[1Cto[1Ccancel[1C·[1CTab[1Cto[1Camend[39m

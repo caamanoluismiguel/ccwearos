@@ -61,18 +61,6 @@ const ACTIVITY_PATTERNS: RegExp[] = [
   /\b(Worked|Brewed|Boiled|Cooked|Razzmatazzed)\s+for\s+\d+s\b/g,
 ];
 
-// Permission prompts — match anywhere in the chunk, then expand to the line.
-const PERMISSION_PATTERNS: RegExp[] = [
-  // Most informative: Claude Code 2.1.x friendly prompt.
-  /Claude wants to .+/i,
-  /\[y\/n\]/i,
-  /^\s*allow\??\s*$/im,
-  /do you (?:want to )?(?:allow|continue|approve)/i,
-  /^\s*\(?\s*y\s*\/\s*n\s*\)?\s*$/im,
-  /^\s*❯?\s*\d?\.?\s*Yes\s*$/im,
-  /Allow\s+.+\?/i,
-];
-
 export function extractTokenCounts(chunk: string): number[] {
   const text = clean(chunk);
   const out: number[] = [];
@@ -120,24 +108,305 @@ function parseUnit(raw: string | undefined): number | null {
   return Math.round(n * mult);
 }
 
-export function extractPermissionPrompt(chunk: string): string | null {
-  const text = clean(chunk);
-  for (const re of PERMISSION_PATTERNS) {
-    const m = text.match(re);
-    if (!m) continue;
-    const matchText = m[0];
-    const trimmedMatch = matchText.trim();
-    if (re.source.startsWith("^")) {
-      if (trimmedMatch.length > 0) return trimmedMatch;
-      continue;
+// ─── Permission prompts ──────────────────────────────────────────────────────
+// Claude Code 2.x draws a permission box. After ANSI strip it looks like this
+// (rows are separated by bare \r + cursor moves, NOT \n):
+//
+//   ────────────────────────────────────────────  ← rule (box top)
+//    Bash command                                  ← header
+//      git push --force origin main                ← body: the target, hard-
+//      Force-push the rebased branch               ←   or word-wrapped; Claude's
+//                                                      description is dimmed
+//    Do you want to proceed?                       ← question
+//    ❯ 1. Yes                                      ← options (dropped)
+//      2. No
+//
+// "Tool use" boxes put `Name(args)` on the first body line (Web Search, MCP).
+// The watch must show the FULL target — the user approves from their wrist.
+
+// Legacy prompts (pre-box formats, `[y/n]` CLIs). Only consulted when no
+// Claude Code box is found.
+const PERMISSION_PATTERNS: RegExp[] = [
+  /Claude wants to .+/i,
+  /\[y\/n\]/i,
+  /^\s*allow\??\s*$/i,
+  /do you (?:want to )?(?:allow|continue|approve)/i,
+  /^\s*\(?\s*y\s*\/\s*n\s*\)?\s*$/i,
+  /Allow\s+.+\?/i,
+];
+// A bare "❯ 1. Yes" option with no readable box around it. Still a permission
+// signal, but "❯ 1. Yes" must never be forwarded as if it described the action.
+const BARE_YES_OPTION_RE = /^\s*❯?\s*\d?\.?\s*Yes\s*$/i;
+export const PERMISSION_DETAILS_UNAVAILABLE =
+  "Permission requested (details not visible, check the terminal)";
+export const PERMISSION_PROMPT_MAX_CHARS = 1500;
+
+const PERMISSION_QUESTION_RE =
+  /^\s*(?:Do you want to\s.*\?|Would you like to proceed\?)\s*$/i;
+const BOX_RULE_RE = /^\s*─{20,}\s*$/;
+// "❯ 1. Yes", "1. Yes, and auto-accept edits" (plan mode), or with the dot
+// replaced by a cursor move on partial redraws ("1  Yes").
+const YES_OPTION_RE = /^\s*(?:❯\s*)?1\.?\s+Yes\b/;
+const BOX_DRAWING_RE = /[│┃║╭╮╰╯┌┐└┘├┤┬┴┼]/g;
+// How far above the question we look for the box top. Write/Edit previews
+// can be long; Bash bodies are a handful of lines.
+const BOX_SCAN_LINES = 400;
+// The box body wraps 3 columns short of the rule (80-col rule → 77).
+const BOX_RIGHT_MARGIN = 3;
+
+interface ScreenLine {
+  text: string; // ANSI-stripped, CUF expanded to spaces
+  dim: boolean; // first visible glyph drawn in a grey/dim colour
+}
+
+// One escape sequence or one visible character at a time. SGR is captured so
+// we can tell Claude's dimmed description from the (default-colour) target.
+const TOKEN_RE = new RegExp(
+  `${ESC}\\[([0-9;]*)m|${ESC}\\[[<=>?]?[0-9;]*[ -\\/]*[@-~]|${ESC}\\][^${ESC}\\x07]*(?:${ESC}\\\\|\\x07)|${ESC}[78=>]|([^${ESC}])`,
+  "g",
+);
+
+function isGreyRgb(r: number, g: number, b: number): boolean {
+  return r === g && g === b && r >= 60 && r <= 200;
+}
+
+// Splits on [\r\n]+ and tracks SGR state across rows (the renderer doesn't
+// always re-emit a colour that is already active).
+function toScreenLines(raw: string): ScreenLine[] {
+  const out: ScreenLine[] = [];
+  let grey = false;
+  let faint = false;
+  for (const rawLine of raw.split(/[\r\n]+/)) {
+    let dim: boolean | null = null;
+    const re = new RegExp(TOKEN_RE.source, TOKEN_RE.flags);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(rawLine)) !== null) {
+      const sgr = m[1];
+      const ch = m[2];
+      if (sgr !== undefined) {
+        const p = sgr === "" ? [0] : sgr.split(";").map((x) => Number(x) || 0);
+        for (let i = 0; i < p.length; i++) {
+          const v = p[i] ?? 0;
+          if (v === 0) {
+            grey = false;
+            faint = false;
+          } else if (v === 2) faint = true;
+          else if (v === 22) faint = false;
+          else if (v === 39 || (v >= 30 && v <= 37) || (v >= 91 && v <= 97)) {
+            grey = false;
+          } else if (v === 90) grey = true;
+          else if (v === 38 && p[i + 1] === 2) {
+            grey = isGreyRgb(p[i + 2] ?? -1, p[i + 3] ?? -2, p[i + 4] ?? -3);
+            i += 4;
+          } else if (v === 38 && p[i + 1] === 5) {
+            const n = p[i + 2] ?? 0;
+            grey = n === 8 || (n >= 240 && n <= 250);
+            i += 2;
+          } else if (v === 48) {
+            i += p[i + 1] === 2 ? 4 : 2; // skip background colour args
+          }
+        }
+      } else if (ch !== undefined && dim === null && ch.trim() !== "") {
+        dim = grey || faint;
+      }
     }
-    const idx = text.indexOf(matchText);
-    if (idx < 0) continue;
-    const lineStart = text.lastIndexOf("\n", idx - 1) + 1;
-    const newlineAfter = text.indexOf("\n", idx);
-    const lineEnd = newlineAfter === -1 ? text.length : newlineAfter;
-    const line = text.slice(lineStart, lineEnd).trim();
-    return line.length > 0 ? line : trimmedMatch;
+    out.push({ text: clean(rawLine), dim: dim ?? false });
+  }
+  return out;
+}
+
+type BoxKind = "command" | "path" | "fetch" | "toolUse";
+
+function classifyHeader(header: string): { tool: string; kind: BoxKind } {
+  const h = header.trim();
+  if (/^bash command$/i.test(h)) return { tool: "Bash", kind: "command" };
+  if (/^(?:edit|update) file$/i.test(h)) return { tool: "Edit", kind: "path" };
+  if (/^(?:create|write) file$/i.test(h)) return { tool: "Write", kind: "path" };
+  if (/^read file$/i.test(h)) return { tool: "Read", kind: "path" };
+  if (/^fetch$/i.test(h)) return { tool: "Fetch", kind: "fetch" };
+  if (/^tool use$/i.test(h)) return { tool: "Tool", kind: "toolUse" };
+  return { tool: h.replace(/\s+(?:command|file)$/i, ""), kind: "command" };
+}
+
+const indentOf = (s: string): number => s.length - s.trimStart().length;
+
+// Re-joins rows the TUI wrapped at the box width, returning logical lines.
+// The renderer moves a word that fits to the next row (word wrap: join with
+// " ") and only splits a token longer than the row in place (hard wrap: join
+// with ""). Dim/non-dim changes are always real breaks (target → Claude's
+// description). Relative indentation of real lines is preserved so
+// multi-line scripts stay readable.
+function unwrapLines(rows: ScreenLine[], width: number): string[] {
+  const lines = rows
+    .map((r) => ({
+      text: r.text.replace(BOX_DRAWING_RE, " ").replace(/\s+$/, ""),
+      dim: r.dim,
+    }))
+    .filter((r) => r.text.trim().length > 0);
+  if (lines.length === 0) return [];
+  const w = Math.max(width, ...lines.map((l) => l.text.length));
+  // The target's first row sets the left edge; deeper rows keep their extra
+  // indent, dimmed description rows are trimmed.
+  const base = indentOf(lines[0]?.text ?? "");
+  const out: string[] = [];
+  let prev: { text: string; dim: boolean } | null = null;
+  for (const line of lines) {
+    const text = line.text.trim();
+    const last = out.length - 1;
+    if (prev !== null && last >= 0 && prev.dim === line.dim) {
+      const firstTok = text.split(/\s/)[0] ?? "";
+      const prevTok = prev.text.trim().split(/\s/).pop() ?? "";
+      const room = w - indentOf(line.text);
+      if (prev.text.length >= w && prevTok.length + firstTok.length > room) {
+        out[last] += text; // token split mid-way
+        prev = line;
+        continue;
+      }
+      if (prev.text.length + 1 + firstTok.length > w) {
+        out[last] += " " + text; // next word didn't fit
+        prev = line;
+        continue;
+      }
+    }
+    out.push(
+      line.dim ? text : line.text.slice(Math.min(base, indentOf(line.text))),
+    );
+    prev = line;
+  }
+  return out;
+}
+
+// Never truncate silently, and keep the END visible: the dangerous part of a
+// chained command (`… && rm -rf ~`) is usually at the tail.
+function capMiddle(s: string, max: number = PERMISSION_PROMPT_MAX_CHARS): string {
+  if (s.length <= max) return s;
+  const sep = " … ";
+  const budget = max - sep.length;
+  const head = Math.floor(budget / 2);
+  return s.slice(0, head) + sep + s.slice(s.length - (budget - head));
+}
+
+function formatBox(
+  header: string,
+  body: ScreenLine[],
+  question: string,
+  width: number,
+): string {
+  const { tool, kind } = classifyHeader(header);
+  const logical = unwrapLines(body, width);
+
+  if (kind === "path") {
+    // First body row is the path; the rest is a diff/content preview.
+    const fromQuestion = question.match(
+      /(?:edit to|create|overwrite|write to|read)\s+(.+?)\?\s*$/i,
+    )?.[1];
+    const target = logical[0]?.trim() ?? fromQuestion ?? "";
+    return target ? `${tool}: ${target}` : `${tool}: ${question}`;
+  }
+
+  if (kind === "fetch") {
+    const joined = logical.join(" ");
+    const url =
+      joined.match(/url:\s*"([^"]+)"/)?.[1] ?? joined.match(/https?:\/\/\S+/)?.[0];
+    const prompt = joined.match(/prompt:\s*"([^"]*)"?/)?.[1]?.trim();
+    if (url) return prompt ? `Fetch: ${url}\n${prompt}` : `Fetch: ${url}`;
+    return [`Fetch: ${logical[0] ?? ""}`, ...logical.slice(1)].join("\n");
+  }
+
+  if (kind === "toolUse") {
+    const first = logical[0]?.trim() ?? "";
+    // "Claude wants to search the web for: …" just repeats the arguments.
+    const rest = logical
+      .slice(1)
+      .filter((l) => !/^\s*Claude wants to (?:search|fetch)\b/i.test(l));
+    const m = first.match(/^(.+?)\((.*)\)(\s*\(MCP\))?$/);
+    if (m?.[1]) {
+      const label = m[3] ? `${m[1].trim()} (MCP)` : m[1].trim();
+      return [`${label}: ${(m[2] ?? "").trim()}`, ...rest].join("\n");
+    }
+    return [`${tool}: ${first}`, ...rest].join("\n");
+  }
+
+  // command: target line(s) first, then Claude's description / warnings.
+  if (logical.length === 0) return `${tool}: ${question}`;
+  const [first, ...rest] = logical;
+  return [`${tool}: ${first}`, ...rest].join("\n");
+}
+
+function findLast(
+  lines: ScreenLine[],
+  re: RegExp,
+  from: number,
+  to: number,
+): number {
+  for (let i = from; i >= Math.max(0, to); i--) {
+    if (re.test(lines[i]?.text ?? "")) return i;
+  }
+  return -1;
+}
+
+function extractPermissionBox(lines: ScreenLine[]): string | null {
+  const q = findLast(lines, PERMISSION_QUESTION_RE, lines.length - 1, 0);
+  if (q < 0) return null;
+  const question = (lines[q]?.text ?? "").trim();
+  // Every Claude Code permission box offers "1. Yes…" right under the
+  // question. Requiring it keeps prose like "Do you want to deploy now?" in
+  // Claude's answer (below an input-box rule) from posing as a prompt.
+  const hasOptions = lines
+    .slice(q + 1, q + 4)
+    .some((l) => YES_OPTION_RE.test(l.text));
+  if (!hasOptions) return null;
+  const unavailable = `${question} — ${PERMISSION_DETAILS_UNAVAILABLE}`;
+  const rule = findLast(lines, BOX_RULE_RE, q - 1, q - BOX_SCAN_LINES);
+  if (rule < 0) return unavailable;
+
+  // A question between the rule and q means the latest draw of the box lost
+  // its top (scrolled off / partial redraw). Fall back to the earlier full
+  // draw ONLY if the newest draw provably shows the same target.
+  let end = q;
+  const inner = findLast(lines, PERMISSION_QUESTION_RE, q - 1, rule + 1);
+  if (inner >= 0) end = inner;
+
+  let h = rule + 1;
+  while (h < end && (lines[h]?.text ?? "").trim().length === 0) h++;
+  if (h >= end) return unavailable;
+  const header = (lines[h]?.text ?? "").replace(BOX_DRAWING_RE, " ").trim();
+  // Headers are short titles ("Bash command", "Tool use"). Anything else
+  // means the rule we found belongs to other chrome (input box, status bar).
+  if (header.length > 40 || /^[❯⏺⎿>]/.test(header)) return unavailable;
+  const body = lines.slice(h + 1, end);
+  const width = (lines[rule]?.text.trim().length ?? 80) - BOX_RIGHT_MARGIN;
+
+  if (end !== q) {
+    const firstRow = body.find((l) => l.text.trim().length > 0)?.text.trim();
+    const redraw = lines.slice(end + 1, q).map((l) => l.text.trim());
+    if (!firstRow || !redraw.includes(firstRow)) return unavailable;
+  }
+  return capMiddle(formatBox(header, body, question, width));
+}
+
+// Returns a human-readable description of the pending permission request —
+// "Bash: <full command>\n<Claude's description>", "Edit: <path>",
+// "Fetch: <url>\n<prompt>", "Web Search: \"<query>\"" — or null when the text
+// holds no permission prompt. When the newest box is only partly visible it
+// returns a string containing PERMISSION_DETAILS_UNAVAILABLE instead of a
+// misleading fragment like "❯ 1. Yes". Output is capped at
+// PERMISSION_PROMPT_MAX_CHARS with the middle elided (head … tail).
+// Pass as much recent output as possible: a box split across chunks can only
+// be read once both halves are in the input.
+export function extractPermissionPrompt(chunk: string): string | null {
+  const lines = toScreenLines(chunk);
+
+  const box = extractPermissionBox(lines);
+  if (box !== null) return box;
+
+  for (const re of PERMISSION_PATTERNS) {
+    const line = lines.find((l) => re.test(l.text));
+    const trimmed = line?.text.trim();
+    if (trimmed) return capMiddle(trimmed);
+  }
+  if (lines.some((l) => BARE_YES_OPTION_RE.test(l.text))) {
+    return PERMISSION_DETAILS_UNAVAILABLE;
   }
   return null;
 }
