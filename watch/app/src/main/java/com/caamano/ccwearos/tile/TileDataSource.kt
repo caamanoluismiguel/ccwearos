@@ -1,9 +1,11 @@
 package com.caamano.ccwearos.tile
 
 import android.util.Log
+import com.caamano.ccwearos.data.AnswerGate
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ServerValue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
@@ -66,19 +68,29 @@ object TileDataSource {
         if (snap.permissionPromptId != expectedPromptId) return false
         // Denying is always safe; allowing re-checks risk on the fresh text.
         if (allow && (RiskClassifier.isRisky(snap.permissionPrompt) || !TileMapper.fullyVisible(snap.permissionPrompt))) return false
+        // Same in-process guard as the screen and the notification: one answer
+        // per prompt id. It only covers taps while this process is alive; the
+        // wrapper's promptId check is the real cross-process guard.
+        if (!AnswerGate.shared.tryClaim(expectedPromptId)) return false
         val payload = mapOf<String, Any>(
             "text" to if (allow) ALLOW_TEXT else DENY_TEXT,
             "issuedAt" to ServerValue.TIMESTAMP,
             "promptId" to expectedPromptId,
         )
-        return try {
+        val sent = try {
             withTimeoutOrNull(READ_TIMEOUT_MS) {
                 FirebaseDatabase.getInstance().getReference("command").setValue(payload).await()
                 true
             } ?: false
+        } catch (e: CancellationException) {
+            AnswerGate.shared.release(expectedPromptId)
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "tile answer failed: ${e.message}")
             false
         }
+        // Failed write: give the claim back so the user can retry.
+        if (!sent) AnswerGate.shared.release(expectedPromptId)
+        return sent
     }
 }
