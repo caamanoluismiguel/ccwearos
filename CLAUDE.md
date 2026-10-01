@@ -42,9 +42,10 @@ Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `wat
 | ------------------- | ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/status`           | wrapper    | watch            | `"IDLE" \| "RUNNING" \| "AWAITING_PERMISSION" \| "OFFLINE"`                                                                                                                                             |
 | `/metrics`          | wrapper    | watch            | Rolling-window token totals (day/week/month)                                                                                                                                                            |
-| `/command`          | watch      | wrapper          | `{text, issuedAt}` — permission responses (`"1\r"` / `""`)                                                                                                                                              |
+| `/command`          | watch      | wrapper          | `{text, issuedAt, promptId?}`. Only allow `"1\r"` / deny ESC / stop `"\x03"` pass `checkCommand` (`src/command-guard.ts`); answers must echo the current `/permissionPromptId`. |
 | `/prompt`           | watch      | wrapper (daemon) | `{text, issuedAt}` — new voice prompt to run                                                                                                                                                            |
-| `/permissionPrompt` | wrapper    | watch            | Human-readable prompt text                                                                                                                                                                              |
+| `/permissionPrompt` | wrapper    | watch            | Human-readable prompt text, e.g. `Bash: git push origin main` + description (`PermissionPromptTracker` in `parser.ts`) |
+| `/permissionPromptId` | wrapper  | watch            | Random one-time id minted by `publishPermissionPrompt` with every prompt, cleared with it. The watch echoes it in `/command.promptId` so stale, replayed or double taps can't answer another prompt. |
 | `/activity`         | wrapper    | watch            | Spinner verb ("Crunching…", "Worked for 33s")                                                                                                                                                           |
 | `/task`             | wrapper    | watch            | Current task description (from OSC title)                                                                                                                                                               |
 | `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                                                                                                                                                             |
@@ -68,11 +69,11 @@ Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt
 
 Cuatro formas de que el reloj reciba permission prompts. Resumen rápido:
 
-| Si quieres...                                                                       | Usá                                | Por qué                                                                                                                                                                                                                                  |
+| Si quieres...                                                                       | Usa                                | Por qué                                                                                                                                                                                                                                  |
 | ----------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Empezar nueva sesión y poder irte del Mac**                                       | `cc` (alias) en cualquier Terminal | Wrapper es dueño del pty desde el arranque. Tap watch = autoriza directo, sin Terminal prompt extra.                                                                                                                                     |
-| **Estoy en una sesión activa y me quiero ir AHORA mismo del Mac**                   | `/ccwearos-takeover` slash         | Abre nueva Terminal con `cc --resume <id> --permission-mode dontAsk`. La sesión continúa intacta en la ventana nueva; el reloj decide solo. La vieja Terminal queda read-only — cerrala cuando vuelvas. **Path canónico para "me voy".** |
-| **Monitorear desde el reloj sin perder la Terminal actual** (acepto double-confirm) | `/ccwearos` slash                  | Hook ya instalado en `~/.claude/settings.json`. Si tu `defaultMode` no es `dontAsk`, vivirás un double-confirm; `enable-share.ts` te avisa.                                                                                              |
+| **Estoy en una sesión activa y me quiero ir AHORA mismo del Mac**                   | `/ccwearos-takeover` slash         | Abre nueva Terminal con `cc --resume <id> --permission-mode default`. La sesión continúa intacta en la ventana nueva y cada permiso llega al reloj. La vieja Terminal queda read-only; ciérrala cuando vuelvas. **Path canónico para "me voy".** |
+| **Monitorear desde el reloj sin perder la Terminal actual** (acepto double-confirm) | `/ccwearos` slash                  | Hook ya instalado en `~/.claude/settings.json`. Puede haber doble confirmación (reloj + Terminal); `enable-share.ts` te avisa.                                                                                              |
 | **Preguntar algo nuevo por voz desde el reloj**                                     | Page 0 botón "ask claude"          | Daemon spawn `claude -p` para esa pregunta.                                                                                                                                                                                              |
 
 **Setup `cc` (una sola vez):**
@@ -128,7 +129,7 @@ tail -f ~/Library/Logs/ccwearos.err.log # stderr
 cd ~/projects/CCWEAROS/wrapper
 
 npm start                                # interactive mode
-npm test                                 # 72/72 vitest unit tests
+npm test                                 # vitest unit tests (167 on 2026-10-01; needs FIREBASE_DB_URL in .env)
 npm run typecheck                        # tsc --noEmit
 npm run verify                           # smoke test: write IDLE, read back
 npm run demo                             # live IDLE→RUNNING→PROMPT→IDLE demo
@@ -186,7 +187,7 @@ Live on a physical Galaxy Watch 8 since Sprint 4e; wireless adb port rotates aft
 
    Copy the UID and replace `REPLACE_WITH_REAL_WATCH_UID` in `/firebase-rules.json`, then republish in Firebase Console.
 
-6. **First-launch on watch**: grant the mic permission when prompted (Wear OS asks for RECORD_AUDIO the first time you tap "ask claude").
+6. **First-launch on watch**: allow notifications when asked (needed for the "Permisos" notification with Permitir/Rechazar when the screen is off). Voice uses the system recognizer, so no mic permission.
 
 ## FCM wake-up (Sprint 4d)
 
@@ -216,6 +217,8 @@ After adding a new UID to rules, paste the JSON into Firebase Console → Realti
 
 - Wrapper is ESM TypeScript strict (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`)
 - Never commit `secrets/`, `.env`, or `google-services.json`
+- **Prompt ids (2026-10-01).** Every permission prompt goes out via `publishPermissionPrompt` (never a bare `/permissionPrompt` write) and every `/command` consumer runs `checkCommand(cmd, activePromptId)`. Clearing a prompt clears its id. Watch writers read `/permissionPromptId` at tap time and drop the tap if it changed.
+- **Takeover/claim use `--permission-mode default`, never `dontAsk`.** `dontAsk` auto-denies every tool not pre-allowed (code.claude.com/docs/en/permissions), so the watch would never see a prompt.
 - `/command` and `/prompt` MUST include `issuedAt`; wrapper drops anything older than `COMMAND_MAX_AGE_SECONDS` (default 60s). `pre-tool-use.ts:pollForCommand` enforces this against `pollStartedAt` so a stale entry from a previous prompt isn't consumed.
 - `/metrics` writes debounced to `METRICS_DEBOUNCE_MS` (default 5000ms)
 - `/response` writes debounced to 5s (interactive) / 800ms (daemon)
@@ -280,7 +283,7 @@ Two ways the watch sees Mac sessions:
    - `kind="wrapper-pty"` (cc / takeover) → "📟 sesión compartida · activa en tu Mac · cc"
    - `kind="hook"` (/ccwearos) → "📟 puente activo · permisos vienen al reloj"
 
-4. **Auto-handoff via `/ccwearos-takeover` (Camino E-3).** When you're mid-session and decide to leave the Mac: this slash command opens a **new Terminal window** (Terminal.app, or iTerm.app per `$TERM_PROGRAM`) running `cc --resume <sessionId> --permission-mode dontAsk`. The original session is resumed under wrapper-pty control with the watch as the sole permission gate (no Terminal double-confirm). The OLD window is left read-only — you can close it whenever.
+4. **Auto-handoff via `/ccwearos-takeover` (Camino E-3).** When you're mid-session and decide to leave the Mac: this slash command opens a **new Terminal window** (Terminal.app, or iTerm.app per `$TERM_PROGRAM`) running `cc --resume <sessionId> --permission-mode default`. The original session is resumed under wrapper-pty control; every permission prompt in its pty is mirrored to the watch and answered there. The OLD window is left read-only — you can close it whenever.
 
    The slash command runs `wrapper/scripts/hooks/enable-takeover.ts`, which:
    - Detects current `sessionId` via `_helpers.detectSessionId` (refuses if it can't pin one down).
@@ -303,10 +306,13 @@ Two ways the watch sees Mac sessions:
 - **Page 2 — Response** (only when `hasResult`). Branches on `taskKind`: `action` → ✓/✗ confirmation card + tool breadcrumbs; `info` → scrollable markdown + TL;DR headline.
 - **Page 3 — Followups** (only when `hasResult`). Tappable chips from Claude's `Sugerencias:` / `Followups:` block, with bilingual hardcoded fallback ("Más detalles" / "Otra cosa" / "Deshacer") when Claude omits them. Reset button at bottom.
 - **Page 4 / Sessions** (only when `recentSessions` non-empty). Grouped by project. Coral dot = `cc`-shared; green dot = active; dim = historical. Read-only in V1.
-- **PermissionScreen overlay.** Big pill buttons (`allow` green, `deny` red). 120ms haptic debounce so reconnect bursts don't double-buzz. `BackHandler` swallows accidental swipe-back — modal must be explicitly answered.
+- **PermissionScreen overlay (v2).** Full command in a mono box (never truncated), coral `EdgeButton` "Permitir" + outlined "Rechazar". Risky commands (`classifyRisk` in `presentation/permission/PermissionPrompt.kt`: rm, git push, --force, reset --hard, sudo, chmod, curl|sh, writes outside the project, unreadable prompts) need a 1.2s press-and-hold. Buttons disable when offline or already answered (`AnswerGate`, shared with the notification). Haptics via `presentation/Haptics.kt`. `BackHandler` swallows swipe-back.
+- **"Permisos" notification.** When a prompt arrives and the app isn't visible, the foreground service posts it with Permitir/Rechazar actions (re-checks connection + promptId at tap time).
+- **Tile + complication.** `tile/StatusTileService` (state, tokens, context arc; Permitir/Rechazar only when the prompt isn't risky AND fits fully on the tile) and `complication/StatusComplicationService` (SHORT_TEXT + RANGED_VALUE). Refreshed by the foreground service on every status change.
 
 ## Known limitations
 
+- The pty parser can't rebuild characters a partial terminal redraw skipped (rare `luism guelcaamano`-style gaps); the next full redraw wins. A real fix needs a terminal emulator (`@xterm/headless`).
 - Markdown rendering on watch is inline only (bold/italic/code). Block markdown (lists, headings, code blocks) renders as plain text.
 - Tables are flattened to `cell1 · cell2 · cell3` rows — multi-line table cells lose column association.
 - Action runs (tool-heavy) often skip the `Followups:` block — Page 4 falls back to bilingual hardcoded chips ("Más detalles" / "Otra cosa" / "Deshacer") via the Sprint 4k fallback path. Real Claude-generated chips are preferred when present.
