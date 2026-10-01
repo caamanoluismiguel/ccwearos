@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import admin from "firebase-admin";
 import { config, loadServiceAccount } from "./config.js";
 import type {
@@ -42,8 +43,25 @@ export async function writeMetrics(metrics: Metrics): Promise<void> {
   await db().ref("/metrics").set(metrics);
 }
 
+// Publishes a permission prompt together with a fresh one-time id (atomic
+// multi-path update) and returns the id. Callers keep it and only accept a
+// /command whose promptId matches — see commandMatchesPrompt in
+// src/command-guard.ts.
+export async function publishPermissionPrompt(text: string): Promise<string> {
+  const id = randomUUID();
+  await db().ref().update({ permissionPrompt: text, permissionPromptId: id });
+  return id;
+}
+
+// Clearing (null) also clears /permissionPromptId. Passing text keeps the
+// legacy behaviour but mints a new id; prefer publishPermissionPrompt so the
+// caller can match replies against it.
 export async function setPermissionPrompt(text: string | null): Promise<void> {
-  await db().ref("/permissionPrompt").set(text);
+  if (text === null) {
+    await db().ref().update({ permissionPrompt: null, permissionPromptId: null });
+    return;
+  }
+  await publishPermissionPrompt(text);
 }
 
 export async function setActivity(text: string | null): Promise<void> {
@@ -160,6 +178,7 @@ export async function clearStaleState(
     await db().ref("/").update({
       status: finalStatus,
       permissionPrompt: null,
+      permissionPromptId: null,
       activity: null,
       task: null,
       response: null,
@@ -199,6 +218,7 @@ export async function registerCrashCleanup(paths: {
       db().ref("/").onDisconnect().update({
         status: "OFFLINE",
         permissionPrompt: null,
+        permissionPromptId: null,
         activity: null,
         task: null,
         headline: null,

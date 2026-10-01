@@ -16,8 +16,12 @@ export interface Metrics {
 }
 
 export interface PendingCommand {
-  text: string; // raw string piped into stdin, include trailing "\n" if needed
+  text: string; // raw string piped into stdin — must pass isAllowedCommandText (src/command-guard.ts)
   issuedAt: number; // unix epoch ms — wrapper drops anything older than COMMAND_MAX_AGE_SECONDS
+  // Echo of /permissionPromptId at the moment the user tapped. Required for
+  // permission answers ("1\r" / "" / ESC); a mismatch means the tap was for a
+  // different (older) prompt and is dropped. Optional only for stop ("\x03").
+  promptId?: string;
 }
 
 export interface RtdbRoot {
@@ -25,6 +29,11 @@ export interface RtdbRoot {
   metrics: Metrics;
   command: PendingCommand | null;
   permissionPrompt: string | null;
+  // Random one-time id minted every time a new /permissionPrompt is published
+  // (publishPermissionPrompt in src/firebase.ts). The watch echoes it in
+  // /command.promptId so a stale, replayed or double tap can't answer a
+  // different prompt. Null whenever /permissionPrompt is null.
+  permissionPromptId: string | null;
   // Whimsical action verb Claude is currently showing ("Crunching…",
   // "Razzmatazzing…", "Worked for 33s"). Updated as Claude streams.
   activity: string | null;

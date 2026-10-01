@@ -19,6 +19,10 @@
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
       ".write": false
     },
+    "permissionPromptId": {
+      ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
+      ".write": false
+    },
     "activity": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
       ".write": false
@@ -43,7 +47,7 @@
 
     "command": {
       ".read": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE')",
-      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && (!newData.exists() || (newData.hasChildren(['text', 'issuedAt']) && newData.child('text').isString() && newData.child('issuedAt').isNumber()))"
+      ".write": "auth != null && (auth.uid === 'EMULATOR_UID_HERE' || auth.uid === 'REAL_WATCH_UID_HERE') && (!newData.exists() || (newData.hasChildren(['text', 'issuedAt']) && newData.child('text').isString() && newData.child('issuedAt').isNumber() && (!newData.child('promptId').exists() || newData.child('promptId').isString())))"
     },
 
     "prompt": {

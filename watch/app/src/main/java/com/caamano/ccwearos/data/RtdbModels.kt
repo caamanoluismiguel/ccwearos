@@ -21,6 +21,9 @@ data class Metrics(
 data class PendingCommand(
     val text: String = "",
     val issuedAt: Long = 0,
+    // Echo of /permissionPromptId at tap time. Required by the wrapper for
+    // allow/deny answers; stale or mismatched ids are dropped.
+    val promptId: String? = null,
 )
 
 @IgnoreExtraProperties
