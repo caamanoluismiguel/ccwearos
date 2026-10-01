@@ -7,10 +7,18 @@
 // that command involves two layers of escaping (shell + AppleScript), so
 // they live here as small, individually testable functions.
 
+import { SESSION_ID_RE } from "./share-args.js";
 import { shSingleQuote } from "./sh-escape.js";
 // Re-export so existing test imports keep working. Canonical home is
 // src/sh-escape.ts (also imported by claude-runner.ts).
 export { shSingleQuote };
+// Same regex share.ts's argv parser and the claim-handler use — re-exported
+// (not copied) so takeover callers validate with the single canonical rule.
+export { SESSION_ID_RE };
+
+export function isValidSessionId(id: unknown): boolean {
+  return typeof id === "string" && SESSION_ID_RE.test(id);
+}
 
 // Escape a string for inclusion inside an AppleScript double-quoted string
 // literal. Only `\` and `"` are special inside double quotes — they get
@@ -115,5 +123,10 @@ export function buildShellCommand(
   shareScript: string,
   sessionId: string,
 ): string {
-  return `cd ${shSingleQuote(cwd)} && exec ${shSingleQuote(tsxBin)} ${shSingleQuote(shareScript)} --resume ${sessionId}`;
+  // The sessionId comes from env / ~/.claude files / the watch — validate
+  // before it gets anywhere near a shell, then quote anyway (defense in depth).
+  if (!isValidSessionId(sessionId)) {
+    throw new Error(`invalid sessionId: ${JSON.stringify(sessionId.slice(0, 80))}`);
+  }
+  return `cd ${shSingleQuote(cwd)} && exec ${shSingleQuote(tsxBin)} ${shSingleQuote(shareScript)} --resume ${shSingleQuote(sessionId)}`;
 }
