@@ -73,7 +73,37 @@ data class SharedSessionMeta(
     // "hook"        → user's Terminal, hook bridges permission prompts via RTDB.
     // Empty string for legacy entries written before Camino E.
     val kind: String = "",
+    // kind="hook" only: unix epoch ms of the last PreToolUse hook run. Older
+    // than 30 min → stale lock (see SharedSessionStaleness). Null on entries
+    // written before the wrapper added it.
+    val heartbeatAt: Long? = null,
+    // kind="hook" only: PID of the Claude CLI process that owns the session.
+    val ownerPid: Long? = null,
 )
+
+/**
+ * A `kind == "hook"` lock whose owner stopped running hooks (Terminal closed,
+ * Claude crashed) stays in RTDB until the daemon clears it, and while it is
+ * there the dashboard hides the ask button. Treat it as absent once its
+ * heartbeat (or startedAt, for entries without one) is older than
+ * [STALE_AFTER_MS]. Mirrors isSharedSessionStale in wrapper/src/shared-session.ts.
+ */
+object SharedSessionStaleness {
+    const val STALE_AFTER_MS = 30 * 60 * 1000L
+
+    fun isStale(meta: SharedSessionMeta, nowMs: Long): Boolean {
+        if (meta.kind != "hook") return false
+        val last = meta.heartbeatAt?.takeIf { it > 0 } ?: meta.startedAt
+        // No timestamp at all → can't judge; keep the lock. A timestamp in the
+        // future (watch clock behind the Mac) yields a negative age → fresh.
+        if (last <= 0) return false
+        return nowMs - last > STALE_AFTER_MS
+    }
+
+    /** [meta], or null when it is a stale hook lock. */
+    fun visible(meta: SharedSessionMeta?, nowMs: Long): SharedSessionMeta? =
+        meta?.takeUnless { isStale(it, nowMs) }
+}
 
 // Snapshot of one Claude Code session on the Mac. Scanned every ~15s from
 // ~/.claude/sessions/*.json (active PIDs) + ~/.claude/projects/*/*.jsonl

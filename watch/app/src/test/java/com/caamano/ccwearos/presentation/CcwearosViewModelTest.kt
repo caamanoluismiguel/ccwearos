@@ -2,9 +2,11 @@ package com.caamano.ccwearos.presentation
 
 import com.caamano.ccwearos.data.AnswerGate
 import com.caamano.ccwearos.data.CommandText
+import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.WrapperStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -24,12 +26,14 @@ class CcwearosViewModelTest {
     private val dispatcher = UnconfinedTestDispatcher()
     private lateinit var repo: FakeWatchRepository
     private lateinit var vm: CcwearosViewModel
+    private var now = 10_000_000_000L
+    private val ticks = MutableSharedFlow<Unit>()
 
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
         repo = FakeWatchRepository()
-        vm = CcwearosViewModel(repo, AnswerGate())
+        vm = CcwearosViewModel(repo, AnswerGate(), clock = { now }, staleTicks = ticks)
     }
 
     @After
@@ -136,6 +140,42 @@ class CcwearosViewModelTest {
         assertEquals(2, fired)
         job.cancel()
     }
+
+    // Stale hook lock: hidden so the dashboard shows the ask button again.
+    @Test
+    fun `fresh hook session is exposed`() {
+        val meta = SharedSessionMeta(kind = "hook", startedAt = now - 60_000, heartbeatAt = now - 5_000)
+        repo.sharedSession.value = meta
+        assertEquals(meta, vm.sharedSession.value)
+    }
+
+    @Test
+    fun `hook session with an old heartbeat is hidden`() {
+        repo.sharedSession.value =
+            SharedSessionMeta(kind = "hook", startedAt = now - 3_600_000, heartbeatAt = now - 31 * 60_000)
+        assertNull(vm.sharedSession.value)
+    }
+
+    @Test
+    fun `hook session goes stale on a tick without an RTDB change`() = runTest(dispatcher) {
+        val meta = SharedSessionMeta(kind = "hook", startedAt = now - 60_000, heartbeatAt = now - 60_000)
+        repo.sharedSession.value = meta
+        assertEquals(meta, vm.sharedSession.value)
+        now += 30 * 60_000L
+        ticks.emit(Unit)
+        assertNull(vm.sharedSession.value)
+        // A new heartbeat brings it back.
+        val beat = meta.copy(heartbeatAt = now)
+        repo.sharedSession.value = beat
+        assertEquals(beat, vm.sharedSession.value)
+    }
+
+    @Test
+    fun `wrapper-pty session is never hidden by age`() {
+        val meta = SharedSessionMeta(kind = "wrapper-pty", startedAt = now - 24 * 3_600_000L)
+        repo.sharedSession.value = meta
+        assertEquals(meta, vm.sharedSession.value)
+    }
 }
 
 class CompletionDetectorTest {
@@ -165,4 +205,5 @@ class CompletionDetectorTest {
         d.onUpdate(WrapperStatus.RUNNING, "ok")
         assertFalse(d.onUpdate(WrapperStatus.IDLE, "ok"))
     }
+
 }

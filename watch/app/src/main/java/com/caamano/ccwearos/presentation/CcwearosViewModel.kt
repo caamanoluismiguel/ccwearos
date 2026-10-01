@@ -11,11 +11,14 @@ import com.caamano.ccwearos.data.CommandText
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.SharedSessionMeta
+import com.caamano.ccwearos.data.SharedSessionStaleness
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WatchRepository
 import com.caamano.ccwearos.data.WrapperStatus
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -24,6 +27,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -38,9 +43,21 @@ internal object ErrorCopy {
     const val CLAIM_FAILED = "No se pudo abrir la sesión. Intenta de nuevo."
 }
 
+/** Emits once a minute, forever. Drives time-based re-evaluation in the VM. */
+internal fun minuteTicks(): Flow<Unit> = flow {
+    while (true) {
+        delay(60_000)
+        emit(Unit)
+    }
+}
+
 class CcwearosViewModel(
     private val repo: WatchRepository = CcwearosRepository(),
     private val answers: AnswerGate = AnswerGate.shared,
+    // Wall clock + re-evaluation ticks for the stale-lock check below.
+    // Injected so tests don't depend on real time or an endless ticker.
+    private val clock: () -> Long = System::currentTimeMillis,
+    staleTicks: Flow<Unit> = minuteTicks(),
 ) : ViewModel() {
 
     // ROUTING-CRITICAL flows use SharingStarted.Eagerly: the listener stays
@@ -63,8 +80,14 @@ class CcwearosViewModel(
     val connected: StateFlow<Boolean> = repo.connected
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val sharedSession: StateFlow<SharedSessionMeta?> = repo.sharedSession
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    // A stale hook lock (no heartbeat for 30 min) is shown as no session, so
+    // the ask button comes back even if the daemon never cleared it. The tick
+    // re-checks age while the RTDB value itself doesn't change.
+    val sharedSession: StateFlow<SharedSessionMeta?> =
+        combine(repo.sharedSession, staleTicks.onStart { emit(Unit) }) { meta, _ ->
+            SharedSessionStaleness.visible(meta, clock())
+        }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** True once the CURRENT prompt id was answered (here or from the notification). */
     val answered: StateFlow<Boolean> = combine(permissionPromptId, answers.answeredId) { id, done ->

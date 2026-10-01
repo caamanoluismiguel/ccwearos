@@ -64,6 +64,8 @@ object RtdbMappers {
             cwd = m.str("cwd") ?: "",
             startedAt = m.long("startedAt"),
             kind = m.str("kind") ?: "",
+            heartbeatAt = m.longOrNull("heartbeatAt"),
+            ownerPid = m.longOrNull("ownerPid"),
         )
     }
 
@@ -110,6 +112,13 @@ object RtdbMappers {
         }
         is String -> v.toLongOrNull() ?: v.toDoubleOrNull()?.takeIf { it.isFinite() }?.toLong() ?: 0L
         else -> 0L
+    }
+
+    /** Like [long], but null when the key is absent or not a usable number. */
+    private fun Map<*, *>.longOrNull(key: String): Long? = when (val v = this[key]) {
+        is Number -> v.toDouble().takeIf { it.isFinite() }?.let { v.toLong() }
+        is String -> v.toLongOrNull() ?: v.toDoubleOrNull()?.takeIf { it.isFinite() }?.toLong()
+        else -> null
     }
 
     private fun Map<*, *>.double(key: String): Double? = when (val v = this[key]) {

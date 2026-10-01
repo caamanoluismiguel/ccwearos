@@ -83,4 +83,21 @@ class RtdbMappersTest {
         assertFalse(RtdbMappers.bool("true"))
         assertFalse(RtdbMappers.bool(null))
     }
+
+    @Test
+    fun `sharedSession maps heartbeatAt and ownerPid, null when absent or bad`() {
+        val full = RtdbMappers.sharedSession(
+            mapOf("sessionId" to "s", "kind" to "hook", "startedAt" to 5L, "heartbeatAt" to 9.0, "ownerPid" to "4242"),
+        )!!
+        assertEquals(9L, full.heartbeatAt)
+        assertEquals(4242L, full.ownerPid)
+
+        val legacy = RtdbMappers.sharedSession(mapOf("sessionId" to "s", "startedAt" to 5L))!!
+        assertNull(legacy.heartbeatAt)
+        assertNull(legacy.ownerPid)
+
+        val bad = RtdbMappers.sharedSession(mapOf("heartbeatAt" to Double.NaN, "ownerPid" to true))!!
+        assertNull(bad.heartbeatAt)
+        assertNull(bad.ownerPid)
+    }
 }
