@@ -92,30 +92,25 @@ async function main(): Promise<void> {
     : "wildcard (hook will claim on first tool call)";
   console.log(`[ccwearos] ✓ Session bridged (${idLabel}).`);
 
-  // Detect the Claude permission mode. If it's NOT dontAsk (or bypassPermissions),
-  // Claude will keep its Terminal prompt visible even after our hook returns
-  // "allow" — the watch effectively becomes a double-confirm. Tell the user up
-  // front about the canonical alternative: /ccwearos-takeover (one-step handoff
-  // to a new Terminal under wrapper-pty control, where the pty's prompt IS
-  // the watch's prompt).
+  // The hook returns an explicit PreToolUse decision ("allow" / "deny"), which
+  // per code.claude.com/docs/en/hooks bypasses Claude's own permission check
+  // for that call — so a watch answer is final in any mode (no Terminal
+  // double-confirm). Only a watch timeout ("ask") brings the question back
+  // here. Deny rules in settings.json still win over the hook.
+  console.log("");
+  console.log(
+    "[ccwearos] Lo que respondas en el reloj es definitivo: Claude no te vuelve a preguntar aquí.",
+  );
+  console.log(
+    "[ccwearos] Si el reloj no responde en ~55s, la pregunta vuelve a este Terminal.",
+  );
+  console.log(
+    "[ccwearos] Tus reglas deny de settings.json siguen bloqueando aunque apruebes en el reloj.",
+  );
   const mode = detectPermissionMode();
-  if (mode && mode !== "dontAsk" && mode !== "bypassPermissions") {
-    console.log("");
+  if (mode === "bypassPermissions") {
     console.log(
-      `[ccwearos] ⚠️  Tu Claude está en modo '${mode}'. El reloj puede autorizar`,
-    );
-    console.log(
-      "[ccwearos]    PERO Claude también te preguntará en este Terminal (doble-confirm).",
-    );
-    console.log("");
-    console.log(
-      "[ccwearos]    👉 Para irte del Mac sin doble-confirm, usa /ccwearos-takeover:",
-    );
-    console.log(
-      "[ccwearos]       Abre una nueva Terminal con esta sesión resumida bajo `cc`",
-    );
-    console.log(
-      "[ccwearos]       (cada permiso aparece en el reloj y lo respondes ahí).",
+      "[ccwearos] Ojo: estás en bypassPermissions, así que ahora el reloj te pedirá TODAS las herramientas.",
     );
   }
   console.log("");

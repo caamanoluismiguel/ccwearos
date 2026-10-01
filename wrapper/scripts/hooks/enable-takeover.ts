@@ -74,7 +74,7 @@ async function main(): Promise<void> {
       "[ccwearos]   Mira ~/.claude/sessions/ — si está vacío, no hay nada que resumir.",
     );
     console.log(
-      "[ccwearos]   Si Claude lo creó recién, esperá 1-2s y reintentá.",
+      "[ccwearos]   Si Claude lo creó recién, espera 1-2s y reintenta.",
     );
     return;
   }
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
       "[ccwearos]   `claude --resume` rechaza sesiones ya bloqueadas por otro Claude.",
     );
     console.log(
-      "[ccwearos]   Probá desde OTRA Terminal con `claude` corriendo (no esta).",
+      "[ccwearos]   Prueba desde OTRA Terminal con `claude` corriendo (no esta).",
     );
     return;
   }
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
       `[ccwearos] ✗ Otra sesión wrapper-pty ya está activa (pid=${b?.pid ?? "?"}, cwd=${b?.cwd ?? "?"}).`,
     );
     console.log(
-      "[ccwearos]   Cerrá esa primero (Ctrl+C en su Terminal) y volvé a intentarlo.",
+      "[ccwearos]   Cierra esa primero (Ctrl+C en su Terminal) y vuelve a intentarlo.",
     );
     return;
   }
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
         "[ccwearos]   macOS puede necesitar permiso de Automation: Configuración → Privacidad → Automatización.",
       );
       console.log(
-        "[ccwearos]   Probá manualmente abriendo una Terminal nueva y corriendo:",
+        "[ccwearos]   Prueba manualmente abriendo una Terminal nueva y corriendo:",
       );
       console.log(`[ccwearos]     cd ${cwd} && cc --resume ${sessionId}`);
       return;
@@ -265,7 +265,7 @@ async function main(): Promise<void> {
       "[ccwearos] Esta Terminal queda read-only. Ciérrala (Cmd+W) cuando vuelvas al Mac,",
     );
     console.log(
-      "[ccwearos] o seguí leyéndola — la nueva ventana es la que el reloj controla.",
+      "[ccwearos] o sigue leyéndola — la nueva ventana es la que el reloj controla.",
     );
   } catch (err) {
     // Anything thrown between the placeholder write and the success path

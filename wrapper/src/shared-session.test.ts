@@ -4,8 +4,10 @@ import {
   PROMPT_MAX_CHARS,
   describeToolCall,
   findClaudeAncestorPid,
+  hookDecision,
   isClaudeComm,
   isSharedSessionStale,
+  staleLockRemover,
   truncateMiddle,
   type PsEntry,
 } from "./shared-session.js";
@@ -133,5 +135,43 @@ describe("describeToolCall", () => {
     expect(describeToolCall("WebFetch", { url: "https://a.b", prompt: "hi" })).toBe(
       "WebFetch: url=https://a.b · prompt=hi",
     );
+  });
+});
+
+describe("hookDecision", () => {
+  it("emits the documented PreToolUse decision-control shape", () => {
+    expect(JSON.parse(JSON.stringify(hookDecision("allow", "Aprobado desde el reloj")))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        permissionDecisionReason: "Aprobado desde el reloj",
+      },
+    });
+    expect(hookDecision("deny", "r").hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(hookDecision("ask", "r").hookSpecificOutput.hookEventName).toBe("PreToolUse");
+  });
+});
+
+describe("staleLockRemover", () => {
+  const stale = hook({ heartbeatAt: NOW - HOOK_STALE_MS - 1 });
+
+  it("deletes the same lock while it is still stale", () => {
+    expect(staleLockRemover(stale, NOW, alive([]))(stale)).toBeNull();
+  });
+
+  it("aborts if a different lock took its place", () => {
+    const other = hook({ pid: 101, heartbeatAt: NOW - HOOK_STALE_MS - 1 });
+    expect(staleLockRemover(stale, NOW, alive([]))(other)).toBeUndefined();
+    const restarted = { ...stale, startedAt: NOW };
+    expect(staleLockRemover(stale, NOW, alive([]))(restarted)).toBeUndefined();
+  });
+
+  it("aborts if the same lock got a fresh heartbeat meanwhile", () => {
+    const refreshed = { ...stale, heartbeatAt: NOW - 1000 };
+    expect(staleLockRemover(stale, NOW, alive([]))(refreshed)).toBeUndefined();
+  });
+
+  it("cold cache / already gone: null (server re-runs with the real value)", () => {
+    expect(staleLockRemover(stale, NOW, alive([]))(null)).toBeNull();
   });
 });

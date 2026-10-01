@@ -30,6 +30,26 @@ export function isSharedSessionStale(
   return now - meta.startedAt > HOOK_STALE_MS;
 }
 
+// Transaction updater for /sharedSession that removes `expected` only if the
+// server still holds that same lock (pid + startedAt) AND it is still stale
+// — a hook that refreshed heartbeatAt meanwhile, or a new owner, is left
+// alone. Returns null to delete, undefined to abort. A null `cur` (cold
+// cache or already gone) returns null: the server re-runs us with the real
+// value, and deleting an empty path is a no-op.
+export function staleLockRemover(
+  expected: SharedSessionMeta,
+  now: number,
+  isAlive: (pid: number) => boolean,
+): (cur: SharedSessionMeta | null) => null | undefined {
+  return (cur) => {
+    if (cur === null) return null;
+    if (cur.pid !== expected.pid || cur.startedAt !== expected.startedAt) {
+      return undefined;
+    }
+    return isSharedSessionStale(cur, now, isAlive) ? null : undefined;
+  };
+}
+
 export interface PsEntry {
   ppid: number;
   comm: string;
@@ -65,6 +85,35 @@ export function findClaudeAncestorPid(
     pid = entry.ppid;
   }
   return null;
+}
+
+// --- PreToolUse hook output --------------------------------------------
+
+// Schema verified 2026-10-01 against
+// https://code.claude.com/docs/en/hooks#pretooluse-decision-control :
+// "allow" bypasses the permission system for the call (deny rules still
+// apply), "deny" blocks it and shows the reason to Claude, "ask" shows the
+// normal permission dialog regardless of mode.
+export interface HookOutput {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse";
+    permissionDecision: "allow" | "deny" | "ask";
+    permissionDecisionReason: string;
+  };
+  systemMessage?: string;
+}
+
+export function hookDecision(
+  permissionDecision: "allow" | "deny" | "ask",
+  permissionDecisionReason: string,
+): HookOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision,
+      permissionDecisionReason,
+    },
+  };
 }
 
 // --- PreToolUse hook prompt formatting ---------------------------------

@@ -39,10 +39,15 @@ import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
 import { handleClaimRequest, spawnAsync } from "./claim-handler.js";
 import { resolveSessionCwd } from "./claim-cwd.js";
-import { ActivePrompt, consumeCommand } from "./command-consumer.js";
+import {
+  ActivePrompt,
+  consumeCommand,
+  releaseActivePrompt,
+} from "./command-consumer.js";
+import { clearPermissionPromptIf } from "./prompt-store.js";
 import { STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
-import { isSharedSessionStale } from "./shared-session.js";
+import { isSharedSessionStale, staleLockRemover } from "./shared-session.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
 
@@ -116,6 +121,11 @@ async function runInteractive(): Promise<void> {
       void setStatus("AWAITING_PERMISSION");
       void sendFcmWake("permission");
     },
+    onPermissionCleared: () => {
+      void releaseActivePrompt(activePrompt, clearPermissionPromptIf).catch(
+        (e) => console.error("[ccwearos] releasing prompt failed:", e),
+      );
+    },
     onActivity: (text) => {
       void setActivity(text);
     },
@@ -144,7 +154,7 @@ async function runInteractive(): Promise<void> {
       { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
       {
         clearCommand,
-        clearPrompt: () => setPermissionPrompt(null),
+        clearPrompt: clearPermissionPromptIf,
         answer: (bytes) => {
           console.log(
             "[ccwearos] Permission answer from watch:",
@@ -250,6 +260,34 @@ async function runDaemon(): Promise<void> {
   // in any other case, leaving correct states untouched.
   const HEARTBEAT_MS = 30_000;
   const heartbeat = setInterval(() => {
+    // Stale /sharedSession cleanup. liveSharedSession() already ignores a
+    // dead/silent lock, but leaving it in RTDB keeps the watch on
+    // "sesión compartida" with the ask button hidden. The transaction only
+    // deletes if the server still holds the SAME lock (pid + startedAt) and
+    // it is still stale — a refreshed heartbeat or new owner aborts it. Our
+    // /sharedSession 'value' listener keeps the local cache warm.
+    const seen = sharedSession;
+    if (seen && isSharedSessionStale(seen, Date.now(), isPidAlive)) {
+      const remove = staleLockRemover(seen, Date.now(), isPidAlive);
+      let removedLock = false;
+      void db()
+        .ref("/sharedSession")
+        .transaction((cur: SharedSessionMeta | null) => {
+          const next = remove(cur);
+          removedLock = cur !== null && next === null;
+          return next;
+        })
+        .then((res) => {
+          if (res.committed && removedLock) {
+            console.log(
+              `[ccwearos] Cleared stale /sharedSession (kind=${seen.kind}, pid=${seen.pid}, cwd=${seen.cwd}).`,
+            );
+          }
+        })
+        .catch(() => {
+          // best-effort; next tick retries.
+        });
+    }
     if (busy) return;
     if (liveSharedSession() !== null) return;
     void db()
@@ -336,7 +374,7 @@ async function runDaemon(): Promise<void> {
       { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
       {
         clearCommand,
-        clearPrompt: () => setPermissionPrompt(null),
+        clearPrompt: clearPermissionPromptIf,
         answer: (bytes, decision) => {
           console.log(
             "[ccwearos] Permission response from watch:",
@@ -372,7 +410,11 @@ async function runDaemon(): Promise<void> {
         warn: (m) => console.warn(`[ccwearos] ${m}`),
       },
     );
-    if (outcome.kind === "answer") await setStatus("RUNNING");
+    // Don't downgrade to RUNNING if Claude already raised the next prompt —
+    // that would hide AWAITING_PERMISSION for prompt N+1.
+    if (outcome.kind === "answer" && !outcome.newerPrompt) {
+      await setStatus("RUNNING");
+    }
   });
 
   // Sprint 4n — watch-initiated tap-to-claim. When the user taps a session
