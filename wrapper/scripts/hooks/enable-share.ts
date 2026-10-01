@@ -12,30 +12,19 @@
 // Claude TUI output. Never exits non-zero (the slash command must always
 // "succeed" so Claude completes the turn).
 
-import {
-  initFirebase,
-  setSharedSession,
-  readSharedSession,
-} from "../../src/firebase.js";
+import { db, initFirebase } from "../../src/firebase.js";
+import { isSharedSessionStale } from "../../src/shared-session.js";
 import type { SharedSessionMeta } from "../../src/types/schema.js";
 import {
   detectPermissionMode,
   detectSessionId,
+  findOwningClaudePid,
   isPidAlive,
 } from "./_helpers.js";
 
 async function main(): Promise<void> {
   const cwd = process.cwd();
   initFirebase();
-
-  // Refuse if a wrapper-pty (cc) session is alive — two pty's clobber RTDB.
-  const existing = await readSharedSession();
-  if (existing && existing.kind === "wrapper-pty" && isPidAlive(existing.pid)) {
-    console.log(
-      `[ccwearos] Already bridged via cc in ${existing.cwd}. Close that first.`,
-    );
-    return;
-  }
 
   // Detect this session's ID best-effort. If we can't pin it down precisely
   // (multiple sessions in the same cwd, env var missing, etc.) leave it
@@ -44,14 +33,60 @@ async function main(): Promise<void> {
   const guessedSessionId = detectSessionId(cwd);
   const sessionId = guessedSessionId ?? "";
 
+  // The real owner is the Claude CLI ancestor — process.ppid is the
+  // short-lived shell the slash command runs in, which dies immediately and
+  // would make the lock look dead (or, worse, alive forever via pid reuse).
+  const ownerPid = findOwningClaudePid();
+  const now = Date.now();
   const meta: SharedSessionMeta = {
     sessionId,
-    pid: process.ppid || process.pid,
+    pid: ownerPid ?? (process.ppid || process.pid),
     cwd,
-    startedAt: Date.now(),
+    startedAt: now,
     kind: "hook",
+    heartbeatAt: now,
+    ...(ownerPid !== null ? { ownerPid } : {}),
   };
-  await setSharedSession(meta);
+
+  // Atomic claim: refuse if a live wrapper-pty (cc) session holds the lock —
+  // two pty's clobber RTDB. A stale lock (dead pid) is taken over. An
+  // existing hook bridge is replaced (the user just asked for THIS session).
+  let blockedBy: SharedSessionMeta | null = null;
+  let replaced: SharedSessionMeta | null = null;
+  const result = await db()
+    .ref("/sharedSession")
+    .transaction((current: SharedSessionMeta | null) => {
+      blockedBy = null;
+      replaced = current;
+      if (
+        current &&
+        current.kind === "wrapper-pty" &&
+        !isSharedSessionStale(current, now, isPidAlive)
+      ) {
+        blockedBy = current;
+        return undefined; // abort — leave the live cc lock untouched
+      }
+      return meta;
+    });
+  if (!result.committed) {
+    const b = blockedBy as SharedSessionMeta | null;
+    console.log(
+      `[ccwearos] Already bridged via cc in ${b?.cwd ?? "another Terminal"}. Close that first.`,
+    );
+    return;
+  }
+  const prev = replaced as SharedSessionMeta | null;
+  if (
+    prev &&
+    prev.kind === "hook" &&
+    prev.sessionId &&
+    prev.sessionId !== sessionId &&
+    !isSharedSessionStale(prev, now, isPidAlive)
+  ) {
+    console.log(
+      `[ccwearos] (Replaced the previous /ccwearos bridge in ${prev.cwd}.)`,
+    );
+  }
   const idLabel = sessionId
     ? `sessionId=${sessionId.slice(0, 8)}…`
     : "wildcard (hook will claim on first tool call)";

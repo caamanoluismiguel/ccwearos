@@ -32,15 +32,19 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { appendAuditEntry, db, initFirebase } from "../../src/firebase.js";
+import { isSharedSessionStale } from "../../src/shared-session.js";
 import {
-  appendAuditEntry,
-  initFirebase,
-  readSharedSession,
-  setSharedSession,
-} from "../../src/firebase.js";
-import { buildShellCommand, pickLauncher } from "../../src/takeover-utils.js";
+  buildShellCommand,
+  isValidSessionId,
+  pickLauncher,
+} from "../../src/takeover-utils.js";
 import type { SharedSessionMeta } from "../../src/types/schema.js";
-import { detectSessionIdDetailed, isPidAlive } from "./_helpers.js";
+import {
+  detectSessionIdDetailed,
+  findOwningClaudePid,
+  isPidAlive,
+} from "./_helpers.js";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const WRAPPER_ROOT = resolve(MODULE_DIR, "../..");
@@ -63,25 +67,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Capture existing /sharedSession BEFORE we overwrite — used to restore on
-  // failure paths (osascript denied / crash between placeholder + cc claim).
-  // If we just `setSharedSession(null)` on rollback, we'd silently destroy a
-  // pre-existing /ccwearos (kind="hook") bridge the user had set up.
-  const previousShared = await readSharedSession();
-  if (
-    previousShared &&
-    previousShared.kind === "wrapper-pty" &&
-    isPidAlive(previousShared.pid)
-  ) {
-    console.log(
-      `[ccwearos] ✗ Otra sesión wrapper-pty ya está activa (pid=${previousShared.pid}, cwd=${previousShared.cwd}).`,
-    );
-    console.log(
-      "[ccwearos]   Cerrá esa primero (Ctrl+C en su Terminal) y volvé a intentarlo.",
-    );
-    return;
-  }
-
   const detected = detectSessionIdDetailed(cwd);
   if (!detected) {
     console.log("[ccwearos] ✗ No pude detectar el sessionId actual de Claude.");
@@ -94,16 +79,27 @@ async function main(): Promise<void> {
     return;
   }
   const sessionId = detected.sessionId;
+  // The id comes from $CLAUDE_SESSION_ID, a ~/.claude session file or a
+  // .jsonl filename — none of which we control. Validate BEFORE it reaches
+  // the shell command / AppleScript (buildShellCommand also re-checks).
+  if (!isValidSessionId(sessionId)) {
+    console.log(
+      `[ccwearos] ✗ sessionId con formato inválido (${JSON.stringify(sessionId.slice(0, 40))}) — no lo paso a la shell.`,
+    );
+    return;
+  }
 
-  // Self-takeover guard: process.ppid is the Claude process that invoked this
-  // slash command. If it matches the session-file's owning pid, we'd be asking
-  // `claude --resume <id>` to claim a session that's already locked by the
-  // caller — the new cc spawns, claims /sharedSession, then dies because
-  // Claude refuses concurrent access to the same session. Result: a stale
-  // wrapper-pty lock with a dead pid. Refuse upfront with a clear message.
+  // Self-takeover guard: if the session file's owner is the Claude process
+  // that invoked this slash command, `claude --resume <id>` would try to
+  // claim a session that's already locked by the caller — the new cc
+  // spawns, claims /sharedSession, then dies (stale wrapper-pty lock).
+  // Refuse upfront. process.ppid is NOT Claude (claude → shell → tsx →
+  // node), so walk the process tree to find the real Claude ancestor.
+  const invokingClaudePid = findOwningClaudePid();
   if (
     detected.source === "session-file" &&
-    detected.ownerPid === process.ppid
+    invokingClaudePid !== null &&
+    detected.ownerPid === invokingClaudePid
   ) {
     console.log(
       "[ccwearos] ✗ Esta es la sesión que está invocando el slash command.",
@@ -139,24 +135,69 @@ async function main(): Promise<void> {
   // kind !== "hook"). Use process.pid (this script's own pid): once we
   // process.exit at the end, isPidAlive returns false → the lock looks stale
   // to any subsequent /ccwearos-takeover attempt, which can clear it. Using
-  // process.ppid (the OLD Claude) would keep the lock looking ALIVE as long
-  // as the user keeps the old window open — even after a successful takeover
-  // hands off to the new cc — which can block legitimate retries.
+  // the OLD Claude's pid would keep the lock looking ALIVE as long as the
+  // user keeps the old window open — even after a successful takeover hands
+  // off to the new cc — which can block legitimate retries.
+  const now = Date.now();
   const placeholder: SharedSessionMeta = {
     sessionId,
     pid: process.pid,
     cwd,
-    startedAt: Date.now(),
+    startedAt: now,
     kind: "wrapper-pty",
   };
-  await setSharedSession(placeholder);
 
-  // Any failure past this point must restore the previous /sharedSession
-  // (whether null or kind="hook" from a prior /ccwearos) so we don't silently
-  // destroy state the user expects to be there.
+  // Atomic read-check-write: refuse if a live wrapper-pty holds the lock;
+  // take over a stale one. Whatever was there (null, a hook bridge, a stale
+  // lock) is captured from the committing run so rollback can restore it —
+  // writing null on rollback would silently destroy a pre-existing
+  // /ccwearos (kind="hook") bridge the user had set up.
+  let previousShared: SharedSessionMeta | null = null;
+  let blockedBy: SharedSessionMeta | null = null;
+  const lock = await db()
+    .ref("/sharedSession")
+    .transaction((current: SharedSessionMeta | null) => {
+      previousShared = current;
+      blockedBy = null;
+      if (
+        current &&
+        current.kind === "wrapper-pty" &&
+        !isSharedSessionStale(current, now, isPidAlive)
+      ) {
+        blockedBy = current;
+        return undefined; // abort — leave the live lock untouched
+      }
+      return placeholder;
+    });
+  if (!lock.committed) {
+    const b = blockedBy as SharedSessionMeta | null;
+    console.log(
+      `[ccwearos] ✗ Otra sesión wrapper-pty ya está activa (pid=${b?.pid ?? "?"}, cwd=${b?.cwd ?? "?"}).`,
+    );
+    console.log(
+      "[ccwearos]   Cerrá esa primero (Ctrl+C en su Terminal) y volvé a intentarlo.",
+    );
+    return;
+  }
+
+  // Any failure past this point must restore the previous /sharedSession —
+  // but only while our placeholder still holds the lock, so a rollback
+  // racing a cc that already claimed doesn't wipe the live session.
   const rollback = async (): Promise<void> => {
     try {
-      await setSharedSession(previousShared);
+      await db()
+        .ref("/sharedSession")
+        .transaction((current: SharedSessionMeta | null) => {
+          if (current === null) return null; // cache miss → server re-runs
+          if (
+            current.kind === placeholder.kind &&
+            current.pid === placeholder.pid &&
+            current.startedAt === placeholder.startedAt
+          ) {
+            return previousShared;
+          }
+          return undefined; // someone else owns it now — leave it
+        });
     } catch {
       // best-effort — outer caller will report the original error
     }

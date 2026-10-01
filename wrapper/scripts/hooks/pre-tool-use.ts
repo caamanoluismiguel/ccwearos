@@ -29,19 +29,37 @@ console.log = (...args: unknown[]): void => {
 //
 // Polling budget: 55s. Claude Code defaults to a 60s hook timeout; we leave
 // 5s buffer so the script can finish writing JSON before the host kills it.
+//
+// Permission prompt protocol (one-time ids, see src/command-guard.ts):
+//   - publishPermissionPrompt() writes /permissionPrompt + a fresh
+//     /permissionPromptId; we only accept a /command whose promptId is one we
+//     minted (checkCommand). Consumption is a transaction on /command so two
+//     overlapping hook runs (parallel tool calls) can't both take one tap.
+//   - Parallel tool calls: a later run overwrites the visible prompt. The
+//     earlier run keeps polling; once the active id clears (the later run got
+//     its answer) it re-publishes its own prompt with a new id. Prompts are
+//     thus answered one at a time instead of one silently timing out.
+//   - We never blind-clear /command or /permissionPrompt: cleanup clears the
+//     prompt only if /permissionPromptId is still one of ours.
 
 import { appendFileSync, writeSync } from "node:fs";
 import {
   appendAuditEntry,
+  clearCrashCleanup,
+  db,
   initFirebase,
+  publishPermissionPrompt,
   readSharedSession,
+  registerCrashCleanup,
   sendFcmWake,
-  setPermissionPrompt,
-  setSharedSession,
   setStatus,
 } from "../../src/firebase.js";
-import { db } from "../../src/firebase.js";
-import type { PendingCommand } from "../../src/types/schema.js";
+import { checkCommand } from "../../src/command-guard.js";
+import { describeToolCall } from "../../src/shared-session.js";
+import type {
+  PendingCommand,
+  SharedSessionMeta,
+} from "../../src/types/schema.js";
 
 // Every hook invocation appends one line here so we can post-mortem when
 // things go wrong. Includes timestamp, what we decided, why. Append-only.
@@ -79,46 +97,44 @@ interface HookOutput {
 
 const POLL_INTERVAL_MS = 500;
 const POLL_BUDGET_MS = 55_000;
-const PROMPT_MAX_CHARS = 200;
 
-function emit(out: HookOutput): never {
+// Crash-cleanup bookkeeping. Once armed (registerCrashCleanup), EVERY exit
+// path must disarm (clearCrashCleanup) first — otherwise the server-side
+// onDisconnect fires when our socket closes and wipes UI state that another
+// flow may own by then.
+let crashCleanupArmed = false;
+async function disarmCrashCleanup(): Promise<void> {
+  if (!crashCleanupArmed) return;
+  crashCleanupArmed = false;
+  try {
+    await clearCrashCleanup();
+  } catch (e) {
+    dlog(`clearCrashCleanup failed: ${(e as Error).message}`);
+  }
+}
+
+async function exitWith(code: number): Promise<never> {
+  await disarmCrashCleanup();
+  process.exit(code);
+}
+
+async function emit(out: HookOutput): Promise<never> {
   const json = JSON.stringify(out);
   dlog(`emit: ${json}`);
   // Write SYNCHRONOUSLY to fd 1 — process.stdout.write() buffers when stdout
   // is a pipe (which is how Claude Code invokes hooks), and process.exit()
   // truncates any pending writes. writeSync bypasses the libuv pipe buffer.
   writeSync(1, json + "\n");
-  process.exit(0);
+  return exitWith(0);
 }
 
+// Only used BEFORE crash cleanup is armed (sync exit is safe there).
 function passThrough(reason: string): never {
   dlog(`pass-through: ${reason}`);
   if (process.env["CCWEAROS_HOOK_DEBUG"]) {
     process.stderr.write(`[ccwearos-hook] pass-through: ${reason}\n`);
   }
   process.exit(0);
-}
-
-function describeToolCall(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-): string {
-  // Pretty one-liner for the watch's PermissionScreen.
-  const fragments: string[] = [];
-  for (const [k, v] of Object.entries(toolInput)) {
-    let str: string;
-    if (typeof v === "string") str = v;
-    else if (v === null || v === undefined) str = "";
-    else str = JSON.stringify(v);
-    if (str.length === 0) continue;
-    fragments.push(`${k}=${str.length > 80 ? str.slice(0, 77) + "…" : str}`);
-    if (fragments.join(" ").length > PROMPT_MAX_CHARS) break;
-  }
-  const args = fragments.join(" · ");
-  const line = `${toolName}: ${args}`;
-  return line.length > PROMPT_MAX_CHARS
-    ? line.slice(0, PROMPT_MAX_CHARS - 1) + "…"
-    : line;
 }
 
 async function readStdin(): Promise<string> {
@@ -129,39 +145,100 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function pollForCommand(
+// Prompt ids this run has minted (a re-publish mints a new one; an answer to
+// an earlier one of ours is still ours to take).
+const myPromptIds = new Set<string>();
+let currentPromptId: string | null = null;
+
+async function publishMyPrompt(promptText: string): Promise<void> {
+  const id = await publishPermissionPrompt(promptText);
+  myPromptIds.add(id);
+  currentPromptId = id;
+  await setStatus("AWAITING_PERMISSION");
+  await sendFcmWake("permission");
+}
+
+// Clear /permissionPrompt (+ id, + status) only if the active id is still
+// one of ours — never wipe a prompt another hook run published meanwhile.
+async function clearMyPrompt(): Promise<void> {
+  if (myPromptIds.size === 0) return;
+  const box = { cleared: false };
+  await db()
+    .ref("/permissionPromptId")
+    .transaction((cur: string | null) => {
+      box.cleared = false;
+      if (cur === null) return null; // cache miss or already clear → no-op
+      if (!myPromptIds.has(cur)) return undefined; // someone else's — abort
+      box.cleared = true;
+      return null;
+    });
+  if (box.cleared) {
+    // One write so a run waiting to re-publish (it waits for BOTH id and
+    // prompt to be null) can't be overwritten by our trailing IDLE.
+    await db().ref().update({ permissionPrompt: null, status: "IDLE" });
+  }
+}
+
+function isMyAnswer(cmd: PendingCommand | null, pollStartedAt: number): boolean {
+  if (!cmd || typeof cmd.text !== "string") return false;
+  // Defense in depth (hard rule): ignore /command entries written before we
+  // started polling, even if the id somehow matched.
+  if ((cmd.issuedAt ?? 0) < pollStartedAt - 1_000) return false;
+  if (typeof cmd.promptId !== "string" || !myPromptIds.has(cmd.promptId)) {
+    return false;
+  }
+  const verdict = checkCommand(cmd, cmd.promptId);
+  return verdict.ok && verdict.kind === "answer";
+}
+
+// Atomically take /command iff it answers one of our prompts. Returns the
+// answer text, or null if it wasn't ours / someone else consumed it first.
+async function tryConsume(pollStartedAt: number): Promise<string | null> {
+  const box: { text: string | null } = { text: null };
+  const res = await db()
+    .ref("/command")
+    .transaction((cur: PendingCommand | null) => {
+      box.text = null;
+      if (cur === null) return null; // cache miss → server re-runs us
+      if (!isMyAnswer(cur, pollStartedAt)) return undefined; // not ours
+      box.text = cur.text;
+      return null; // consume
+    });
+  return res.committed ? box.text : null;
+}
+
+async function pollForAnswer(
   deadline: number,
-  startedAt: number,
+  pollStartedAt: number,
+  promptText: string,
 ): Promise<string | null> {
-  const ref = db().ref("/command");
   const debug = !!process.env["CCWEAROS_HOOK_DEBUG"];
   let iterations = 0;
   while (Date.now() < deadline) {
     iterations++;
     try {
-      const snap = await ref.once("value");
-      const val = snap.val() as PendingCommand | null;
+      const [cmdSnap, idSnap] = await Promise.all([
+        db().ref("/command").once("value"),
+        db().ref("/permissionPromptId").once("value"),
+      ]);
+      const cmd = cmdSnap.val() as PendingCommand | null;
+      const activeId = idSnap.val() as string | null;
       if (debug && (iterations <= 3 || iterations % 20 === 0)) {
         process.stderr.write(
-          `[ccwearos-hook] poll #${iterations}: ${val ? "got" : "null"}\n`,
+          `[ccwearos-hook] poll #${iterations}: cmd=${cmd ? "got" : "null"} active=${activeId === currentPromptId ? "mine" : activeId ? "other" : "none"}\n`,
         );
       }
-      if (val && typeof val.text === "string" && val.text.length > 0) {
-        // Defense in depth: ignore /command entries written BEFORE this hook
-        // started polling. If `clearCommand` failed at the top of main()
-        // (network blip), a stale entry from a previous prompt is sitting
-        // there and would be wrongly consumed as the answer. Daemon + cc
-        // already enforce this via commandMaxAgeSeconds; mirror it here.
-        const issuedAt = val.issuedAt ?? 0;
-        if (issuedAt < startedAt - 1_000) {
-          if (debug) {
-            process.stderr.write(
-              `[ccwearos-hook] poll #${iterations} skipping stale cmd (issuedAt=${issuedAt}, startedAt=${startedAt})\n`,
-            );
-          }
-          // Keep polling — the user may answer in time still.
-        } else {
-          return val.text;
+      if (isMyAnswer(cmd, pollStartedAt)) {
+        const text = await tryConsume(pollStartedAt);
+        if (text !== null) return text;
+      } else if (activeId === null) {
+        // Our prompt was superseded by a parallel hook run which has since
+        // been answered and cleared. Re-publish once the prompt text is
+        // gone too (the other run's final write).
+        const promptSnap = await db().ref("/permissionPrompt").once("value");
+        if (promptSnap.val() === null) {
+          dlog("re-publishing prompt after superseding run cleared");
+          await publishMyPrompt(promptText);
         }
       }
     } catch (e) {
@@ -213,23 +290,52 @@ async function main(): Promise<void> {
   }
   if (!shared) passThrough("no /sharedSession");
   if (shared.kind !== "hook") passThrough(`kind=${shared.kind}, not hook`);
-  // Wildcard claim: enable-share.ts couldn't pin down the session ID at
-  // /ccwearos time (multiple sessions in cwd, etc.) so it wrote sessionId="".
-  // First hook fire grabs ownership using the session_id Claude Code passes
-  // in stdin (always correct), writes it back, and proceeds.
-  if (!shared.sessionId) {
-    try {
-      await setSharedSession({ ...shared, sessionId: sessionId! });
-    } catch (e) {
-      passThrough(`claim failed: ${(e as Error).message}`);
-    }
-  } else if (shared.sessionId !== sessionId) {
+  if (shared.sessionId && shared.sessionId !== sessionId) {
     passThrough(
       `sessionId mismatch (shared=${shared.sessionId}, mine=${sessionId})`,
     );
   }
 
-  // We're responsible for this tool call. Publish + wait.
+  // Atomic claim + heartbeat. Wildcard (sessionId="") → first hook fire
+  // takes ownership with the session_id Claude Code passes in stdin (always
+  // correct). Matching session → refresh heartbeatAt so the lock never looks
+  // stale while this Claude is active (isSharedSessionStale). Anything else
+  // (cleared, kind changed, another session won the wildcard) → abort.
+  try {
+    const claim = await db()
+      .ref("/sharedSession")
+      .transaction((cur: SharedSessionMeta | null) => {
+        if (cur === null) return null; // cache miss → server re-runs us
+        if (cur.kind !== "hook") return undefined;
+        if (cur.sessionId && cur.sessionId !== sessionId) return undefined;
+        return { ...cur, sessionId: sessionId!, heartbeatAt: Date.now() };
+      });
+    const now = claim.snapshot.val() as SharedSessionMeta | null;
+    if (
+      !claim.committed ||
+      !now ||
+      now.kind !== "hook" ||
+      now.sessionId !== sessionId
+    ) {
+      passThrough("lost /sharedSession claim (changed concurrently)");
+    }
+  } catch (e) {
+    passThrough(`claim failed: ${(e as Error).message}`);
+  }
+
+  // We're responsible for this tool call. Arm crash cleanup (hard rule) now
+  // that we're about to own UI surfaces — not earlier: every tool call of
+  // every Claude session on this Mac runs this hook, and arming on the
+  // pass-through path would let a host-killed pass-through wipe a live cc
+  // session's UI via onDisconnect. From here on, exits go through
+  // exitWith()/emit() which disarm first.
+  try {
+    await registerCrashCleanup({ uiSurfaces: true });
+    crashCleanupArmed = true;
+  } catch (e) {
+    dlog(`registerCrashCleanup failed: ${(e as Error).message}`);
+  }
+
   if (process.env["CCWEAROS_HOOK_DEBUG"]) {
     process.stderr.write(
       `[ccwearos-hook] matched session, publishing prompt\n`,
@@ -247,47 +353,34 @@ async function main(): Promise<void> {
     cleanupRan = true;
     dlog(`cleanup (${reason})`);
     try {
-      await setPermissionPrompt(null);
-      await setStatus("IDLE");
-      await db().ref("/command").set(null);
+      await clearMyPrompt();
     } catch (e) {
       dlog(`cleanup failed: ${(e as Error).message}`);
     }
   };
   const onSignal = (sig: NodeJS.Signals): void => {
-    void cleanup(sig).finally(() => process.exit(0));
+    void cleanup(sig).finally(() => void exitWith(0));
   };
   process.on("SIGTERM", onSignal);
   process.on("SIGINT", onSignal);
   process.on("uncaughtException", (err) => {
     dlog(`uncaught: ${err.message}`);
-    void cleanup("uncaughtException").finally(() => process.exit(0));
+    void cleanup("uncaughtException").finally(() => void exitWith(0));
   });
 
-  // CRITICAL ordering: clear /command BEFORE publishing /permissionPrompt.
-  // If we publish first and clear later, this race fires:
-  //   T+0   /permissionPrompt = "..." → watch wakes
-  //   T+0.5 user taps Allow → /command = "1\r"
-  //   T+1   we clear /command = null → user's tap is wiped
-  //   T+1   start polling, never see it, time out → Claude prompts in Term
-  // Clearing first means the watch only ever writes to a fresh /command
-  // AFTER the prompt is live, and our poll catches it on the next tick.
-  try {
-    await db().ref("/command").set(null);
-  } catch {
-    // best-effort
-  }
-
+  // No blind /command clear here: answers are matched by promptId, so an
+  // old entry can't be mistaken for ours — and clearing would wipe another
+  // overlapping run's freshly tapped answer.
   const promptText = describeToolCall(toolName!, toolInput);
+  const pollStartedAt = Date.now();
   try {
-    await setPermissionPrompt(promptText);
-    await setStatus("AWAITING_PERMISSION");
-    await sendFcmWake("permission");
+    await publishMyPrompt(promptText);
   } catch (e) {
     process.stderr.write(
       `[ccwearos-hook] publish failed: ${(e as Error).message} — falling through to ask\n`,
     );
-    emit({ hookSpecificOutput: { permissionDecision: "ask" } });
+    await cleanup("publish-failed");
+    await emit({ hookSpecificOutput: { permissionDecision: "ask" } });
   }
 
   const debug = !!process.env["CCWEAROS_HOOK_DEBUG"];
@@ -296,9 +389,8 @@ async function main(): Promise<void> {
       `[ccwearos-hook] polling /command (max ${POLL_BUDGET_MS}ms)\n`,
     );
   }
-  const pollStartedAt = Date.now();
   const deadline = pollStartedAt + POLL_BUDGET_MS;
-  const reply = await pollForCommand(deadline, pollStartedAt);
+  const reply = await pollForAnswer(deadline, pollStartedAt, promptText);
   if (debug) {
     process.stderr.write(
       `[ccwearos-hook] poll returned: ${JSON.stringify(reply)}\n`,
@@ -321,18 +413,17 @@ async function main(): Promise<void> {
       decision: "timeout",
       source: "auto",
     });
-    emit({
+    await emit({
       hookSpecificOutput: { permissionDecision: "ask" },
       systemMessage:
         "CCWEAROS watch did not respond in time — defaulting to ask",
     });
   }
 
-  // The Claude TUI permission convention is "1" / "1\r" = allow,
-  // "" / ESC () = deny. Our watch sends those exact bytes via
-  // /command. Map to the hook's decision vocabulary.
+  // checkCommand already restricted reply to the TUI vocabulary:
+  // "1\r" / "2\r" = allow, "" / ESC = deny.
   const head = reply!.trim().charAt(0);
-  if (head === "1" || head === "2" || head === "y" || head === "Y") {
+  if (head === "1" || head === "2") {
     // ALLOW path: per Claude Code docs and observed CLI v2.1.143 behaviour,
     // `exit 0` with NO stdout is interpreted as "proceed without prompting"
     // — the most reliable way to skip the user's Terminal permission UI.
@@ -347,7 +438,7 @@ async function main(): Promise<void> {
       decision: "allow",
       source: "watch",
     });
-    process.exit(0);
+    await exitWith(0);
   }
   // DENY path: stderr JSON + exit 2 — the canonical "block" signal from
   // Claude Code hook docs.
@@ -366,11 +457,11 @@ async function main(): Promise<void> {
       reason: "denied via CCWEAROS watch",
     }) + "\n",
   );
-  process.exit(2);
+  await exitWith(2);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   process.stderr.write(`[ccwearos-hook] fatal: ${(err as Error).message}\n`);
   // Never block Claude on hook bugs.
-  process.exit(0);
+  await exitWith(0);
 });

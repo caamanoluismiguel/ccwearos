@@ -2,12 +2,38 @@
 // disable-share). Centralizes Claude session detection and process probing.
 // No side effects on import — pure functions only.
 
+import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { isPidAlive } from "../../src/pid-utils.js";
+import {
+  findClaudeAncestorPid,
+  type PsEntry,
+} from "../../src/shared-session.js";
 
 export { isPidAlive };
+
+// Real `ps` lookup for findClaudeAncestorPid (the pure, tested walk lives in
+// src/shared-session.ts). Returns null if the pid is gone or ps fails.
+export function psLookup(pid: number): PsEntry | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const r = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 2_000,
+  });
+  if (r.status !== 0 || typeof r.stdout !== "string") return null;
+  const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(r.stdout.split("\n")[0] ?? "");
+  if (!m || !m[1] || !m[2]) return null;
+  return { ppid: Number(m[1]), comm: m[2] };
+}
+
+// PID of the Claude CLI process that (transitively) spawned this script —
+// slash commands run as claude → shell → tsx → node, so process.ppid is a
+// short-lived shell, not Claude. Null when no Claude ancestor is found.
+export function findOwningClaudePid(): number | null {
+  return findClaudeAncestorPid(process.pid, psLookup);
+}
 
 export interface SessionDetectionResult {
   sessionId: string;
