@@ -37,6 +37,10 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        // android.util.Log etc. return defaults in JVM unit tests.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -61,6 +65,13 @@ dependencies {
     // Coroutines + Lifecycle
     implementation(libs.coroutines.play.services)
     implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.runtime.compose)
+
+    // Wear Ongoing Activity (FGS notification surfaced on the watch face)
+    implementation(libs.wear.ongoing)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
 
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.ui.test.junit4)
