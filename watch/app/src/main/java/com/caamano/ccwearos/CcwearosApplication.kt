@@ -3,9 +3,9 @@ package com.caamano.ccwearos
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.os.Build
 import android.util.Log
 import com.caamano.ccwearos.data.CcwearosForegroundService
+import com.caamano.ccwearos.notifications.PermissionNotifier
 import com.google.firebase.database.FirebaseDatabase
 
 // Application subclass does two startup-critical things, BEFORE any code
@@ -15,13 +15,12 @@ import com.google.firebase.database.FirebaseDatabase
 //      MUST be called exactly once before any other FirebaseDatabase API
 //      call in the process — otherwise it throws "Persistence settings
 //      cannot be changed after Database is used."
-//   2. Create the NotificationChannel that CcwearosForegroundService uses
-//      for its ongoing notification. On Android 8+ a channel must exist
-//      BEFORE the notification is posted, or startForeground crashes the
-//      service with IllegalArgumentException.
+//   2. Create the NotificationChannels (foreground service + "Permisos").
+//      A channel must exist BEFORE a notification is posted on it, or
+//      startForeground crashes the service with IllegalArgumentException.
 //
-// Application.onCreate runs before any Activity / Service onCreate, making
-// it the canonical home for both.
+// Application.onCreate runs before any Activity / Service / Receiver
+// onCreate, making it the canonical home for both.
 //
 // Why disk persistence matters:
 //   - On screen wake from ambient, our listeners reconnect via TCP, which
@@ -47,27 +46,24 @@ class CcwearosApplication : Application() {
             Log.w("ccwearos", "setPersistenceEnabled skipped: ${e.message}")
         }
         createForegroundChannel()
+        PermissionNotifier.createChannel(this)
     }
 
     private fun createForegroundChannel() {
-        // NotificationChannel is required on Android 8+ (API 26). LOW
-        // importance = no sound / vibration / popup; the notification
-        // shows up only in the panel, which is what we want for a "I'm
-        // alive in background" indicator. Creating a channel is
-        // idempotent — re-creating with the same id is a no-op.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // LOW importance = no sound / vibration / popup; the notification
+        // shows up only in the panel (and as the Ongoing Activity chip),
+        // which is what we want for an "I'm alive in background" indicator.
+        // Creating a channel is idempotent.
         val channel = NotificationChannel(
             CcwearosForegroundService.CHANNEL_ID,
-            "Service en background",
+            "Conexión en segundo plano",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description =
-                "Mantiene viva la conexión al wrapper en el Mac. " +
-                    "Sin esto, el reloj muestra 'wrapper not reachable' " +
-                    "después de cada vez que dormís la pantalla."
+                "Mantiene viva la conexión con tu Mac. Sin esto, el reloj " +
+                    "pierde la conexión cada vez que se apaga la pantalla."
             setShowBadge(false)
         }
-        val nm = getSystemService(NotificationManager::class.java)
-        nm?.createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 }
