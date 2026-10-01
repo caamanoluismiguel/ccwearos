@@ -1,6 +1,8 @@
 package com.caamano.ccwearos.presentation
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -12,8 +14,16 @@ import android.os.VibratorManager
 // support composition primitives.
 object Haptics {
     private fun vibrator(context: Context): Vibrator? =
-        (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
 
+    // Primitive ids travel through a List<Pair<Int, Float>>, which drops the
+    // @PrimitiveType IntDef; every caller passes Composition.PRIMITIVE_* only.
+    @SuppressLint("WrongConstant")
     private fun play(
         context: Context,
         primitives: List<Pair<Int, Float>>,
