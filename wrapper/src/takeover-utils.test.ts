@@ -2,9 +2,29 @@ import { describe, expect, it } from "vitest";
 import {
   aplEscape,
   buildShellCommand,
+  isValidSessionId,
   pickLauncher,
+  SESSION_ID_RE,
   shSingleQuote,
 } from "./takeover-utils.js";
+import { SESSION_ID_RE as SHARE_ARGS_SESSION_ID_RE } from "./share-args.js";
+
+describe("isValidSessionId", () => {
+  it("accepts UUIDs and legacy hex ids", () => {
+    expect(isValidSessionId("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
+    expect(isValidSessionId("deadbeef")).toBe(true);
+  });
+  it("rejects shell metacharacters, whitespace, non-strings", () => {
+    expect(isValidSessionId("deadbeef;ls")).toBe(false);
+    expect(isValidSessionId("deadbeef\n")).toBe(false);
+    expect(isValidSessionId("'deadbeef'")).toBe(false);
+    expect(isValidSessionId(undefined)).toBe(false);
+    expect(isValidSessionId(12345678)).toBe(false);
+  });
+  it("uses the same regex as share.ts's argv parser", () => {
+    expect(SESSION_ID_RE).toBe(SHARE_ARGS_SESSION_ID_RE);
+  });
+});
 
 describe("shSingleQuote", () => {
   it("wraps a plain string in single quotes", () => {
@@ -135,8 +155,21 @@ describe("buildShellCommand", () => {
       SESSION_ID,
     );
     expect(cmd).toBe(
-      `cd '/home/me/project' && exec '/wrapper/node_modules/.bin/tsx' '/wrapper/scripts/share.ts' --resume ${SESSION_ID}`,
+      `cd '/home/me/project' && exec '/wrapper/node_modules/.bin/tsx' '/wrapper/scripts/share.ts' --resume '${SESSION_ID}'`,
     );
+  });
+
+  it.each([
+    "abc; rm -rf ~",
+    "$(whoami)12345678",
+    "550e8400 e29b",
+    "short",
+    "",
+    "x".repeat(65),
+  ])("refuses an invalid sessionId before building the command: %j", (bad) => {
+    expect(() =>
+      buildShellCommand("/p", "/wrapper/tsx", "/wrapper/share.ts", bad),
+    ).toThrow(/invalid sessionId/);
   });
 
   it("survives a cwd with spaces", () => {

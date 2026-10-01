@@ -101,6 +101,14 @@ export interface SharedSessionMeta {
   //     the watch's reply. Voice prompts also disabled (only one shared
   //     session at a time).
   kind: "wrapper-pty" | "hook";
+  // kind="hook" only: PID of the Claude CLI process that owns the bridged
+  // session (found by walking the process tree from the /ccwearos script).
+  // `pid` holds the same value when known. Dead owner → lock is stale.
+  ownerPid?: number;
+  // kind="hook" only: unix epoch ms of the last PreToolUse hook run for this
+  // session (also set by /ccwearos). Older than 30 min → lock is stale.
+  // See isSharedSessionStale in src/shared-session.ts.
+  heartbeatAt?: number;
 }
 
 export interface RecentSession {
