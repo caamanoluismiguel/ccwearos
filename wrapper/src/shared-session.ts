@@ -13,8 +13,14 @@ export const HOOK_STALE_MS = 30 * 60 * 1000;
 // Decide whether an existing /sharedSession lock may be ignored / taken over.
 //   - wrapper-pty (cc / takeover placeholder): stale iff its pid is dead.
 //   - hook (/ccwearos): stale iff the owning Claude pid is known and dead,
-//     OR the last heartbeat is older than HOOK_STALE_MS, OR (legacy record
-//     without heartbeat) it was started more than HOOK_STALE_MS ago.
+//     OR the last sign of life (heartbeatAt, else startedAt) is older than
+//     HOOK_STALE_MS — whatever any pid says.
+// The age rule is the watch's SharedSessionStaleness.isStale (RtdbModels.kt)
+// on purpose: a heartbeatAt that is missing, 0 or not a finite number falls
+// back to startedAt, and no usable timestamp at all can't be judged by age.
+// So whenever the watch hides a hook lock as stale (and offers the ask
+// button), the daemon also ignores it instead of silently dropping the
+// prompt. The dead-owner rule only makes the daemon MORE permissive.
 // `isAlive` is injected (pass isPidAlive from src/pid-utils.ts) so this stays
 // pure and testable.
 export function isSharedSessionStale(
@@ -24,11 +30,23 @@ export function isSharedSessionStale(
 ): boolean {
   if (meta.kind === "wrapper-pty") return !isAlive(meta.pid);
   if (typeof meta.ownerPid === "number" && !isAlive(meta.ownerPid)) return true;
-  if (typeof meta.heartbeatAt === "number") {
-    return now - meta.heartbeatAt > HOOK_STALE_MS;
-  }
-  return now - meta.startedAt > HOOK_STALE_MS;
+  const last = lastHookSignal(meta);
+  if (last === null) return false;
+  return now - last > HOOK_STALE_MS;
 }
+
+const positiveTs = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+
+// heartbeatAt when usable, else startedAt, else null (mirrors the watch).
+export function lastHookSignal(meta: SharedSessionMeta): number | null {
+  return positiveTs(meta.heartbeatAt) ?? positiveTs(meta.startedAt);
+}
+
+// Hint the daemon publishes as /blocker {kind:"other"} when it drops a voice
+// prompt because a live shared session owns Claude on the Mac.
+export const SHARED_SESSION_BLOCKER_HINT =
+  "Hay una sesión compartida activa en tu Mac (cc o /ccwearos). Ciérrala para preguntar desde el reloj.";
 
 // Transaction updater for /sharedSession that removes `expected` only if the
 // server still holds that same lock (pid + startedAt) AND it is still stale

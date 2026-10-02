@@ -11,6 +11,7 @@
 
 import { homedir } from "node:os";
 import type { BlockingDialog } from "./parser.js";
+import { SHARED_SESSION_BLOCKER_HINT } from "./shared-session.js";
 import { shSingleQuote } from "./sh-escape.js";
 import type { BlockerKind, TaskKind } from "./types/schema.js";
 
@@ -190,6 +191,22 @@ export interface VoiceRunSinks {
   setTaskKind: (k: TaskKind | null) => Promise<void>;
   setHeadline: (h: string | null) => Promise<void>;
   setFollowups: (f: string[] | null) => Promise<void>;
+}
+
+// A live shared session (cc / /ccwearos) owns Claude on the Mac, so the
+// daemon refuses the voice prompt. Say so on /blocker — otherwise the watch
+// only sees its prompt vanish and times out ("Tu Mac no tomó la pregunta").
+// The previous run's /outcome is cleared so it can't be read as this one's.
+export async function publishSharedSessionDrop(
+  sinks: Pick<VoiceRunSinks, "setBlocker" | "setOutcome">,
+  now: number = Date.now(),
+): Promise<void> {
+  await sinks.setOutcome(null);
+  await sinks.setBlocker({
+    kind: "other",
+    hint: SHARED_SESSION_BLOCKER_HINT,
+    ts: now,
+  });
 }
 
 // Run start: the previous run's blocker/outcome must not linger.

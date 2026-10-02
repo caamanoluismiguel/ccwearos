@@ -54,6 +54,56 @@ describe("isSharedSessionStale", () => {
     expect(isSharedSessionStale(m, NOW, alive([]))).toBe(false);
   });
 
+  it("hook: a stale heartbeat wins over a live pid / ownerPid", () => {
+    const m = hook({ pid: 7, ownerPid: 7, heartbeatAt: NOW - HOOK_STALE_MS - 1 });
+    expect(isSharedSessionStale(m, NOW, alive([7]))).toBe(true);
+  });
+
+  it("hook: heartbeatAt 0 / NaN falls back to startedAt, like the watch", () => {
+    for (const heartbeatAt of [0, Number.NaN, -5]) {
+      expect(
+        isSharedSessionStale(hook({ heartbeatAt, startedAt: NOW - 1000 }), NOW, alive([])),
+      ).toBe(false);
+      expect(
+        isSharedSessionStale(
+          hook({ heartbeatAt, startedAt: NOW - HOOK_STALE_MS - 1 }),
+          NOW,
+          alive([]),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("hook: no usable timestamp can't be judged by age (watch keeps it too)", () => {
+    expect(isSharedSessionStale(hook({ startedAt: 0 }), NOW, alive([]))).toBe(false);
+  });
+
+  // Superset check against the watch's rule (RtdbModels.kt
+  // SharedSessionStaleness.isStale): every lock the watch hides as stale,
+  // the daemon must ignore too, or the voice prompt is silently dropped.
+  it("hook: stale for the daemon whenever the watch's rule says stale", () => {
+    const watchIsStale = (m: SharedSessionMeta, now: number): boolean => {
+      if (m.kind !== "hook") return false;
+      const hb = m.heartbeatAt && m.heartbeatAt > 0 ? m.heartbeatAt : null;
+      const last = hb ?? m.startedAt;
+      if (last <= 0) return false;
+      return now - last > HOOK_STALE_MS;
+    };
+    const ages = [0, 1000, HOOK_STALE_MS, HOOK_STALE_MS + 1, 3 * HOOK_STALE_MS];
+    for (const s of ages) {
+      for (const h of [undefined, 0, ...ages]) {
+        const m = hook({
+          ownerPid: 7,
+          startedAt: NOW - s,
+          ...(h === undefined ? {} : { heartbeatAt: h === 0 ? 0 : NOW - h }),
+        });
+        if (watchIsStale(m, NOW)) {
+          expect(isSharedSessionStale(m, NOW, alive([7]))).toBe(true);
+        }
+      }
+    }
+  });
+
   it("hook: legacy record without heartbeat falls back to startedAt", () => {
     expect(isSharedSessionStale(hook({ startedAt: NOW - 1000 }), NOW, alive([]))).toBe(false);
     expect(

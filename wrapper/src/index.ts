@@ -43,6 +43,7 @@ import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
 import {
   clearVoiceRunEnd,
   nextHasPriorSession,
+  publishSharedSessionDrop,
   publishVoiceRunEnd,
   voiceBlocker,
   type VoiceRunSinks,
@@ -512,6 +513,9 @@ async function runDaemon(): Promise<void> {
         `[ccwearos] /sharedSession active in ${liveShared.cwd} — voice prompt dropped: ${p.text}`,
       );
       await clearPrompt();
+      await publishSharedSessionDrop(voiceSinks).catch((e) =>
+        console.error("[ccwearos] shared-session blocker failed:", e),
+      );
       return;
     }
     const ageSec = (Date.now() - p.issuedAt) / 1000;
