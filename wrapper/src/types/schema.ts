@@ -166,6 +166,11 @@ export interface AuditEntry {
 export interface PendingPrompt {
   text: string;
   issuedAt: number;
+  // Explicit choice from the watch: "new" starts a fresh conversation (the
+  // default "Preguntar" button), "continue" resumes the thread ("Seguir esta
+  // conversación", follow-up chips). Absent = legacy: continue unless the
+  // text matches a reset phrase.
+  mode?: "new" | "continue";
 }
 
 // Watch-initiated request to resume a Claude session in a new Terminal.

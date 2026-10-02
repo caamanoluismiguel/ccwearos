@@ -175,6 +175,19 @@ export function voiceRunOutcome(f: VoiceRunFacts): Omit<RunOutcome, "ts"> {
 // Whether the NEXT voice prompt should use --continue (= /conversationActive).
 // A clean run starts/extends a thread; a reset prompt that didn't complete
 // still drops the old thread (the user asked for a fresh one).
+// Whether a voice prompt continues the previous thread. An explicit mode
+// from the watch wins; without one, continue unless a reset phrase matched.
+export function decideContinuation(a: {
+  hadPrior: boolean;
+  mode: "new" | "continue" | undefined;
+  resetPhrase: boolean;
+}): { shouldContinue: boolean; reset: boolean } {
+  if (a.mode === "new") return { shouldContinue: false, reset: a.hadPrior };
+  if (a.mode === "continue") return { shouldContinue: a.hadPrior, reset: false };
+  const reset = a.hadPrior && a.resetPhrase;
+  return { shouldContinue: a.hadPrior && !reset, reset };
+}
+
 export function nextHasPriorSession(a: {
   hadPrior: boolean;
   reset: boolean;

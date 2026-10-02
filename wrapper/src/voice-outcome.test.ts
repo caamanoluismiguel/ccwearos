@@ -14,6 +14,7 @@ import {
   VOICE_TRUST_HEADLINE,
   voiceBlocker,
   voiceRunOutcome,
+  decideContinuation,
   type VoiceRunSinks,
 } from "./voice-outcome.js";
 
@@ -380,5 +381,20 @@ describe("resolveVoiceCwd", () => {
       expect(got).toBe(def);
       expect(warns).toHaveLength(1);
     }
+  });
+});
+
+describe("decideContinuation", () => {
+  it("mode new never continues, even with a prior thread", () => {
+    expect(decideContinuation({ hadPrior: true, mode: "new", resetPhrase: false })).toEqual({ shouldContinue: false, reset: true });
+    expect(decideContinuation({ hadPrior: false, mode: "new", resetPhrase: false })).toEqual({ shouldContinue: false, reset: false });
+  });
+  it("mode continue resumes only when there is a thread", () => {
+    expect(decideContinuation({ hadPrior: true, mode: "continue", resetPhrase: true })).toEqual({ shouldContinue: true, reset: false });
+    expect(decideContinuation({ hadPrior: false, mode: "continue", resetPhrase: false })).toEqual({ shouldContinue: false, reset: false });
+  });
+  it("no mode keeps the legacy reset-phrase behaviour", () => {
+    expect(decideContinuation({ hadPrior: true, mode: undefined, resetPhrase: false })).toEqual({ shouldContinue: true, reset: false });
+    expect(decideContinuation({ hadPrior: true, mode: undefined, resetPhrase: true })).toEqual({ shouldContinue: false, reset: true });
   });
 });

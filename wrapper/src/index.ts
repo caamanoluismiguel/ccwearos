@@ -42,6 +42,7 @@ import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
 import {
   clearVoiceRunEnd,
+  decideContinuation,
   nextHasPriorSession,
   publishSharedSessionDrop,
   publishVoiceRunEnd,
@@ -522,11 +523,15 @@ async function runDaemon(): Promise<void> {
       await setFollowups(null);
       await clearVoiceRunEnd(voiceSinks);
 
-      const reset = hasPriorSession && isResetPrompt(p.text);
-      const shouldContinue = hasPriorSession && !reset;
+      const mode = p.mode === "new" || p.mode === "continue" ? p.mode : undefined;
+      const { shouldContinue, reset } = decideContinuation({
+        hadPrior: hasPriorSession,
+        mode,
+        resetPhrase: isResetPrompt(p.text),
+      });
       if (reset) {
         console.log(
-          "[ccwearos] Reset phrase detected — starting fresh conversation.",
+          `[ccwearos] Starting fresh conversation (${mode === "new" ? "watch asked for new" : "reset phrase"}).`,
         );
         await setConversationActive(false);
       }
