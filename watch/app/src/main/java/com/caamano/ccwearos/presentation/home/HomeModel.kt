@@ -48,8 +48,16 @@ sealed interface HomeEvent {
     /** Not picked up in 15s or write failed: Haptics.error. */
     data object SendFailed : HomeEvent
 
-    /** A run finished; [ok] comes from /outcome, never from response text. */
-    data class Finished(val ok: Boolean) : HomeEvent
+    /**
+     * A run finished; [ok] comes from /outcome, never from response text.
+     * [stopped]: someone asked it to stop, so it reads as a calm tick, not a
+     * failure. [buzzError]: false when the failure's error haptic was already
+     * spent on a blocker (see [ErrorBuzzDedupe]).
+     */
+    data class Finished(val ok: Boolean, val stopped: Boolean = false, val buzzError: Boolean = true) : HomeEvent
+
+    /** A new Mac-side blocker is on screen: the one error haptic for it. */
+    data object Blocked : HomeEvent
 }
 
 /** How the last run ended, kept so Inicio can show a failure line. */
@@ -177,6 +185,8 @@ sealed interface Overlay {
         val cwd: String? = null,
         /** What a local dismissal is keyed on (blocker ts, episode, response). */
         val dismissKey: String,
+        /** /blocker ts when this screen shows a Mac-side blocker; null otherwise. */
+        val blockerTs: Long? = null,
     ) : Overlay {
         override val key = "blocked:${variant.name}"
     }
@@ -196,6 +206,12 @@ data class RoutingInput(
     /** ResultPage flagged the current response as TUI junk. */
     val blockedContentKey: String?,
     val dismissed: Set<String>,
+    /** Blocker ts values the user dismissed, persisted across launches. */
+    val dismissedBlockers: Set<Long> = emptySet(),
+    /** Wall clock, for the blocker max age. */
+    val nowMs: Long = 0L,
+    /** The user tapped Preguntar and the watch has no speech recognizer. */
+    val noDictation: Boolean = false,
 )
 
 fun BlockerKind.toVariant(): BlockedVariant = when (this) {
@@ -207,7 +223,8 @@ fun blockerDismissKey(b: Blocker) = "blocker:${b.ts}:${b.kind}"
 
 /**
  * Priority: a live permission prompt always wins (it is the one thing the
- * wrist can act on), then Mac-side blockers, then Mac offline, then the
+ * wrist can act on), then "no dictation" (answer to the tap just made), then
+ * Mac-side blockers (unless dismissed or older than 6h), then Mac offline, then the
  * "Claude waits on your Mac" case, then junk content from ResultPage.
  * WATCH_OFFLINE is not here: it is a non-blocking banner (see WearApp).
  */
@@ -216,15 +233,20 @@ fun routeOverlay(input: RoutingInput): Overlay {
     if (input.status == WrapperStatus.AWAITING_PERMISSION && !input.permissionPrompt.isNullOrBlank()) {
         return Overlay.Permission
     }
+    // Direct answer to the tap the user just made.
+    if (input.noDictation) {
+        return Overlay.Blocked(BlockedVariant.NO_DICTATION, dismissKey = NO_DICTATION_KEY)
+    }
     input.blocker?.let { b ->
         val key = blockerDismissKey(b)
-        if (key !in d) {
+        if (key !in d && blockerVisible(b, input.dismissedBlockers, input.nowMs)) {
             return Overlay.Blocked(
                 variant = b.kind.toVariant(),
                 blockerKind = b.kind,
                 hint = b.hint.takeIf { it.isNotBlank() },
                 cwd = b.cwd,
                 dismissKey = key,
+                blockerTs = b.ts,
             )
         }
     }
@@ -248,5 +270,8 @@ fun routeOverlay(input: RoutingInput): Overlay {
 const val MAC_OFFLINE_KEY = "mac-offline"
 const val AWAITING_KEY = "awaiting-no-prompt"
 const val WATCH_OFFLINE_KEY = "watch-offline"
+
+/** Not an episode: dismissing just clears the flag, the next tap shows it again. */
+const val NO_DICTATION_KEY = "no-dictation"
 
 fun blockedContentKey(response: String): String = "content:${response.hashCode()}"

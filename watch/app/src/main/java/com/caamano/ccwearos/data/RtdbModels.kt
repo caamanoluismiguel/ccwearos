@@ -154,8 +154,11 @@ data class Blocker(
 enum class BlockerKind { TRUST, LOGIN, CRASH, TIMEOUT, OTHER }
 
 // Mirrors RunOutcome: the real exit status of the last voice run.
+// [stopped] is true when the run ended because someone asked it to stop
+// (Detener on the watch, or ^C on the Mac); optional on the wire.
 data class RunOutcome(
     val ok: Boolean = false,
     val exitCode: Long = 0,
     val ts: Long = 0,
+    val stopped: Boolean = false,
 )

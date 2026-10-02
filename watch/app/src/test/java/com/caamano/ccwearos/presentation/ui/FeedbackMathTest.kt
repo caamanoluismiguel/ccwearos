@@ -36,4 +36,13 @@ class FeedbackMathTest {
         assertEquals(staggerDelayMs(STAGGER_MAX_STEPS), staggerDelayMs(50))
         assertEquals(0L, staggerDelayMs(-1))
     }
+
+    @Test fun timer_waits_exactly_until_the_next_second_boundary() {
+        assertEquals(1_000L, msUntilNextSecond(nowMillis = 5_000, startedAtMillis = 0))
+        assertEquals(1L, msUntilNextSecond(nowMillis = 5_999, startedAtMillis = 0))
+        assertEquals(750L, msUntilNextSecond(nowMillis = 1_250, startedAtMillis = 1_000))
+        // Clock behind the start (skew): still a sane 1..1000 ms wait.
+        val skewed = msUntilNextSecond(nowMillis = 900, startedAtMillis = 1_000)
+        assertTrue(skewed in 1L..1_000L)
+    }
 }

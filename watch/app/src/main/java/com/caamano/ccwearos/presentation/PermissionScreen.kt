@@ -66,6 +66,7 @@ import com.caamano.ccwearos.presentation.permission.rememberHoldToConfirm
 import com.caamano.ccwearos.presentation.theme.StatusColors
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.PixelIcons
+import com.caamano.ccwearos.presentation.ui.pressFeedback
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import kotlinx.coroutines.delay
 
@@ -348,7 +349,6 @@ private fun DenyButton(enabled: Boolean, onClick: () -> Unit) {
     val denyCd = stringResource(R.string.permission_deny_cd)
     val disabledState = stringResource(R.string.permission_disabled)
     val source = remember { MutableInteractionSource() }
-    val scale by animatePressScale(source)
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
@@ -361,10 +361,8 @@ private fun DenyButton(enabled: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .height(52.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            // deny() ticks itself, so the press only scales.
+            .pressFeedback(source, haptic = false)
             .semantics {
                 contentDescription = denyCd
                 if (!enabled) stateDescription = disabledState

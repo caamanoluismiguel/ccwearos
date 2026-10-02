@@ -131,9 +131,11 @@ fun PixelMascot(
 private fun MascotSprite(state: MascotState, color: Color?, animate: Boolean) {
     var frame by remember(state) { mutableStateOf(MascotFrame.resting(state, animate)) }
     val shake = remember(state) { Animatable(0f) }
+    // Screen off / app hidden: the loop is cancelled, not left ticking.
+    val resumed = rememberIsResumed()
 
-    LaunchedEffect(state, animate) {
-        if (!animate) return@LaunchedEffect
+    LaunchedEffect(state, animate, resumed) {
+        if (!animate || !resumed) return@LaunchedEffect
         runMascotLoop(state, update = { frame = it(frame) }, shake = shake)
     }
 

@@ -277,12 +277,14 @@ fun ElapsedTimer(
     clock: () -> Long = System::currentTimeMillis,
 ) {
     var now by remember { mutableLongStateOf(clock()) }
-    LaunchedEffect(startedAtMillis, endedAtMillis) {
-        if (endedAtMillis != null) return@LaunchedEffect
+    val resumed = rememberIsResumed()
+    LaunchedEffect(startedAtMillis, endedAtMillis, resumed) {
+        // Frozen, or nobody looking (screen off): no ticking. On resume the
+        // first pass catches up to the real elapsed time at once.
+        if (endedAtMillis != null || !resumed) return@LaunchedEffect
         while (true) {
             now = clock()
-            val intoSecond = (now - startedAtMillis).mod(1_000L)
-            delay(1_000L - intoSecond)
+            delay(msUntilNextSecond(now, startedAtMillis))
         }
     }
     Text(
@@ -293,6 +295,13 @@ fun ElapsedTimer(
         maxLines = 1,
     )
 }
+
+/**
+ * Delay until the elapsed time since [startedAtMillis] crosses the next whole
+ * second, so the display flips exactly on the boundary. Always 1..1000 ms.
+ */
+internal fun msUntilNextSecond(nowMillis: Long, startedAtMillis: Long): Long =
+    1_000L - (nowMillis - startedAtMillis).mod(1_000L)
 
 /** `mm:ss`, or `h:mm:ss` from one hour. Negative durations clamp to 00:00. */
 internal fun formatElapsed(ms: Long): String {

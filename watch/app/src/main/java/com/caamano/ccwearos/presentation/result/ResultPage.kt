@@ -2,13 +2,11 @@ package com.caamano.ccwearos.presentation.result
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -76,7 +73,6 @@ import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
-import com.caamano.ccwearos.presentation.Haptics
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
 import com.caamano.ccwearos.presentation.theme.CcPalette
 import com.caamano.ccwearos.presentation.theme.StatusColors
@@ -85,6 +81,7 @@ import com.caamano.ccwearos.presentation.ui.MonoLabel
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.PixelIcons
 import com.caamano.ccwearos.presentation.ui.pixelIcon
+import com.caamano.ccwearos.presentation.ui.pressFeedback
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import kotlinx.coroutines.delay
 
@@ -684,19 +681,6 @@ private fun ToolRow(ev: ToolEvent) {
 
 private enum class ButtonStyle { PRIMARY, OUTLINED, CHIP }
 
-/** Scale to Motion.PRESSED_SCALE while pressed (skipped with reduced motion). */
-@Composable
-private fun pressScale(interaction: MutableInteractionSource): Float {
-    val reduced = rememberReducedMotion()
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed && !reduced) Motion.PRESSED_SCALE else 1f,
-        animationSpec = Motion.standard(Motion.FAST),
-        label = "press",
-    )
-    return scale
-}
-
 @Composable
 private fun FeedbackButton(
     text: String,
@@ -706,9 +690,7 @@ private fun FeedbackButton(
     icon: ImageVector? = null,
     transformation: SurfaceTransformation? = null,
 ) {
-    val context = LocalContext.current
     val interaction = remember { MutableInteractionSource() }
-    val scale = pressScale(interaction)
     val colors = when (style) {
         ButtonStyle.PRIMARY -> ButtonDefaults.buttonColors(
             containerColor = CcPalette.Coral,
@@ -726,10 +708,7 @@ private fun FeedbackButton(
         )
     }
     Button(
-        onClick = {
-            Haptics.tick(context)
-            onClick()
-        },
+        onClick = onClick,
         colors = colors,
         border = if (style == ButtonStyle.PRIMARY) null else BorderStroke(1.dp, CcPalette.Outline),
         interactionSource = interaction,
@@ -737,10 +716,7 @@ private fun FeedbackButton(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
+            .pressFeedback(interaction),
     ) {
         if (icon != null) {
             Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(14.dp))
@@ -759,25 +735,18 @@ private fun FeedbackButton(
 /** A coral text action ("Ver más", "Ver todo") with a full 48dp target. */
 @Composable
 private fun InlineAction(text: String, onClick: () -> Unit) {
-    val context = LocalContext.current
     val interaction = remember { MutableInteractionSource() }
-    val scale = pressScale(interaction)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            .pressFeedback(interaction)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
-            ) {
-                Haptics.tick(context)
-                onClick()
-            },
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.CenterStart,
     ) {
         Text(

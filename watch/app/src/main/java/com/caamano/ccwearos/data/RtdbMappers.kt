@@ -106,7 +106,12 @@ object RtdbMappers {
 
     fun outcome(raw: Any?): RunOutcome? {
         val m = raw.asMap() ?: return null
-        return RunOutcome(ok = m["ok"] as? Boolean ?: false, exitCode = m.long("exitCode"), ts = m.long("ts"))
+        return RunOutcome(
+            ok = m["ok"] as? Boolean ?: false,
+            exitCode = m.long("exitCode"),
+            ts = m.long("ts"),
+            stopped = m["stopped"] as? Boolean ?: false,
+        )
     }
 
     /** Children of a list-ish node, in the order given; non-matching entries dropped. */

@@ -61,6 +61,16 @@ class RtdbMappersTest {
     }
 
     @Test
+    fun `outcome reads the optional stopped flag`() {
+        val stopped = RtdbMappers.outcome(mapOf("ok" to false, "exitCode" to 130L, "ts" to 9L, "stopped" to true))!!
+        assertTrue(stopped.stopped)
+        assertEquals(130L, stopped.exitCode)
+        val legacy = RtdbMappers.outcome(mapOf("ok" to true, "exitCode" to 0L, "ts" to 3L))!!
+        assertFalse(legacy.stopped)
+        assertFalse(RtdbMappers.outcome(mapOf("ok" to false, "stopped" to "yes"))!!.stopped)
+    }
+
+    @Test
     fun `status falls back to OFFLINE`() {
         assertEquals(WrapperStatus.OFFLINE, RtdbMappers.status("NOPE"))
         assertEquals(WrapperStatus.OFFLINE, RtdbMappers.status(3L))

@@ -113,6 +113,8 @@ data class DashboardActions(
     val onClaim: (sessionId: String, cwd: String) -> Unit = { _, _ -> },
     val onClearLastRun: () -> Unit = {},
     val onBlockedContent: () -> Unit = {},
+    /** Preguntar found no speech recognizer: route to BlockedScreen(NO_DICTATION). */
+    val onVoiceUnavailable: () -> Unit = {},
 )
 
 /** Settled mascot for the current mode; the transient Done hop is layered on top. */
@@ -120,6 +122,8 @@ internal fun mascotFor(mode: HomeMode, status: WrapperStatus, blocker: Blocker?)
     is HomeMode.Idle -> when {
         mode.offline != null -> MascotState.Offline
         blocker != null -> MascotState.Blocked
+        // Stopped on purpose: calm Idle with "Detenido", never the error look.
+        mode.failure?.stoppedByUser == true -> MascotState.Idle
         mode.failure != null -> MascotState.Error
         else -> MascotState.Idle
     }
@@ -144,13 +148,14 @@ fun DashboardScreen(
     val reduced = rememberReducedMotion()
     val pagerState = rememberPagerState(initialPage = HomePages.INICIO) { HomePages.COUNT }
 
-    val askVoice = rememberVoiceInput(onText = actions.onAsk)
-    val resetVoice = rememberVoiceInput(onText = actions.onAskWithReset)
+    val askVoice = rememberVoiceInput(onText = actions.onAsk, onUnavailable = actions.onVoiceUnavailable)
+    val resetVoice = rememberVoiceInput(onText = actions.onAskWithReset, onUnavailable = actions.onVoiceUnavailable)
     val askPrompt = stringResource(if (state.conversationActive) R.string.voice_prompt_continue else R.string.voice_prompt_ask)
     val resetPrompt = stringResource(R.string.voice_prompt_reset)
 
     var doneFlash by remember { mutableStateOf(false) }
     var ringTrigger by remember { mutableIntStateOf(0) }
+    var shakeTrigger by remember { mutableIntStateOf(0) }
     var confirmReset by remember { mutableStateOf(false) }
     var metricsOpen by remember { mutableStateOf(false) }
     // True while the shell drives the pager, so settle haptics stay for swipes.
@@ -176,6 +181,8 @@ fun DashboardScreen(
     }
 
     // ¿salió bien? / ¿qué está pasando?: every VM moment gets its haptic here.
+    // This is the ONLY place a run's error haptic plays; the VM already
+    // de-duplicated blocker vs failed outcome (ErrorBuzzDedupe).
     LaunchedEffect(events) {
         events.collect { e ->
             when (e) {
@@ -196,9 +203,18 @@ fun DashboardScreen(
                             goTo(HomePages.RESULTADO)
                         }
                     }
-                } else {
-                    Haptics.error(context)
+                } else if (e.stopped) {
+                    // Detener did what it said: a calm tick, no error look.
+                    Haptics.tick(context)
                     doneFlash = false
+                } else {
+                    if (e.buzzError) Haptics.error(context)
+                    doneFlash = false
+                    shakeTrigger++
+                }
+                HomeEvent.Blocked -> {
+                    Haptics.error(context)
+                    shakeTrigger++
                 }
             }
         }
@@ -246,6 +262,7 @@ fun DashboardScreen(
         hasLastResponse = !state.response.isNullOrBlank() || state.taskKind != null,
         lastResponseAt = state.outcome?.ts?.takeIf { it > 0 },
         voiceUnavailable = askVoice.unavailable || resetVoice.unavailable,
+        errorShake = shakeTrigger,
     )
     val homeCallbacks = HomeCallbacks(
         onAsk = { askVoice.launch(askPrompt) },

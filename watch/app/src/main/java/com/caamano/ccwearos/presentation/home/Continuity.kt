@@ -130,6 +130,21 @@ private fun GraphicsLayerScope.applyContinuity(
     }
 }
 
+// ─── Underlay below an overlay (WearApp) ─────────────────────────────────────
+
+/** How far the pager recedes while an overlay is arriving or leaving. */
+internal const val UNDERLAY_RECEDE = 0.6f
+
+/**
+ * Pager progress for overlay [reveal] 0..1. At 1 the opaque overlay covers
+ * it completely, so progress drops to 0: no blur RenderEffect is kept alive
+ * for a layer nobody can see (see [underlayHidden], which hides it).
+ */
+fun underlayProgress(reveal: Float): Float = if (underlayHidden(reveal)) 0f else UNDERLAY_RECEDE * reveal.coerceIn(0f, 1f)
+
+/** True once the overlay is fully in: the pager draws nothing (alpha 0) but stays composed. */
+fun underlayHidden(reveal: Float): Boolean = reveal >= 1f
+
 /** Live progress for a pager page: 0 when centred, 1 one page away. */
 fun pageProgress(page: Int, currentPage: Int, currentPageOffsetFraction: Float): Float =
     abs(pageOffset(page, currentPage, currentPageOffsetFraction)).coerceIn(0f, 1f)

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.util.Log
 import com.caamano.ccwearos.data.CcwearosForegroundService
 import com.caamano.ccwearos.notifications.PermissionNotifier
+import com.caamano.ccwearos.presentation.home.BlockerDismissals
 import com.google.firebase.database.FirebaseDatabase
 
 // Application subclass does two startup-critical things, BEFORE any code
@@ -45,6 +46,7 @@ class CcwearosApplication : Application() {
             // effect.
             Log.w("ccwearos", "setPersistenceEnabled skipped: ${e.message}")
         }
+        BlockerDismissals.init(this)
         createForegroundChannel()
         PermissionNotifier.createChannel(this)
     }

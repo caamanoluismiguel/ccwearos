@@ -8,6 +8,7 @@
     <string name="state_offline">Sin conexión</string>
     <string name="state_done">Terminado</string>
     <string name="state_error">Algo falló</string>
+    <string name="state_stopped">Detenido</string>
     <string name="mascot_cd">Claude: %1$s</string>
 
     <!-- Acciones -->

@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,10 +59,13 @@ import com.caamano.ccwearos.presentation.ui.MascotState
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.PixelIcons
 import com.caamano.ccwearos.presentation.ui.PixelMascot
+import com.caamano.ccwearos.presentation.ui.ProgressHalo
 import com.caamano.ccwearos.presentation.ui.StatusDot
 import com.caamano.ccwearos.presentation.ui.labelRes
 import com.caamano.ccwearos.presentation.ui.pixelIcon
+import com.caamano.ccwearos.presentation.ui.rememberIsResumed
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
+import com.caamano.ccwearos.presentation.ui.shake
 import com.caamano.ccwearos.presentation.ui.statusColor
 import kotlinx.coroutines.delay
 
@@ -93,6 +97,8 @@ data class HomeUi(
     /** Mac epoch ms of the last outcome; null when unknown. */
     val lastResponseAt: Long? = null,
     val voiceUnavailable: Boolean = false,
+    /** Bumped by the shell on a failure: the mascot shakes once (Modifier.shake). */
+    val errorShake: Int = 0,
 )
 
 /** Inicio callbacks. Haptics.tick is fired by the controls themselves. */
@@ -130,9 +136,13 @@ fun HomePage(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(14.dp))
-            PixelMascot(state = ui.mascot, size = 32.dp)
-            Spacer(Modifier.height(4.dp))
-            StateWord(ui.mascot)
+            // ¿qué está pasando?: a calm halo laps the mascot while it works.
+            Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+                ProgressHalo(active = ui.mode is HomeMode.Running, modifier = Modifier.matchParentSize(), strokeWidth = 2.dp)
+                PixelMascot(state = ui.mascot, size = 32.dp, modifier = Modifier.shake(ui.errorShake))
+            }
+            Spacer(Modifier.height(2.dp))
+            StateWord(ui.mascot, stopped = (ui.mode as? HomeMode.Idle)?.failure?.stoppedByUser == true)
             Spacer(Modifier.height(2.dp))
             DetailSlot(ui = ui, now = now, stale = stale, callbacks = callbacks)
             Spacer(Modifier.height(6.dp))
@@ -162,9 +172,11 @@ internal fun roundInset() = (LocalConfiguration.current.screenWidthDp * 0.12f).d
 /** Wall clock that ticks once a second while [enabled]; frozen otherwise. */
 @Composable
 private fun tickingNow(enabled: Boolean, nowMs: () -> Long) = remember { mutableLongStateOf(nowMs()) }.also { state ->
-    LaunchedEffect(enabled) {
+    // Gated on RESUMED: no 1 Hz wake-ups with the screen off.
+    val resumed = rememberIsResumed()
+    LaunchedEffect(enabled, resumed) {
         state.longValue = nowMs()
-        while (enabled) {
+        while (enabled && resumed) {
             delay(1_000)
             state.longValue = nowMs()
         }
@@ -178,14 +190,14 @@ private fun crossfade(reduced: Boolean): ContentTransform = if (reduced) {
 }
 
 @Composable
-private fun StateWord(state: MascotState) {
+private fun StateWord(state: MascotState, stopped: Boolean = false) {
     val reduced = rememberReducedMotion()
     AnimatedContent(
-        targetState = state,
+        targetState = state to stopped,
         transitionSpec = { crossfade(reduced) },
-        contentKey = { it.labelRes() },
+        contentKey = { (s, st) -> if (st) R.string.state_stopped else s.labelRes() },
         label = "state-word",
-    ) { s ->
+    ) { (s, st) ->
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
@@ -193,7 +205,7 @@ private fun StateWord(state: MascotState) {
             StatusDot(color = s.statusColor(), description = null)
             Spacer(Modifier.width(6.dp))
             Text(
-                text = stringResource(s.labelRes()),
+                text = stringResource(if (st) R.string.state_stopped else s.labelRes()),
                 color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
@@ -239,7 +251,7 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
                     val failure = (mode as? HomeMode.Idle)?.failure
                     Text(
                         text = failureReason(failure),
-                        color = StatusColors.error,
+                        color = if (failure?.stoppedByUser == true) MaterialTheme.colorScheme.onSurfaceVariant else StatusColors.error,
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
