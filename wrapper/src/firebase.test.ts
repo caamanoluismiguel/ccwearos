@@ -52,11 +52,12 @@ describe("firebase voice-run paths", () => {
     ]);
   });
 
-  it("clearStaleState clears blocker/outcome but keeps conversationActive", async () => {
+  it("clearStaleState clears live state but keeps the last result + conversationActive", async () => {
     await fb.clearStaleState("IDLE");
     const v = writes[0]?.value as Record<string, unknown>;
-    expect(v).toMatchObject({ status: "IDLE", blocker: null, outcome: null });
-    expect(v).not.toHaveProperty("conversationActive");
+    expect(v).toMatchObject({ status: "IDLE", blocker: null, permissionPrompt: null });
+    for (const k of ["conversationActive", "response", "headline", "followups", "outcome", "toolEvents", "taskKind"])
+      expect(v).not.toHaveProperty(k);
   });
 
   it("crash cleanup nulls blocker/outcome but keeps conversationActive", async () => {
@@ -65,7 +66,8 @@ describe("firebase voice-run paths", () => {
       string,
       unknown
     >;
-    expect(v).toMatchObject({ status: "OFFLINE", blocker: null, outcome: null });
-    expect(v).not.toHaveProperty("conversationActive");
+    expect(v).toMatchObject({ status: "OFFLINE", blocker: null });
+    for (const k of ["conversationActive", "response", "headline", "followups", "outcome"])
+      expect(v).not.toHaveProperty(k);
   });
 });

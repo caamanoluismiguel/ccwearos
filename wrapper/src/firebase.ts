@@ -192,6 +192,9 @@ export async function appendAuditEntry(entry: AuditEntry): Promise<void> {
 // Best-effort: a single .update() is atomic at the path level. Individual
 // failures don't throw; we log and move on so callers can continue with
 // their own teardown.
+// The last finished run (response, headline, taskKind, toolEvents,
+// followups, outcome) is NOT cleared here: it stays readable on the watch's
+// Resultado page across daemon restarts until the next run replaces it.
 export async function clearStaleState(
   finalStatus: WrapperStatus = "OFFLINE",
 ): Promise<void> {
@@ -202,16 +205,10 @@ export async function clearStaleState(
       permissionPromptId: null,
       activity: null,
       task: null,
-      response: null,
-      headline: null,
-      taskKind: null,
-      toolEvents: null,
-      followups: null,
       claudeStatus: null,
       command: null,
       prompt: null,
       blocker: null,
-      outcome: null,
       // conversationActive deliberately kept — it must survive restarts of
       // the watch view; the daemon resets it itself on startup.
     });
@@ -246,13 +243,8 @@ export async function registerCrashCleanup(paths: {
         permissionPromptId: null,
         activity: null,
         task: null,
-        headline: null,
-        taskKind: null,
-        toolEvents: null,
-        followups: null,
         command: null,
         blocker: null,
-        outcome: null,
       }),
     );
   }
