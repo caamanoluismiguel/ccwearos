@@ -73,6 +73,7 @@ import {
 } from "../../src/firebase.js";
 import { checkCommand } from "../../src/command-guard.js";
 import {
+  awaitingToRunning,
   describeToolCall,
   hookDecision,
   type HookOutput,
@@ -210,9 +211,7 @@ async function clearMyPrompt(): Promise<void> {
     await db().ref("/permissionPrompt").set(null);
     await db()
       .ref("/status")
-      .transaction((cur: string | null) =>
-        cur === "AWAITING_PERMISSION" ? "RUNNING" : undefined,
-      );
+      .transaction(awaitingToRunning);
     return;
   }
   // One write so a run waiting to re-publish (it waits for BOTH id and

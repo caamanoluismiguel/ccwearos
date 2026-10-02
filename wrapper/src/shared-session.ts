@@ -188,3 +188,15 @@ export function describeToolCall(
   }
   return truncateMiddle(`${toolName}: ${fragments.join(" · ")}`);
 }
+
+// Transaction handler for /status after a voice-run permission answer:
+// AWAITING_PERMISSION -> RUNNING, never over anything else (e.g. the
+// daemon's IDLE after a Stop). A cold local cache hands us `null` first;
+// returning undefined there would ABORT the transaction without ever seeing
+// the server value (status stuck on AWAITING_PERMISSION). Returning null
+// makes the server re-run us with the real value; if the path really is
+// empty, writing null is a no-op.
+export function awaitingToRunning(cur: string | null): string | null | undefined {
+  if (cur === null) return null;
+  return cur === "AWAITING_PERMISSION" ? "RUNNING" : undefined;
+}

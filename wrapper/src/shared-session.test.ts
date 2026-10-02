@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  awaitingToRunning,
   HOOK_STALE_MS,
   PROMPT_MAX_CHARS,
   describeToolCall,
@@ -223,5 +224,17 @@ describe("staleLockRemover", () => {
 
   it("cold cache / already gone: null (server re-runs with the real value)", () => {
     expect(staleLockRemover(stale, NOW, alive([]))(null)).toBeNull();
+  });
+});
+
+describe("awaitingToRunning", () => {
+  it("re-runs on a cold cache instead of aborting", () => {
+    expect(awaitingToRunning(null)).toBeNull();
+  });
+  it("moves AWAITING_PERMISSION to RUNNING", () => {
+    expect(awaitingToRunning("AWAITING_PERMISSION")).toBe("RUNNING");
+  });
+  it("never overwrites IDLE / RUNNING / OFFLINE", () => {
+    for (const s of ["IDLE", "RUNNING", "OFFLINE"]) expect(awaitingToRunning(s)).toBeUndefined();
   });
 });
