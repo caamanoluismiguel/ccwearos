@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  BlockingDialogTracker,
   cleanTerminalText,
   extractBlockingDialog,
   extractPermissionPrompt,
@@ -141,20 +140,6 @@ describe("extractPermissionPrompt vs trust dialog", () => {
     const text = tui("⏺ Press Esc to cancel the run.", "❯ 1. Yes");
     expect(extractBlockingDialog(text)).toBeNull();
     expect(extractPermissionPrompt(text)).not.toBeNull();
-  });
-});
-
-describe("BlockingDialogTracker", () => {
-  it("finds the trust dialog across small chunks, once", () => {
-    const text = dialogFixture("trust.txt");
-    const t = new BlockingDialogTracker();
-    const hits = [];
-    for (let i = 0; i < text.length; i += 64) {
-      const d = t.feed(text.slice(i, i + 64));
-      if (d) hits.push(d);
-    }
-    expect(hits).toHaveLength(1);
-    expect(hits[0]?.kind).toBe("trust");
   });
 });
 

@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/Users/me/.ccwearos/voice","session_id":"5f0c2d4e-5555-4a2b-9c3d-000000000005","tools":["Bash"],"mcp_servers":[],"model":"claude-opus-4-7[1m]","permissionMode":"default","apiKeySource":"none"}
+{"type":"assistant","message":{"id":"msg_41","type":"message","role":"assistant","model":"claude-opus-4-7","content":[{"type":"tool_use","id":"toolu_41","name":"Bash","input":{"command":"find / -name core"}}],"usage":{"input_tokens":20,"output_tokens":30}},"parent_tool_use_id":null,"session_id":"5f0c2d4e-5555-4a2b-9c3d-000000000005"}

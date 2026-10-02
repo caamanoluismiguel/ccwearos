@@ -1,157 +1,284 @@
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Fake node-pty: the test drives onData/onExit by hand.
-interface FakePty {
-  write: ReturnType<typeof vi.fn>;
+// Fake child process: the test feeds stdout lines and ends it by hand.
+interface FakeChild extends EventEmitter {
+  stdout: EventEmitter;
+  stderr: EventEmitter;
   kill: ReturnType<typeof vi.fn>;
-  onData: (cb: (d: string) => void) => void;
-  onExit: (cb: (e: { exitCode: number; signal?: number }) => void) => void;
-  emit: (d: string) => void;
-  exit: (code: number) => void;
+  signals: string[];
 }
-let fake: FakePty;
+let child: FakeChild;
 const spawnMock = vi.fn();
 
-vi.mock("node-pty", () => ({
+vi.mock("node:child_process", () => ({
   spawn: (...args: unknown[]) => {
     spawnMock(...args);
-    return fake;
+    return child;
+  },
+}));
+// The real store persists token totals to disk.
+vi.mock("./metrics-store.js", () => ({
+  createMetricsStore: () => {
+    let total = 0;
+    return {
+      add: (n: number) => {
+        total += n;
+      },
+      persist: () => {},
+      snapshot: () => ({
+        dailyTokens: total,
+        weeklyTokens: total,
+        monthlyTokens: total,
+        updatedAt: 0,
+      }),
+    };
   },
 }));
 
-function makeFake(): FakePty {
-  let dataCb: (d: string) => void = () => {};
-  let exitCb: (e: { exitCode: number }) => void = () => {};
-  let exited = false;
-  const exit = (code: number): void => {
-    if (exited) return;
-    exited = true;
-    exitCb({ exitCode: code });
-  };
-  return {
-    write: vi.fn(),
-    kill: vi.fn(() => exit(1)),
-    onData: (cb) => {
-      dataCb = cb;
-    },
-    onExit: (cb) => {
-      exitCb = cb;
-    },
-    emit: (d) => dataCb(d),
-    exit,
-  };
+function makeChild(): FakeChild {
+  const c = new EventEmitter() as FakeChild;
+  c.stdout = new EventEmitter();
+  c.stderr = new EventEmitter();
+  c.signals = [];
+  c.kill = vi.fn((sig: string) => {
+    c.signals.push(sig);
+    return true;
+  });
+  return c;
 }
 
-const trustFixture = readFileSync(
-  join(__dirname, "..", "fixtures", "dialogs", "trust.txt"),
-  "utf8",
-);
+const fixture = (name: string): string =>
+  readFileSync(join(__dirname, "..", "fixtures", "stream-json", name), "utf8");
+
+// Feed a fixture in uneven chunks so JSON lines straddle chunk boundaries.
+function feed(text: string): void {
+  for (let i = 0; i < text.length; i += 97) {
+    child.stdout.emit("data", Buffer.from(text.slice(i, i + 97)));
+  }
+}
 
 function callbacks() {
   return {
-    onStatus: vi.fn(),
     onMetrics: vi.fn(),
-    onPermission: vi.fn(),
     onActivity: vi.fn(),
-    onTask: vi.fn(),
     onResponse: vi.fn(),
     onClaudeStatus: vi.fn(),
     onToolEvents: vi.fn(),
   };
 }
 
-describe("runClaudeForVoice", () => {
+describe("runClaudeForVoice (claude -p stream-json)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    fake = makeFake();
+    child = makeChild();
     spawnMock.mockClear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it("spawns in the voice cwd, not the wrapper directory", async () => {
+  it("passes the prompt as argv (nothing typed), in the voice cwd, with the voice env", async () => {
     const { runClaudeForVoice } = await import("./claude-voice.js");
-    runClaudeForVoice("hola", callbacks(), { cwd: "/tmp/voice-here" });
-    const opts = spawnMock.mock.calls[0]?.[2] as { cwd: string };
+    runClaudeForVoice("Contexto: x · hola", callbacks(), {
+      cwd: "/tmp/voice-here",
+      continueSession: true,
+      runId: "run-1",
+    });
+    const [cmd, argv, opts] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { cwd: string; stdio: unknown[]; env: Record<string, string> },
+    ];
+    expect(cmd).toBe("/bin/sh");
+    expect(argv[1]).toMatch(/^exec .+ "\$@"$/);
+    const args = argv.slice(3);
+    expect(args.slice(0, 4)).toEqual(["-p", "--output-format", "stream-json", "--verbose"]);
+    expect(args).toContain("--continue");
+    expect(args.at(-1)).toBe("Contexto: x · hola");
+    const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
+    expect(settings.hooks.PreToolUse[0].hooks[0].command).toMatch(
+      /^CCWEAROS_HOOK_ROLE=voice '.+tsx' '.+pre-tool-use\.ts'$/,
+    );
     expect(opts.cwd).toBe("/tmp/voice-here");
-    fake.exit(0);
+    expect(opts.stdio[0]).toBe("ignore"); // no stdin: nothing can be typed
+    expect(opts.env["CCWEAROS_VOICE_RUN"]).toBe("1");
+    expect(opts.env["CCWEAROS_VOICE_RUN_ID"]).toBe("run-1");
+    expect(Number(opts.env["CCWEAROS_VOICE_HOOK_WAIT_MS"])).toBeGreaterThan(0);
+    child.emit("close", 0, null);
   });
 
-  it("blocked by the trust dialog: never answers it, kills, publishes no raw text", async () => {
+  it("first prompt of a thread omits --continue", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    expect((spawnMock.mock.calls[0]?.[1] as string[])).not.toContain("--continue");
+    child.emit("close", 0, null);
+  });
+
+  it("info answer: final text comes verbatim from the result event", async () => {
     const { runClaudeForVoice } = await import("./claude-voice.js");
     const cb = callbacks();
-    const runner = runClaudeForVoice("PROMPT", cb, { cwd: "/tmp/v" });
-
-    for (let i = 0; i < trustFixture.length; i += 200) {
-      fake.emit(trustFixture.slice(i, i + 200));
-    }
-    // Warm-up + submit delay pass: the prompt must never be typed into the
-    // dialog (its \r could pick "Yes, I trust this folder").
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    const result = await runner.done;
-    expect(fake.kill).toHaveBeenCalled();
-    expect(fake.write).not.toHaveBeenCalled();
-    expect(result.blocked).toEqual({
-      kind: "trust",
-      detail: "/Users/luismiguelcaamano/projects/CCWEAROS/wrapper",
-    });
-    expect(cb.onResponse).not.toHaveBeenCalled();
-    expect(cb.onPermission).not.toHaveBeenCalled();
-    expect(console.warn).toHaveBeenCalled();
-
-    const { finalizeVoiceOutcome } = await import("./voice-outcome.js");
-    const o = finalizeVoiceOutcome({
-      blocked: result.blocked,
-      exitCode: result.exitCode,
-      response: "",
-      cwd: "/tmp/v",
-    });
-    expect(o?.headline).toBe(
-      "Claude necesita que confíes en la carpeta en tu Mac",
+    const runner = runClaudeForVoice("Contexto: x", cb, { cwd: "/tmp/v" });
+    feed(fixture("info-answer.jsonl"));
+    child.emit("close", 0, null);
+    const r = await runner.done;
+    expect(r.exitCode).toBe(0);
+    expect(r.blocked).toBeNull();
+    expect(r.stopped).toBe(false);
+    expect(r.toolEvents).toEqual([]);
+    expect(r.result?.isError).toBe(false);
+    expect(r.result?.numTurns).toBe(1);
+    expect(r.result?.text.startsWith("**TL;DR:** Un pty es una terminal falsa")).toBe(true);
+    expect(r.result?.text).toContain("Sugerencias:\n- ¿Qué es node-pty?");
+    expect(cb.onClaudeStatus).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: "Opus 4.7", contextSize: "1M" }),
     );
-    expect(o?.response).toContain("/tmp/v");
-    expect(o?.response).not.toMatch(/\x1b|❯|Esc to cancel/);
+    expect(cb.onMetrics).toHaveBeenCalledWith(
+      expect.objectContaining({ dailyTokens: 12 + 2048 + 10240 + 64 }),
+    );
+    expect(cb.onActivity).toHaveBeenLastCalledWith(null);
   });
 
-  it("stops a run that exceeds its time cap and reports timedOut", async () => {
+  it("tool run: Bash + Edit become tool events and Spanish activity, live", async () => {
     const { runClaudeForVoice } = await import("./claude-voice.js");
-    const runner = runClaudeForVoice("PROMPT", callbacks(), {
+    const cb = callbacks();
+    const runner = runClaudeForVoice("Contexto: x", cb, { cwd: "/tmp/v" });
+    const lines = fixture("tool-run.jsonl").trimEnd().split("\n");
+    feed(lines.slice(0, -1).join("\n") + "\n");
+    expect(cb.onActivity).toHaveBeenCalledWith("Ejecutando un comando");
+    expect(cb.onActivity).toHaveBeenCalledWith("Editando parser.ts");
+    // Live preview of the assistant's text (debounced).
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(cb.onResponse).toHaveBeenLastCalledWith(
+      "Listo, moví 11 archivos a Documentos/Facturas y actualicé parser.ts.",
+    );
+    feed(`${lines.at(-1)}\n`);
+    child.emit("close", 0, null);
+    const r = await runner.done;
+    expect(r.toolEvents.map((e) => [e.tool, e.arg])).toEqual([
+      ["Bash", "ls -la ~/Downloads"],
+      ["Edit", "/Users/me/projects/CCWEAROS/wrapper/src/parser.ts"],
+    ]);
+    expect(cb.onToolEvents).toHaveBeenLastCalledWith(r.toolEvents);
+    expect(r.result?.text).toBe(
+      "Listo, moví 11 archivos a Documentos/Facturas y actualicé parser.ts.",
+    );
+    expect(r.result?.numTurns).toBe(3);
+  });
+
+  it("auth error: is_error result → blocked kind auth", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    feed(fixture("auth-error.jsonl"));
+    child.emit("close", 1, null);
+    const r = await runner.done;
+    expect(r.result?.isError).toBe(true);
+    expect(r.blocked).toEqual({
+      kind: "auth",
+      detail: "Invalid API key · Please run /login",
+    });
+  });
+
+  it("permission denied from the watch: a normal answer, the denial counted", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    feed(fixture("permission-denied.jsonl"));
+    child.emit("close", 0, null);
+    const r = await runner.done;
+    expect(r.blocked).toBeNull();
+    expect(r.result?.isError).toBe(false);
+    expect(r.result?.permissionDenials).toBe(1);
+    expect(r.result?.text).toContain("rechazaste el permiso");
+  });
+
+  it("crash with no result event: result null, non-zero exit", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    feed(fixture("crash-no-result.jsonl"));
+    child.stderr.emit("data", Buffer.from("Error: something exploded\n"));
+    child.emit("close", 1, null);
+    const r = await runner.done;
+    expect(r.result).toBeNull();
+    expect(r.exitCode).toBe(1);
+    expect(r.blocked).toBeNull();
+
+    const { voiceBlocker } = await import("./voice-outcome.js");
+    expect(
+      voiceBlocker({ blocked: r.blocked, exitCode: r.exitCode, response: "", cwd: "/tmp/v" })
+        ?.kind,
+    ).toBe("crash");
+  });
+
+  it("logged out with no result event: auth detected from stderr", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    child.stderr.emit("data", Buffer.from("Not logged in · Please run /login\n"));
+    child.emit("close", 1, null);
+    expect((await runner.done).blocked?.kind).toBe("auth");
+  });
+
+  it("user stop: SIGINT, then SIGTERM after the grace period; stopped=true", async () => {
+    const { runClaudeForVoice, STOP_GRACE_MS } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    feed(fixture("user-stop.jsonl"));
+    runner.stop();
+    expect(child.signals).toEqual(["SIGINT"]);
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + 10);
+    expect(child.signals).toEqual(["SIGINT", "SIGTERM"]);
+    child.emit("close", null, "SIGTERM");
+    const r = await runner.done;
+    expect(r.stopped).toBe(true);
+    expect(r.result).toBeNull();
+    expect(r.exitCode).toBe(143); // 128 + SIGTERM
+
+    const { voiceRunOutcome, voiceBlocker } = await import("./voice-outcome.js");
+    const facts = {
+      blocked: r.blocked,
+      exitCode: r.exitCode,
+      response: "",
+      cwd: "/tmp/v",
+      stopped: r.stopped,
+    };
+    expect(voiceBlocker(facts)).toBeNull(); // a stop is not a crash
+    expect(voiceRunOutcome(facts)).toEqual({ ok: false, exitCode: 143, stopped: true });
+  });
+
+  it("a stop that exits quickly sends nothing more", async () => {
+    const { runClaudeForVoice, STOP_GRACE_MS } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    runner.stop();
+    child.emit("close", null, "SIGINT");
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS * 3);
+    expect(child.signals).toEqual(["SIGINT"]);
+    expect((await runner.done).exitCode).toBe(130);
+  });
+
+  it("time cap: SIGTERM, timedOut=true", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), {
       cwd: "/tmp/v",
       maxRunMs: 60_000,
     });
-    // Keep output flowing so idle detection never ends the run first.
-    for (let t = 0; t < 70; t++) {
-      fake.emit(`tick ${t}\r\n`);
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
-    const result = await runner.done;
-    expect(fake.write).toHaveBeenCalledWith("/exit\r");
-    expect(fake.kill).toHaveBeenCalled();
-    expect(result.timedOut).toBe(true);
-    expect(result.blocked).toBeNull();
+    await vi.advanceTimersByTimeAsync(60_010);
+    expect(child.signals).toEqual(["SIGTERM"]);
+    child.emit("close", null, "SIGTERM");
+    const r = await runner.done;
+    expect(r.timedOut).toBe(true);
+    expect(r.stopped).toBe(false);
   });
 
-  it("normal run: types the prompt after warm-up and reports blocked=null", async () => {
+  it("spawn error resolves with exitCode null", async () => {
     const { runClaudeForVoice } = await import("./claude-voice.js");
-    const cb = callbacks();
-    const runner = runClaudeForVoice("PROMPT", cb, { cwd: "/tmp/v" });
-    fake.emit("Welcome back!\r\n");
-    await vi.advanceTimersByTimeAsync(5_400);
-    expect(fake.write).toHaveBeenCalledWith("PROMPT");
-    expect(fake.write).toHaveBeenCalledWith("\r");
-    fake.emit("⏺ Listo,\x1b[1Cmoví\x1b[1C12\x1b[1Carchivos.\r\n");
-    fake.exit(0);
-    const result = await runner.done;
-    expect(result.blocked).toBeNull();
-    expect(result.timedOut).toBe(false);
-    expect(cb.onResponse).toHaveBeenLastCalledWith(
-      expect.stringContaining("Listo, moví 12 archivos."),
-    );
+    const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });
+    child.emit("error", new Error("spawn /bin/sh ENOENT"));
+    const r = await runner.done;
+    expect(r.exitCode).toBeNull();
+    expect(r.result).toBeNull();
   });
 });

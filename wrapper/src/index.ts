@@ -33,7 +33,7 @@ import {
   watchPrompts,
   writeMetrics,
 } from "./firebase.js";
-import { extractFollowups, extractTldr, PROMPT_END_MARKER } from "./parser.js";
+import { extractFollowups, extractTldr } from "./parser.js";
 import { startSessionScanner } from "./sessions-scanner.js";
 import { watchSharedSession } from "./firebase.js";
 import type { SharedSessionMeta } from "./types/schema.js";
@@ -56,7 +56,7 @@ import {
   releaseActivePrompt,
 } from "./command-consumer.js";
 import { clearPermissionPromptIf } from "./prompt-store.js";
-import { STOP } from "./command-guard.js";
+import { checkCommand, STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
 import { isSharedSessionStale, staleLockRemover } from "./shared-session.js";
 
@@ -72,10 +72,12 @@ function buildPromptPrefix(userText: string): string {
   // Context note that goes first: tell Claude he IS running on the user's
   // macOS session with shell access, so "abre X" / "open X" / "ejecuta X"
   // must trigger the Bash tool, not a "I can't do that" refusal.
+  // It also keeps the argv prompt from starting with "-" or a subcommand
+  // name (claude -p takes it as a positional argument), so it stays first.
   const contextEs =
-    "Contexto: estás corriendo en el Mac del usuario vía pty. Tienes Bash. Si te dice 'abre/abrir <app>', ejecuta `open -a \"<app>\"`. Si te dice 'ejecuta/corre <comando>', córrelo. Si te dice 'borra/crea/mueve <archivo>', hazlo. NUNCA respondas 'no puedo abrir apps' o 'no tengo control de escritorio' — sí tienes, vía shell.";
+    "Contexto: estás corriendo en el Mac del usuario. Tienes Bash. Si te dice 'abre/abrir <app>', ejecuta `open -a \"<app>\"`. Si te dice 'ejecuta/corre <comando>', córrelo. Si te dice 'borra/crea/mueve <archivo>', hazlo. NUNCA respondas 'no puedo abrir apps' o 'no tengo control de escritorio' — sí tienes, vía shell.";
   const contextEn =
-    "Context: you are running on the user's macOS via pty. You have Bash. If they say 'open <app>', run `open -a \"<app>\"`. If they say 'run/exec <cmd>', do it. If they say 'delete/create/move <file>', do it. NEVER reply 'I can't open apps' or 'I have no desktop access' — you do, via the shell.";
+    "Context: you are running on the user's macOS. You have Bash. If they say 'open <app>', run `open -a \"<app>\"`. If they say 'run/exec <cmd>', do it. If they say 'delete/create/move <file>', do it. NEVER reply 'I can't open apps' or 'I have no desktop access' — you do, via the shell.";
   return isSpanish
     ? `${contextEs} Responde así (solo si NO necesitas usar herramientas para esta tarea): primera línea con \`**TL;DR:**\` (máximo 18 palabras), luego detalles si quieres. Termina SIEMPRE con un bloque corto en una nueva línea: \`Sugerencias:\` seguido de 2-3 viñetas con \`-\`, cada una de máximo 6 palabras, sugiriendo qué preguntar o hacer a continuación.`
     : `${contextEn} Reply like this (only if NO tools are needed for this task): first line \`**TL;DR:**\` with at most 18 words, then details if you want. ALWAYS end with a short block on a new line: \`Followups:\` followed by 2-3 bullets with \`-\`, each at most 6 words, suggesting what to ask or do next.`;
@@ -232,8 +234,9 @@ async function runDaemon(): Promise<void> {
   // True once we've completed at least one oneshot in this daemon run — then
   // subsequent prompts use `claude --continue` to keep conversation context.
   let hasPriorSession = false;
-  // Active runner for the current voice task. Permission responses from the
-  // watch (via /command) get routed into runner.send() while it's alive.
+  // Active runner for the current voice task. Its permission prompts are
+  // answered by the PreToolUse hook (src/voice-run.ts); the daemon only
+  // handles the watch's Stop for it.
   let activeRunner: VoiceRunner | null = null;
   // Set when the watch's Stop killed the current run (reset per prompt), so a
   // user-cancelled run isn't reported as "Claude terminó con un error".
@@ -253,8 +256,6 @@ async function runDaemon(): Promise<void> {
   await setConversationActive(false).catch((e) =>
     console.error("[ccwearos] setConversationActive failed:", e),
   );
-  // One-time id of the voice run's permission prompt currently on the watch.
-  const activePrompt = new ActivePrompt();
   // Currently-shared session (from `cc` / scripts/share.ts), if any. While
   // non-null we refuse voice prompts to avoid two pty's writing to the same
   // RTDB paths and clobbering each other. The watch's Page 0 button is also
@@ -398,56 +399,32 @@ async function runDaemon(): Promise<void> {
       await clearCommand();
       return;
     }
-    // Allowlist + one-time prompt id (src/command-consumer.ts). Rejected
-    // commands are logged and cleared, never written to the pty.
-    const outcome = await consumeCommand(
-      cmd,
-      activePrompt,
-      { now: Date.now(), maxAgeSeconds: config.commandMaxAgeSeconds },
-      {
-        clearCommand,
-        clearPrompt: clearPermissionPromptIf,
-        answer: (bytes, decision) => {
-          console.log(
-            "[ccwearos] Permission response from watch:",
-            JSON.stringify(bytes),
-          );
-          void appendAuditEntry({
-            ts: Date.now(),
-            kind: "voice",
-            tool: "(voice-permission)",
-            args: JSON.stringify(bytes),
-            decision,
-            source: "watch",
-          });
-          runner.send(bytes);
-        },
-        // Cancel/Stop: watch sends \x03 (ETX, SIGINT) when the user taps the
-        // detener button on Page 0. Kill the runner — Claude exits cleanly.
-        stop: async () => {
-          console.log("[ccwearos] SIGINT from watch — stopping current run");
-          void appendAuditEntry({
-            ts: Date.now(),
-            kind: "voice",
-            tool: "(cancel)",
-            args: "",
-            decision: "deny",
-            source: "watch",
-          });
-          voiceStopRequested = true; // not an error — see finalizeVoiceOutcome
-          runner.kill();
-          await setPermissionPrompt(null);
-          await setActivity(null);
-          await setStatus("IDLE");
-        },
-        warn: (m) => console.warn(`[ccwearos] ${m}`),
-      },
-    );
-    // Don't downgrade to RUNNING if Claude already raised the next prompt —
-    // that would hide AWAITING_PERMISSION for prompt N+1.
-    if (outcome.kind === "answer" && !outcome.newerPrompt) {
-      await setStatus("RUNNING");
+    // Voice runs are `claude -p`: their permission prompts are published and
+    // answered by the PreToolUse hook (scripts/hooks/pre-tool-use.ts, voice
+    // mode), which consumes /command itself by prompt id. The daemon must
+    // leave answers alone and only act on Stop.
+    const verdict = checkCommand(cmd, null);
+    if (!verdict.ok || verdict.kind !== "stop") return;
+    await clearCommand();
+    const ageSec = (Date.now() - (cmd.issuedAt ?? 0)) / 1000;
+    if (ageSec > config.commandMaxAgeSeconds) {
+      console.warn(`[ccwearos] Stale stop (age ${ageSec.toFixed(1)}s) ignored.`);
+      return;
     }
+    console.log("[ccwearos] Stop from watch — stopping the voice run");
+    await appendAuditEntry({
+      ts: Date.now(),
+      kind: "voice",
+      tool: "(cancel)",
+      args: "",
+      decision: "deny",
+      source: "watch",
+    });
+    voiceStopRequested = true; // /outcome gets stopped:true, not an error
+    runner.stop();
+    await setPermissionPrompt(null);
+    await setActivity(null);
+    await setStatus("IDLE");
   });
 
   // Sprint 4n — watch-initiated tap-to-claim. When the user taps a session
@@ -556,29 +533,14 @@ async function runDaemon(): Promise<void> {
 
       // Wrap the user prompt so Claude opens info answers with **TL;DR:**.
       // Tool-using runs naturally skip the directive (tools come first).
-      // PROMPT_END_MARKER lets the parser slice the response away from the
-      // TUI welcome banner + prompt-prefix echo + user-text echo cleanly.
-      // CRITICAL: Claude Code's TUI treats embedded `\n` as in-box line
-      // breaks, NOT submit — so the wrap is flattened to a single line
-      // (joined with " · ") and the runner appends a trailing `\r` to submit.
-      const wrappedPrompt = `${buildPromptPrefix(p.text)} · ${p.text} · ${PROMPT_END_MARKER}`;
+      // It's argv for `claude -p` (never typed), so no submit tricks needed.
+      const wrappedPrompt = `${buildPromptPrefix(p.text)} · ${p.text}`;
 
       activeRunner = runClaudeForVoice(
         wrappedPrompt,
         {
-          onStatus: (s) => void setStatus(s),
           onMetrics: (m) => void writeMetrics(m),
-          onPermission: (prompt) => {
-            void activePrompt.publish(
-              () => publishPermissionPrompt(prompt),
-              (e) =>
-                console.error("[ccwearos] publishPermissionPrompt failed:", e),
-            );
-            void setStatus("AWAITING_PERMISSION");
-            void sendFcmWake("permission");
-          },
           onActivity: (a) => void setActivity(a),
-          onTask: (t) => void setTask(t),
           onResponse: (r) => {
             lastResponseSeen = r;
             void setResponse(r);
@@ -589,11 +551,18 @@ async function runDaemon(): Promise<void> {
             void setToolEvents(e);
           },
         },
-        { continueSession: shouldContinue, userEcho: p.text },
+        { continueSession: shouldContinue },
       );
 
       const result = await activeRunner.done;
       activeRunner = null;
+      // The final answer is the stream's `result` text, verbatim. A run
+      // without one (crash, stop) keeps the last live preview.
+      if (result.result?.text) {
+        lastResponseSeen = result.result.text;
+        await setResponse(lastResponseSeen);
+      }
+      observedTools = result.toolEvents;
 
       hasPriorSession = nextHasPriorSession({
         hadPrior: hasPriorSession,
@@ -603,16 +572,17 @@ async function runDaemon(): Promise<void> {
       });
       await setConversationActive(hasPriorSession);
 
-      // /blocker (trust/login dialog, timeout, crash) + /outcome. Blocked or
-      // crashed runs also get a clean headline/response as the fallback for
-      // older watch builds — never the raw TUI text.
+      // /blocker (login, timeout, crash) + /outcome. Blocked or crashed runs
+      // also get a clean headline/response as the fallback for older watch
+      // builds. A run without a result event has no answer to classify.
       const facts = {
         blocked: result.blocked,
         exitCode: result.exitCode,
-        response: lastResponseSeen,
+        response: result.result?.text ?? "",
         cwd: config.voiceCwd,
         timedOut: result.timedOut,
-        stopped: voiceStopRequested,
+        stopped: voiceStopRequested || result.stopped,
+        isError: result.result?.isError === true,
       };
       let summary = "";
       const replaced = await publishVoiceRunEnd(facts, voiceSinks, async () => {
@@ -637,7 +607,7 @@ async function runDaemon(): Promise<void> {
       }
 
       console.log(
-        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} ${summary} timedOut=${result.timedOut} continue-next=${hasPriorSession}`,
+        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} ${summary} isError=${facts.isError} turns=${result.result?.numTurns ?? "-"} denials=${result.result?.permissionDenials ?? 0} timedOut=${result.timedOut} stopped=${facts.stopped} continue-next=${hasPriorSession}`,
       );
     } catch (e) {
       console.error("[ccwearos] Voice run failed:", e);
@@ -650,7 +620,6 @@ async function runDaemon(): Promise<void> {
       // as "Busy" until a daemon restart. Observed in production 2026-05-23.
       busy = false;
       activeRunner = null;
-      activePrompt.clear();
       try {
         await setActivity(null);
         await setTask(null);
@@ -678,8 +647,7 @@ async function runDaemon(): Promise<void> {
     stopWatchingShared();
     stopSessionScanner();
     stopClaimWatching();
-    // Kill any in-flight voice runner so the pty child doesn't orphan to
-    // init (and so its own onExit gets a chance to clear UI surfaces).
+    // Kill any in-flight voice run so the claude child doesn't orphan.
     try {
       activeRunner?.kill();
     } catch {

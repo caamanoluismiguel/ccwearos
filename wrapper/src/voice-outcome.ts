@@ -1,10 +1,10 @@
 // What the daemon publishes when a voice run ends WITHOUT a usable answer:
-// Claude Code got stuck on a dialog we must not answer from the wrist
-// (workspace trust, login), it exited with an error and left nothing
-// readable, or it ran past its time cap. Pure — index.ts writes to RTDB.
+// Claude Code needs the Mac (login, or trust if a future -p asks for it), it
+// exited with an error and left no result, or it ran past its time cap.
+// Pure — index.ts writes to RTDB.
 //
 // Two channels, on purpose:
-//   - /blocker {kind, hint, cwd?, ts} + /outcome {ok, exitCode, ts}: the
+//   - /blocker {kind, hint, cwd?, ts} + /outcome {ok, exitCode, stopped?, ts}: the
 //     structured contract new watch builds render (schema.ts).
 //   - headline/response/taskKind: the same message as plain text, kept as a
 //     fallback for watch builds that predate /blocker.
@@ -45,6 +45,7 @@ export interface VoiceRunFacts {
   cwd: string; // where the run was spawned
   timedOut?: boolean; // hit the runner's hard time cap
   stopped?: boolean; // the user tapped Stop: a non-zero exit is expected
+  isError?: boolean; // the stream's result event said is_error
   home?: string;
 }
 
@@ -158,14 +159,17 @@ export function voiceBlocker(f: VoiceRunFacts): VoiceBlocker | null {
   return null;
 }
 
-// /outcome for this run (minus ts). ok only for a clean exit with no blocker
-// and no user stop. RunOutcome.exitCode is a number: a missing code (spawn
+// /outcome for this run (minus ts). ok only for a clean exit, no is_error
+// result, no blocker and no user stop. RunOutcome.exitCode is a number: a missing code (spawn
 // failure) is -1. A user stop adds `stopped: true` (ok stays false) so the
 // watch can show a soft tick instead of an error.
 export function voiceRunOutcome(f: VoiceRunFacts): Omit<RunOutcome, "ts"> {
   const exitCode = f.exitCode ?? -1;
   if (f.stopped) return { ok: false, exitCode, stopped: true };
-  return { ok: exitCode === 0 && voiceBlocker(f) === null, exitCode };
+  return {
+    ok: exitCode === 0 && f.isError !== true && voiceBlocker(f) === null,
+    exitCode,
+  };
 }
 
 // Whether the NEXT voice prompt should use --continue (= /conversationActive).

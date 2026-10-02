@@ -20,15 +20,13 @@ function required(name: string): string {
 }
 
 // ─── Voice cwd ───────────────────────────────────────────────────────────────
-// Voice runs (daemon → interactive `claude` in a pty) must NOT run inside the
-// wrapper repo: its .claude/settings.local.json pre-approves tools, so Claude
-// Code shows the workspace-trust dialog there and the run dies on it.
+// Voice runs (daemon → `claude -p`, src/claude-voice.ts) must NOT run inside
+// the wrapper repo: its .claude/settings.local.json pre-approves tools, which
+// would let a voice run skip the watch's permission prompts.
 //
-// The default is NOT the home directory: Claude Code never persists trust for
-// $HOME ("home-directory trust is never saved", claude 2.1.x), so every voice
-// run started in ~ would hit the trust dialog again. A dedicated, empty
-// folder under ~ is trusted once (run `claude` there, pick "Yes, I trust this
-// folder") and stays trusted.
+// A dedicated, empty folder under ~ (not ~ itself) also keeps read-only
+// tools "outside the cwd" for almost everything, so they go to the watch
+// (voiceToolNeedsWatch in src/voice-run.ts). -p skips the trust dialog.
 //
 // Continuity note: `claude --continue` resumes the most recent conversation
 // OF THE CWD, so changing CCWEAROS_VOICE_CWD starts a fresh voice thread.

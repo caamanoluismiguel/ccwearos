@@ -1,165 +1,160 @@
-// Interactive claude runner for the daemon's voice flow. Unlike claude-oneshot
-// (which uses `claude -p` and gets clean stream-json out but can't surface
-// permission prompts), this spawns interactive `claude` in a pseudo-TTY,
-// sends the voice prompt as the first stdin input, parses the TUI output for
-// everything (response, activity, task, permission), and exposes a send()
-// for permission responses ("1\r" / "") routed in from the watch.
+// Voice runner for the daemon: `claude -p <prompt> --output-format
+// stream-json --verbose` as a plain child process (no pty, nothing is ever
+// typed). The prompt is argv, so no dialog can swallow a keystroke; the
+// answer comes verbatim from the stream's `result` event; tool calls arrive
+// as structured `tool_use` blocks. Permission prompts go through the
+// PreToolUse hook (see src/voice-run.ts for the env contract).
 //
-// Auto-exit heuristic: if no new pty data arrives for IDLE_DETECT_MS after
-// the prompt was sent, send "/exit" and kill. Empirically Claude's TUI
-// renders the response, then sits at its input prompt — silence = done.
+// The interactive `npm start` / `cc` paths keep their pty runner
+// (src/claude-runner.ts); this file is only the daemon's voice path.
 
-import { spawn as ptySpawn, type IPty } from "node-pty";
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { constants as osConstants } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { createMetricsStore } from "./metrics-store.js";
-import { basename } from "node:path";
+import type { BlockingDialog } from "./parser.js";
 import {
-  BlockingDialogTracker,
-  type BlockingDialog,
-  extractActivity,
-  extractClaudeStatus,
-  extractCurrentTask,
-  PermissionPromptTracker,
-  extractResponseLines,
-  extractSessionCumulative,
-  extractTokenCounts,
-  extractToolEvents,
-} from "./parser.js";
-import type {
-  ClaudeStatus,
-  Metrics,
-  ToolEvent,
-  WrapperStatus,
-} from "./types/schema.js";
+  activityForTool,
+  detectRunBlocker,
+  parseStreamEvent,
+  StreamJsonLines,
+  type StreamResult,
+} from "./stream-json.js";
+import type { ClaudeStatus, Metrics, ToolEvent } from "./types/schema.js";
+import {
+  VOICE_HOOK_WAIT_ENV,
+  VOICE_RUN_ENV,
+  VOICE_RUN_ID_ENV,
+  voiceHookSettings,
+  voiceHookWaitMs,
+} from "./voice-run.js";
 
 export interface VoiceCallbacks {
-  onStatus: (s: WrapperStatus) => void;
   onMetrics: (m: Metrics) => void;
-  onPermission: (prompt: string) => void;
   onActivity: (a: string | null) => void;
-  onTask: (t: string | null) => void;
+  // Live preview: the newest top-level assistant text. The caller publishes
+  // the final answer from VoiceRunResult.result.
   onResponse: (r: string) => void;
   onClaudeStatus: (s: ClaudeStatus) => void;
   onToolEvents: (events: ToolEvent[]) => void;
 }
 
-// Pretty activity string for the Command page when a tool is the most recent
-// thing Claude did. Concrete > whimsical: "Editing parser.ts" beats "Crunching…"
-function synthesizeActivityFromTool(ev: ToolEvent): string {
-  const arg = ev.arg ?? "";
-  const short = arg.length > 0 ? basename(arg).slice(0, 36) : null;
-  switch (ev.tool.replace(/\s+/g, "")) {
-    case "Bash":
-      return "Running bash";
-    case "Edit":
-      return short ? `Editing ${short}` : "Editing";
-    case "Write":
-      return short ? `Writing ${short}` : "Writing";
-    case "Read":
-      return short ? `Reading ${short}` : "Reading";
-    case "Grep":
-      return "Searching files";
-    case "Glob":
-      return "Finding files";
-    case "WebSearch":
-    case "WebFetch":
-      return "Searching the web";
-    case "Task":
-      return arg ? `Sub-agent: ${arg.slice(0, 36)}` : "Running sub-agent";
-    default:
-      return `Using ${ev.tool}`;
-  }
-}
-
 export interface VoiceRunResult {
+  // Process exit code; a signal death maps to 128 + signal number (SIGINT →
+  // 130). null only when claude could not be spawned at all.
   exitCode: number | null;
   rawBytes: number;
-  // Set when the run was killed because Claude Code showed a dialog that
-  // must not be answered from the watch (trust / auth / other). The caller
-  // publishes a clean explanation instead of the raw TUI text.
+  // The stream's final `result` event, or null (crash, kill before the end).
+  result: StreamResult | null;
+  // Something only the Mac can fix (login, trust) — see detectRunBlocker.
   blocked: BlockingDialog | null;
-  // True when the run hit VOICE_MAX_RUN_MS and was stopped.
-  timedOut: boolean;
+  timedOut: boolean; // hit maxRunMs and was stopped
+  stopped: boolean; // stop() was called (the watch's Detener)
+  toolEvents: ToolEvent[];
 }
 
 export interface VoiceRunner {
-  send: (input: string) => void;
+  // User stop: SIGINT, then SIGTERM after STOP_GRACE_MS, then SIGKILL.
+  stop: () => void;
   kill: () => void;
   done: Promise<VoiceRunResult>;
 }
 
-// Cold-start Claude needs ~5s before its input field is ready to accept a
-// submission keystroke (auth check + welcome banner render). Below this, the
-// pty.write() lands in the field but \r is treated as an in-box newline, not
-// submit, so Claude sits idle and we eventually kill it.
-const SPAWN_WARMUP_MS = 5000;
-// Voice queries can have long silent thinking gaps between prompt send and
-// first token output. 30s gives Claude room to think AND still reaps within a
-// reasonable window once output stops.
-const IDLE_DETECT_MS = 30_000;
-// Gap between typing the prompt text and sending the submit-Enter. The TUI
-// input editor needs this pause to flush the typed chunk before it recognises
-// the trailing \r as submit (vs. just another newline in the buffer).
-const SUBMIT_DELAY_MS = 300;
-const RESPONSE_BUFFER_MAX = 16 * 1024;
-// Hard cap for one voice run (tool-heavy tasks included). Past this the run
-// is stopped and reported as a "timeout" blocker.
+// Hard cap for one voice run (tool-heavy tasks included).
 export const VOICE_MAX_RUN_MS = 15 * 60_000;
+export const STOP_GRACE_MS = 3_000;
+const TOOL_EVENTS_MAX = 12;
+const RESPONSE_DEBOUNCE_MS = 800;
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const WRAPPER_ROOT = resolve(MODULE_DIR, "..");
+export const VOICE_HOOK_SCRIPT = join(WRAPPER_ROOT, "scripts/hooks/pre-tool-use.ts");
+export const VOICE_TSX_BIN = join(WRAPPER_ROOT, "node_modules/.bin/tsx");
+
+// "claude-opus-4-7[1m]" → "Opus 4.7". Unknown ids pass through.
+export function prettyModel(raw: string): string {
+  const m = raw.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)/i);
+  if (!m) return raw;
+  const tier = (m[1] ?? "").charAt(0).toUpperCase() + (m[1] ?? "").slice(1).toLowerCase();
+  return `${tier} ${m[2]}.${m[3]}`;
+}
+
+function formatContextWindow(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+function shortTime(epochSec: number): string {
+  return new Date(epochSec * 1000)
+    .toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+    .toLowerCase();
+}
+
+function exitCodeOf(code: number | null, signal: NodeJS.Signals | null): number | null {
+  if (code !== null) return code;
+  if (signal) {
+    const n = (osConstants.signals as Record<string, number>)[signal];
+    return typeof n === "number" ? 128 + n : 1;
+  }
+  return null;
+}
+
+// argv for claude. The prompt goes last; the daemon's prompt prefix keeps it
+// from starting with "-" or a subcommand name.
+export function voiceArgs(prompt: string, opts: { continueSession: boolean; settings: string }): string[] {
+  const args = ["-p", "--output-format", "stream-json", "--verbose", "--settings", opts.settings];
+  if (opts.continueSession) args.push("--continue");
+  args.push(prompt);
+  return args;
+}
 
 export function runClaudeForVoice(
   prompt: string,
   cb: VoiceCallbacks,
   opts: {
     continueSession?: boolean;
-    userEcho?: string;
     cwd?: string;
     maxRunMs?: number;
+    runId?: string;
   } = {},
 ): VoiceRunner {
-  const continueArg = opts.continueSession ? " --continue" : "";
-  const cmd = `${config.claudeCliCommand}${continueArg}`;
   // Never the wrapper repo (see resolveVoiceCwd in config.ts). `--continue`
   // continuity is per-cwd, so this folder also scopes the voice thread.
   const cwd = opts.cwd ?? config.voiceCwd;
+  const maxRunMs = opts.maxRunMs ?? VOICE_MAX_RUN_MS;
+  const runId = opts.runId ?? randomUUID();
+  const waitMs = voiceHookWaitMs(process.env);
+  const args = voiceArgs(prompt, {
+    continueSession: opts.continueSession === true,
+    settings: voiceHookSettings({ tsxBin: VOICE_TSX_BIN, hookScript: VOICE_HOOK_SCRIPT, waitMs }),
+  });
 
-  let pty: IPty;
-  try {
-    pty = ptySpawn("/bin/sh", ["-c", `exec ${cmd}`], {
-      name: "xterm-256color",
-      cols: 120,
-      rows: 30,
-      cwd,
-      env: { ...process.env } as Record<string, string>,
-    });
-  } catch (err) {
-    console.error(
-      `[voice] Failed to spawn '${config.claudeCliCommand}' in ${cwd}:`,
-      (err as Error).message,
-    );
-    return {
-      send: () => {},
-      kill: () => {},
-      done: Promise.resolve({
-        exitCode: null,
-        rawBytes: 0,
-        blocked: null,
-        timedOut: false,
-      }),
-    };
-  }
+  let resolveDone: (r: VoiceRunResult) => void = () => {};
+  const done = new Promise<VoiceRunResult>((r) => {
+    resolveDone = r;
+  });
+
+  const toolEvents: ToolEvent[] = [];
+  let result: StreamResult | null = null;
+  let stderr = "";
+  let rawBytes = 0;
+  let timedOut = false;
+  let stopped = false;
+  let exited = false;
+  let finished = false;
+  const timers: NodeJS.Timeout[] = [];
 
   const store = createMetricsStore();
-  let lastSessionCumulative = 0;
-  let responseBuffer = "";
-  let lastResponseEmitted = "";
-  const promptTracker = new PermissionPromptTracker();
-  const dialogTracker = new BlockingDialogTracker();
-  let blocked: BlockingDialog | null = null;
-  let timedOut = false;
-  const maxRunMs = opts.maxRunMs ?? VOICE_MAX_RUN_MS;
-  let lastActivity: string | null = null;
-  let lastTask: string | null = null;
-  const accumulatedStatus: ClaudeStatus = {
+  const status: ClaudeStatus = {
     model: null,
     contextSize: null,
     contextPct: null,
@@ -170,298 +165,154 @@ export function runClaudeForVoice(
     monthlyCost: null,
     monthlyResets: null,
   };
-  let lastStatusJson = "";
+  let lastStatusJson = JSON.stringify(status);
+  const emitStatus = (): void => {
+    const json = JSON.stringify(status);
+    if (json === lastStatusJson) return;
+    lastStatusJson = json;
+    cb.onClaudeStatus({ ...status });
+  };
 
-  // Tool events accumulator + dedupe — capped at 12 (kept on the watch as
-  // chips, more than that just clutters). 600ms flush is lighter than
-  // response (1.5s) because tool events change state quickly.
-  const toolEvents: ToolEvent[] = [];
-  let lastToolEventsJson = "";
-  let toolEventsTimer: NodeJS.Timeout | null = null;
-
-  let lastDataTime = Date.now();
-  let totalBytes = 0;
-  let promptSent = false;
-
-  let metricsTimer: NodeJS.Timeout | null = null;
+  let pendingText: string | null = null;
   let responseTimer: NodeJS.Timeout | null = null;
-
-  const flushMetrics = (): void => {
-    store.persist();
-    cb.onMetrics(store.snapshot());
-    metricsTimer = null;
-  };
-  const scheduleMetricsFlush = (): void => {
-    if (!metricsTimer) {
-      metricsTimer = setTimeout(flushMetrics, config.metricsDebounceMs);
-    }
+  const flushResponse = (): void => {
+    responseTimer = null;
+    if (pendingText !== null) cb.onResponse(pendingText);
+    pendingText = null;
   };
 
-  const scheduleResponseFlush = (): void => {
-    // Before the prompt is typed the buffer is pure startup chrome (welcome
-    // banner, dialogs) — nothing worth showing on the watch.
-    if (responseTimer || blocked || !promptSent) return;
-    responseTimer = setTimeout(() => {
-      responseTimer = null;
-      if (blocked) return;
-      const extracted = extractResponseLines(
-        responseBuffer,
-        opts.userEcho ? { userEcho: opts.userEcho } : {},
-      );
-      if (extracted && extracted !== lastResponseEmitted) {
-        lastResponseEmitted = extracted;
-        cb.onResponse(extracted);
-      }
-    }, 1500);
+  const finish = (exitCode: number | null): void => {
+    if (finished) return;
+    finished = true;
+    for (const t of timers) clearTimeout(t);
+    if (responseTimer) clearTimeout(responseTimer);
+    cb.onActivity(null);
+    resolveDone({
+      exitCode,
+      rawBytes,
+      result,
+      blocked: detectRunBlocker({ result, stderr }),
+      timedOut,
+      stopped,
+      toolEvents: [...toolEvents],
+    });
   };
 
-  const flushToolEvents = (): void => {
-    toolEventsTimer = null;
-    const json = JSON.stringify(toolEvents);
-    if (json !== lastToolEventsJson) {
-      lastToolEventsJson = json;
-      cb.onToolEvents([...toolEvents]);
-    }
-  };
-  const scheduleToolEventsFlush = (): void => {
-    if (!toolEventsTimer) toolEventsTimer = setTimeout(flushToolEvents, 600);
-  };
+  let child: ChildProcess;
+  try {
+    // /bin/sh -c 'exec <cmd> "$@"' keeps CLAUDE_CLI_COMMAND usable as a
+    // command line while every argument stays a separate argv entry.
+    child = spawn("/bin/sh", ["-c", `exec ${config.claudeCliCommand} "$@"`, "sh", ...args], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        [VOICE_RUN_ENV]: "1",
+        [VOICE_RUN_ID_ENV]: runId,
+        [VOICE_HOOK_WAIT_ENV]: String(waitMs),
+      },
+    });
+  } catch (err) {
+    console.error(`[voice] Failed to spawn '${config.claudeCliCommand}' in ${cwd}:`, (err as Error).message);
+    finish(null);
+    return { stop: () => {}, kill: () => {}, done };
+  }
 
-  // Send prompt as first stdin input after Claude has had time to render.
-  // Two-phase write: type the text first, wait for the TUI to flush, then
-  // send a bare \r to submit. Bundling text+\r in one write made the TUI
-  // treat \r as an in-box newline and the prompt sat unsubmitted.
-  // NEVER type into a blocking dialog: the trust dialog's highlighted option
-  // could be "Yes, I trust this folder", and our submit \r would pick it.
-  const warmupTimer = setTimeout(() => {
-    if (promptSent || blocked) return;
+  const signal = (sig: NodeJS.Signals): void => {
+    if (exited) return;
     try {
-      pty.write(prompt);
-      promptSent = true;
-      cb.onActivity("Thinking…");
-    } catch {
-      /* ignore */
-    }
-    setTimeout(() => {
-      if (blocked) return;
-      try {
-        pty.write("\r");
-      } catch {
-        /* ignore */
-      }
-    }, SUBMIT_DELAY_MS);
-  }, SPAWN_WARMUP_MS);
-
-  // Idle-detection: if Claude's output has been silent for IDLE_DETECT_MS
-  // AFTER we sent the prompt, assume the response is done and exit gracefully.
-  const idleCheck = setInterval(() => {
-    if (!promptSent) return;
-    if (Date.now() - lastDataTime > IDLE_DETECT_MS) {
-      clearInterval(idleCheck);
-      try {
-        pty.write("/exit\r");
-      } catch {
-        /* ignore */
-      }
-      setTimeout(() => {
-        try {
-          pty.kill();
-        } catch {
-          /* ignore */
-        }
-      }, 1500);
-    }
-  }, 2000);
-
-  // Hard cap on the whole run. Idle detection ends normal runs; this catches
-  // a run that keeps producing output (redraw loop, endless tool chain).
-  const maxRunTimer = setTimeout(() => {
-    timedOut = true;
-    console.warn(
-      `[voice] Run exceeded ${Math.round(maxRunMs / 1000)}s — stopping it.`,
-    );
-    clearInterval(idleCheck);
-    try {
-      pty.write("/exit\r");
-    } catch {
-      /* ignore */
-    }
-    setTimeout(() => {
-      try {
-        pty.kill();
-      } catch {
-        /* ignore */
-      }
-    }, 1500);
-  }, maxRunMs);
-
-  // Trust / login / unknown confirm dialog: a security decision that belongs
-  // at the Mac, not on the wrist. Don't answer it — stop the run and let the
-  // caller publish an explanation (see voice-outcome.ts).
-  const abortOnDialog = (d: BlockingDialog): void => {
-    blocked = d;
-    clearTimeout(warmupTimer);
-    clearTimeout(maxRunTimer);
-    clearInterval(idleCheck);
-    if (responseTimer) {
-      clearTimeout(responseTimer);
-      responseTimer = null;
-    }
-    console.warn(
-      `[voice] Claude Code is showing a blocking ${d.kind} dialog in ${cwd}` +
-        (d.detail ? ` (${d.detail})` : "") +
-        " — not answering it from the watch; killing the run.",
-    );
-    try {
-      pty.kill();
+      child.kill(sig);
     } catch {
       /* already gone */
     }
   };
+  // SIGINT/SIGTERM first so Claude can stop its hooks and save the
+  // transcript; SIGKILL only if it ignores both.
+  const escalate = (first: NodeJS.Signals): void => {
+    signal(first);
+    if (first === "SIGINT") timers.push(setTimeout(() => signal("SIGTERM"), STOP_GRACE_MS));
+    timers.push(setTimeout(() => signal("SIGKILL"), STOP_GRACE_MS * 2));
+  };
 
-  pty.onData((data: string) => {
-    lastDataTime = Date.now();
-    totalBytes += data.length;
-    if (blocked) return;
+  timers.push(
+    setTimeout(() => {
+      timedOut = true;
+      console.warn(`[voice] Run exceeded ${Math.round(maxRunMs / 1000)}s — stopping it.`);
+      escalate("SIGTERM");
+    }, maxRunMs),
+  );
 
-    const dialog = dialogTracker.feed(data);
-    if (dialog) {
-      abortOnDialog(dialog);
-      return;
+  const lines = new StreamJsonLines();
+  const handle = (raw: unknown): void => {
+    const u = parseStreamEvent(raw);
+    if (u.model) {
+      status.model = prettyModel(u.model);
+      emitStatus();
     }
-
-    // Token counts (cumulative preferred, falls back to incrementals).
-    const cumulative = extractSessionCumulative(data);
-    if (cumulative !== null) {
-      const delta = Math.max(0, cumulative - lastSessionCumulative);
-      if (delta > 0) {
-        store.add(delta);
-        scheduleMetricsFlush();
-      }
-      lastSessionCumulative = cumulative;
-    } else {
-      const tokens = extractTokenCounts(data);
-      if (tokens.length > 0) {
-        for (const t of tokens) store.add(t);
-        scheduleMetricsFlush();
-      }
+    if (u.tools) {
+      toolEvents.push(...u.tools);
+      if (toolEvents.length > TOOL_EVENTS_MAX) toolEvents.splice(0, toolEvents.length - TOOL_EVENTS_MAX);
+      cb.onToolEvents([...toolEvents]);
+      const latest = u.tools[u.tools.length - 1];
+      if (latest) cb.onActivity(activityForTool(latest));
     }
-
-    // Permission prompt — surfaces to /permissionPrompt + AWAITING_PERMISSION.
-    const promptText = promptTracker.feed(data);
-    if (promptText) cb.onPermission(promptText);
-
-    // Tool events first — they yield concrete activity strings ("Editing
-    // parser.ts") that we prefer over Claude's whimsical "Crunching…".
-    const newEvents = extractToolEvents(data);
-    if (newEvents.length > 0) {
-      for (const ev of newEvents) {
-        const prev = toolEvents[toolEvents.length - 1];
-        if (prev && prev.tool === ev.tool && prev.arg === ev.arg) continue;
-        toolEvents.push(ev);
-      }
-      // Cap at 12 — keep the most recent.
-      if (toolEvents.length > 12) {
-        toolEvents.splice(0, toolEvents.length - 12);
-      }
-      scheduleToolEventsFlush();
-      // Use the latest tool to drive a concrete activity verb on Page 1.
-      const latest = toolEvents[toolEvents.length - 1];
-      if (latest) {
-        const synth = synthesizeActivityFromTool(latest);
-        if (synth !== lastActivity) {
-          lastActivity = synth;
-          cb.onActivity(synth);
-        }
-      }
-    } else {
-      const activity = extractActivity(data);
-      if (activity && activity !== lastActivity) {
-        lastActivity = activity;
-        cb.onActivity(activity);
-      }
+    if (u.text) {
+      pendingText = u.text;
+      responseTimer ??= setTimeout(flushResponse, RESPONSE_DEBOUNCE_MS);
     }
-
-    const task = extractCurrentTask(data);
-    if (task !== null && task !== lastTask) {
-      lastTask = task;
-      cb.onTask(task);
+    if (u.rateLimit) {
+      const t = shortTime(u.rateLimit.resetsAt);
+      if (u.rateLimit.kind === "session") status.sessionResets = t;
+      else if (u.rateLimit.kind === "weekly") status.weeklyResets = t;
+      else status.monthlyResets = t;
+      emitStatus();
     }
-
-    // Claude status line — model, cost, reset times.
-    const partial = extractClaudeStatus(data);
-    let changed = false;
-    for (const k of Object.keys(partial) as (keyof ClaudeStatus)[]) {
-      const v = partial[k];
-      if (v !== undefined && v !== null && accumulatedStatus[k] !== v) {
-        (accumulatedStatus as unknown as Record<string, unknown>)[k] = v;
-        changed = true;
+    if (u.result) {
+      result = u.result;
+      if (u.result.contextWindow) status.contextSize = formatContextWindow(u.result.contextWindow);
+      emitStatus();
+      if (u.result.tokens > 0) {
+        store.add(u.result.tokens);
+        store.persist();
+        cb.onMetrics(store.snapshot());
       }
+      // The final answer supersedes any pending preview.
+      pendingText = null;
     }
-    if (changed) {
-      const json = JSON.stringify(accumulatedStatus);
-      if (json !== lastStatusJson) {
-        lastStatusJson = json;
-        cb.onClaudeStatus({ ...accumulatedStatus });
-      }
-    }
+  };
 
-    // Response buffer for the watch.
-    responseBuffer += data;
-    if (responseBuffer.length > RESPONSE_BUFFER_MAX) {
-      responseBuffer = responseBuffer.slice(-RESPONSE_BUFFER_MAX);
-    }
-    scheduleResponseFlush();
+  child.stdout?.on("data", (chunk: Buffer) => {
+    const s = chunk.toString("utf8");
+    rawBytes += s.length;
+    for (const ev of lines.push(s)) handle(ev);
   });
-
-  let resolveDone: (r: VoiceRunResult) => void;
-  const done = new Promise<VoiceRunResult>((r) => {
-    resolveDone = r;
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const s = chunk.toString("utf8");
+    stderr = (stderr + s).slice(-8_192);
+    process.stderr.write(s); // LaunchAgent log
   });
-
-  pty.onExit(({ exitCode }) => {
-    clearTimeout(warmupTimer);
-    clearTimeout(maxRunTimer);
-    clearInterval(idleCheck);
-    if (metricsTimer) clearTimeout(metricsTimer);
-    if (responseTimer) clearTimeout(responseTimer);
-    if (toolEventsTimer) {
-      clearTimeout(toolEventsTimer);
-      flushToolEvents();
+  child.on("error", (err) => {
+    console.error("[voice] claude process error:", err.message);
+    exited = true;
+    finish(null);
+  });
+  child.on("close", (code, sig) => {
+    exited = true;
+    for (const ev of lines.flush()) handle(ev);
+    const exitCode = exitCodeOf(code, sig);
+    if (exitCode !== 0 && !stopped) {
+      console.error(`[voice] claude exited ${exitCode}${sig ? ` (${sig})` : ""}; stderr: ${stderr.slice(-400)}`);
     }
-    // Final flush — skipped for a blocked run (the buffer is dialog chrome)
-    // and when the prompt never went in (nothing but startup chrome).
-    if (!blocked && promptSent) {
-      const finalResponse = extractResponseLines(
-        responseBuffer,
-        opts.userEcho ? { userEcho: opts.userEcho } : {},
-      );
-      if (finalResponse && finalResponse !== lastResponseEmitted) {
-        cb.onResponse(finalResponse);
-      }
-    }
-    cb.onActivity(null);
-    resolveDone({ exitCode, rawBytes: totalBytes, blocked, timedOut });
+    finish(exitCode);
   });
 
   return {
-    send: (input) => {
-      lastDataTime = Date.now();
-      promptTracker.reset(); // user answered — next prompt is fresh
-      dialogTracker.reset(); // the answered box must not mask a later dialog
-      try {
-        pty.write(input);
-      } catch {
-        /* pty may be gone */
-      }
+    stop: () => {
+      if (exited || stopped) return;
+      stopped = true;
+      escalate("SIGINT");
     },
-    kill: () => {
-      try {
-        pty.kill();
-      } catch {
-        /* already gone */
-      }
-    },
+    kill: () => signal("SIGKILL"),
     done,
   };
 }

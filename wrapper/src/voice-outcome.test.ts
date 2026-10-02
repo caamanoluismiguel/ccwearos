@@ -187,6 +187,12 @@ describe("voiceRunOutcome (/outcome contract)", () => {
     );
   });
 
+  it("an is_error result is not ok even with exit 0", () => {
+    expect(
+      voiceRunOutcome({ ...base, blocked: null, exitCode: 0, isError: true }),
+    ).toEqual({ ok: false, exitCode: 0 });
+  });
+
   it("user stop: ok:false + stopped:true, whatever the exit code", () => {
     for (const exitCode of [130, 143, 0, null]) {
       expect(

@@ -185,8 +185,8 @@ export interface ClaimResult {
   ts: number; // unix epoch ms
 }
 
-// Surfaced from claude-voice TUI parsing — one entry per tool invocation we
-// see in Claude's "⏺ ToolName(args)" output. The watch uses these to classify
+// One entry per tool_use block in a voice run's stream-json output
+// (src/stream-json.ts): arg is a file path (end kept), command head, query…. The watch uses these to classify
 // the task (action vs informational) and to render breadcrumbs / progress.
 export interface ToolEvent {
   tool: string; // "Bash" | "Edit" | "Read" | "Write" | "WebFetch" | "WebSearch" | "Grep" | "Glob" | "Task" | string

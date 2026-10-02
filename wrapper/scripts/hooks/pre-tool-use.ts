@@ -36,6 +36,13 @@ console.log = (...args: unknown[]): void => {
 //     pass-through below does for sessions we don't bridge.
 //   exit 0 always (we never want to crash a Claude session because of us).
 //
+// Voice mode (daemon `claude -p` runs, env contract in src/voice-run.ts):
+// CCWEAROS_VOICE_RUN=1 + CCWEAROS_HOOK_ROLE=voice. No /sharedSession is
+// needed; read-only tools inside the voice cwd defer; the wait is
+// CCWEAROS_VOICE_HOOK_WAIT_MS (default 120s) and an unanswered prompt is
+// "deny" ("Sin respuesta desde el reloj"), since -p can't "ask". The
+// globally installed entry (no role) passes through inside voice runs.
+//
 // Polling budget: 55s. Kept short on purpose (the documented PreToolUse
 // default timeout is 600s): after 55s we hand the decision back to the
 // Terminal with "ask" instead of blocking Claude for minutes.
@@ -74,6 +81,26 @@ import type {
   PendingCommand,
   SharedSessionMeta,
 } from "../../src/types/schema.js";
+import {
+  hookMode,
+  VOICE_HOOK_TIMEOUT_REASON,
+  VOICE_RUN_ID_ENV,
+  voiceHookWaitMs,
+  voiceToolNeedsWatch,
+} from "../../src/voice-run.js";
+import { isPidAlive } from "../../src/pid-utils.js";
+import { findOwningClaudePid } from "./_helpers.js";
+
+// Voice runs (the daemon's `claude -p`, see src/voice-run.ts) have no
+// Terminal to fall back to: the hook is the only way to ask, there is no
+// /sharedSession, an unanswered prompt is a DENY ("ask" can't be answered
+// in -p), and the wait is longer (CCWEAROS_VOICE_HOOK_WAIT_MS, 120s).
+const MODE = hookMode(process.env);
+const VOICE = MODE === "voice";
+const VOICE_RUN_ID = process.env[VOICE_RUN_ID_ENV] ?? "";
+// The claude that runs us. In voice mode a Stop kills it; once it's gone
+// we stop polling instead of re-publishing a prompt nobody can answer.
+let ownerClaudePid: number | null = null;
 
 // Every hook invocation appends one line here so we can post-mortem when
 // things go wrong. Includes timestamp, what we decided, why. Append-only.
@@ -176,11 +203,21 @@ async function clearMyPrompt(): Promise<void> {
       box.cleared = true;
       return null;
     });
-  if (box.cleared) {
-    // One write so a run waiting to re-publish (it waits for BOTH id and
-    // prompt to be null) can't be overwritten by our trailing IDLE.
-    await db().ref().update({ permissionPrompt: null, status: "IDLE" });
+  if (!box.cleared) return;
+  if (VOICE) {
+    // The voice run goes on: back to RUNNING, but only from our own
+    // AWAITING_PERMISSION — never over the daemon's IDLE after a Stop.
+    await db().ref("/permissionPrompt").set(null);
+    await db()
+      .ref("/status")
+      .transaction((cur: string | null) =>
+        cur === "AWAITING_PERMISSION" ? "RUNNING" : undefined,
+      );
+    return;
   }
+  // One write so a run waiting to re-publish (it waits for BOTH id and
+  // prompt to be null) can't be overwritten by our trailing IDLE.
+  await db().ref().update({ permissionPrompt: null, status: "IDLE" });
 }
 
 function isMyAnswer(cmd: PendingCommand | null, pollStartedAt: number): boolean {
@@ -220,6 +257,10 @@ async function pollForAnswer(
   let iterations = 0;
   while (Date.now() < deadline) {
     iterations++;
+    if (VOICE && ownerClaudePid !== null && !isPidAlive(ownerClaudePid)) {
+      dlog("voice: owning claude is gone (stopped) — giving up");
+      return null;
+    }
     try {
       const [cmdSnap, idSnap] = await Promise.all([
         db().ref("/command").once("value"),
@@ -275,15 +316,33 @@ async function main(): Promise<void> {
   const sessionId = input.session_id;
   const toolName = input.tool_name;
   const toolInput = input.tool_input ?? {};
-  dlog(`stdin parsed: tool=${toolName} session=${sessionId?.slice(0, 8)}`);
+  dlog(
+    `stdin parsed: tool=${toolName} session=${sessionId?.slice(0, 8)} mode=${MODE}` +
+      (VOICE_RUN_ID ? ` voiceRun=${VOICE_RUN_ID.slice(0, 8)}` : ""),
+  );
+  // Inside a voice run only the run's own entry (CCWEAROS_HOOK_ROLE=voice,
+  // passed via --settings) acts; this is the globally installed one.
+  if (MODE === "voice-duplicate") passThrough("voice run: handled by its own hook entry");
   if (!sessionId || !toolName) passThrough("missing session_id or tool_name");
+  // Voice: read-only tools inside the voice cwd and bookkeeping tools defer
+  // to Claude Code's own rules; everything else goes to the watch.
+  if (VOICE && !voiceToolNeedsWatch(toolName!, input.tool_input ?? {}, input.cwd)) {
+    passThrough(`voice: ${toolName} needs no watch prompt`);
+  }
 
   // Initialize Firebase (uses the wrapper's service-account key). If this
-  // throws (no key, no network), pass-through so Claude isn't blocked.
+  // throws (no key, no network), pass-through so Claude isn't blocked —
+  // except in a voice run, where pass-through means an auto-deny anyway.
   try {
     initFirebase();
   } catch (e) {
     passThrough(`firebase init failed: ${(e as Error).message}`);
+  }
+
+  if (VOICE) {
+    ownerClaudePid = findOwningClaudePid();
+    await handleToolCall(toolName!, toolInput);
+    return;
   }
 
   let shared: Awaited<ReturnType<typeof readSharedSession>>;
@@ -326,6 +385,19 @@ async function main(): Promise<void> {
   } catch (e) {
     passThrough(`claim failed: ${(e as Error).message}`);
   }
+
+  await handleToolCall(toolName!, toolInput);
+}
+
+// Publish the call to the watch, wait for Allow/Deny, emit the decision.
+// Shared by the /ccwearos share flow and voice runs (VOICE differences:
+// longer wait, deny instead of "ask", audit kind "voice").
+async function handleToolCall(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): Promise<void> {
+  const auditKind = VOICE ? "voice" : "hook";
+  const budgetMs = VOICE ? voiceHookWaitMs(process.env) : POLL_BUDGET_MS;
 
   // We're responsible for this tool call. Arm crash cleanup (hard rule) now
   // that we're about to own UI surfaces — not earlier: every tool call of
@@ -385,17 +457,19 @@ async function main(): Promise<void> {
     );
     await cleanup("publish-failed");
     await emit(
-      decision("ask", "No se pudo enviar el permiso al reloj; confirma aquí"),
+      VOICE
+        ? decision("deny", "No se pudo enviar el permiso al reloj")
+        : decision("ask", "No se pudo enviar el permiso al reloj; confirma aquí"),
     );
   }
 
   const debug = !!process.env["CCWEAROS_HOOK_DEBUG"];
   if (debug) {
     process.stderr.write(
-      `[ccwearos-hook] polling /command (max ${POLL_BUDGET_MS}ms)\n`,
+      `[ccwearos-hook] polling /command (max ${budgetMs}ms)\n`,
     );
   }
-  const deadline = pollStartedAt + POLL_BUDGET_MS;
+  const deadline = pollStartedAt + budgetMs;
   const reply = await pollForAnswer(deadline, pollStartedAt, promptText);
   if (debug) {
     process.stderr.write(
@@ -413,12 +487,15 @@ async function main(): Promise<void> {
     // RTDB call before the request leaves the socket. Audit AU-1.
     await appendAuditEntry({
       ts: Date.now(),
-      kind: "hook",
-      tool: toolName!,
+      kind: auditKind,
+      tool: toolName,
       args: promptText.slice(0, 60),
       decision: "timeout",
       source: "auto",
     });
+    // A -p voice run has no Terminal: "ask" would be an unanswerable
+    // prompt, so the call is denied with a reason Claude can relay.
+    if (VOICE) await emit(decision("deny", VOICE_HOOK_TIMEOUT_REASON));
     await emit({
       ...decision("ask", "El reloj no respondió a tiempo; confirma aquí"),
       systemMessage:
@@ -435,8 +512,8 @@ async function main(): Promise<void> {
     // double-confirm, or auto-deny under dontAsk). "allow" skips it.
     await appendAuditEntry({
       ts: Date.now(),
-      kind: "hook",
-      tool: toolName!,
+      kind: auditKind,
+      tool: toolName,
       args: promptText.slice(0, 60),
       decision: "allow",
       source: "watch",
@@ -446,8 +523,8 @@ async function main(): Promise<void> {
   // DENY path: explicit "deny" decision; the reason is shown to Claude.
   await appendAuditEntry({
     ts: Date.now(),
-    kind: "hook",
-    tool: toolName!,
+    kind: auditKind,
+    tool: toolName,
     args: promptText.slice(0, 60),
     decision: "deny",
     source: "watch",
