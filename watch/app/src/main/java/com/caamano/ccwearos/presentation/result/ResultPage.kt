@@ -89,8 +89,9 @@ import kotlinx.coroutines.delay
 // First screenful = the TL;DR card (✓/✗ glyph + ≤3 lines) and at most 3
 // short bullets when the answer has a list; Claude's chips (≤2, ≤24 chars).
 // Everything else (full body, code, tables, tool trail) sits behind ONE
-// "Ver detalle" row, with "Nueva conversación" at its very bottom. Continuing
-// the thread happens from Inicio (Seguir) and the chips.
+// "Ver detalle" row. Continuing the thread lives here: "Seguir esta
+// conversación" (dictation, mode CONTINUE) when a thread is active, and the
+// chips (also CONTINUE). Inicio's Preguntar always starts a new one.
 // `onBlockedContent` fires when the response looks like TUI junk, so the
 // shell can show the BlockedScreen instead of rendering it.
 @Composable
@@ -101,8 +102,9 @@ fun ResultPage(
     outcome: RunOutcome?,
     toolEvents: List<ToolEvent>,
     followups: List<String>,
+    conversationActive: Boolean,
     onFollowup: (String) -> Unit,
-    onNewConversation: () -> Unit,
+    onContinue: () -> Unit,
     onBlockedContent: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -160,6 +162,21 @@ fun ResultPage(
                             Reveal(revealActive, o) { Bullets(first.bullets) }
                         }
                     }
+                    if (conversationActive) {
+                        val o = order++
+                        item(key = "continue") {
+                            Reveal(revealActive, o) {
+                                FeedbackButton(
+                                    text = stringResource(R.string.result_continue_conversation),
+                                    icon = PixelIcons.Mic,
+                                    style = ButtonStyle.OUTLINED,
+                                    onClick = onContinue,
+                                    transformation = SurfaceTransformation(spec),
+                                    modifier = Modifier.transformedHeight(this, spec),
+                                )
+                            }
+                        }
+                    }
                     chips.forEachIndexed { i, (label, full) ->
                         val oi = order++
                         item(key = "chip-$i") {
@@ -182,8 +199,8 @@ fun ResultPage(
                             }
                         }
                     }
-                    if (detailOpen || !first.hasDetail) {
-                        if (detailOpen && prepared.blocks.isNotEmpty()) {
+                    if (detailOpen) {
+                        if (prepared.blocks.isNotEmpty()) {
                             item(key = "body") {
                                 BodyBlocks(
                                     blocks = prepared.blocks,
@@ -192,7 +209,7 @@ fun ResultPage(
                                 )
                             }
                         }
-                        if (detailOpen && toolEvents.isNotEmpty()) {
+                        if (toolEvents.isNotEmpty()) {
                             item(key = "tools") {
                                 ToolTrail(
                                     events = toolEvents,
@@ -200,17 +217,6 @@ fun ResultPage(
                                     onExpand = { toolsExpanded = true },
                                 )
                             }
-                        }
-                        // At the very bottom of the detail (or alone when there is none).
-                        item(key = "new") {
-                            FeedbackButton(
-                                text = stringResource(R.string.result_new_conversation),
-                                icon = PixelIcons.Refresh,
-                                style = ButtonStyle.OUTLINED,
-                                onClick = onNewConversation,
-                                transformation = SurfaceTransformation(spec),
-                                modifier = Modifier.transformedHeight(this, spec),
-                            )
                         }
                     }
                 }
@@ -775,8 +781,9 @@ private fun PreviewHost(
             outcome = outcome,
             toolEvents = toolEvents,
             followups = followups,
+            conversationActive = true,
             onFollowup = {},
-            onNewConversation = {},
+            onContinue = {},
             onBlockedContent = {},
         )
     }

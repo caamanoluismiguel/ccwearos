@@ -13,11 +13,9 @@
 
     <!-- Acciones -->
     <string name="action_ask">Preguntar</string>
-    <string name="action_continue">Seguir</string>
     <string name="action_stop">Detener</string>
     <string name="voice_prompt_ask">¿Qué le digo a Claude?</string>
     <string name="voice_prompt_continue">Seguir la conversación</string>
-    <string name="voice_prompt_reset">Nueva conversación</string>
 
     <!-- Sesión compartida -->
     <string name="shared_hook_title">Puente activo</string>

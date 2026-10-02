@@ -17,16 +17,12 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.wear.compose.foundation.pager.HorizontalPager
 import androidx.wear.compose.foundation.pager.PagerDefaults
 import androidx.wear.compose.foundation.pager.PagerState
 import androidx.wear.compose.foundation.pager.rememberPagerState
-import androidx.wear.compose.material3.AlertDialog
-import androidx.wear.compose.material3.AlertDialogDefaults
 import androidx.wear.compose.material3.HorizontalPagerScaffold
-import androidx.wear.compose.material3.Text
 import androidx.wear.tooling.preview.devices.WearDevices
 import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.AppVisibility
@@ -110,8 +106,10 @@ data class DashboardState(
 )
 
 data class DashboardActions(
+    /** Inicio "Preguntar", tile, deep links: a NEW conversation. */
     val onAsk: (String) -> Unit = {},
-    val onAskWithReset: (String) -> Unit = {},
+    /** Resultado "Seguir esta conversación" and chips: CONTINUE the thread. */
+    val onContinue: (String) -> Unit = {},
     val onCancelSend: () -> Unit = {},
     val onRetry: () -> Unit = {},
     val onStop: () -> Unit = {},
@@ -159,14 +157,13 @@ fun DashboardScreen(
     val pagerState = rememberPagerState(initialPage = HomePages.INICIO) { HomePages.COUNT }
 
     val askVoice = rememberVoiceInput(onText = actions.onAsk, onUnavailable = actions.onVoiceUnavailable)
-    val resetVoice = rememberVoiceInput(onText = actions.onAskWithReset, onUnavailable = actions.onVoiceUnavailable)
-    val askPrompt = stringResource(if (state.conversationActive) R.string.voice_prompt_continue else R.string.voice_prompt_ask)
-    val resetPrompt = stringResource(R.string.voice_prompt_reset)
+    val continueVoice = rememberVoiceInput(onText = actions.onContinue, onUnavailable = actions.onVoiceUnavailable)
+    val askPrompt = stringResource(R.string.voice_prompt_ask)
+    val continuePrompt = stringResource(R.string.voice_prompt_continue)
 
     var doneFlash by remember { mutableStateOf(false) }
     var ringTrigger by remember { mutableIntStateOf(0) }
     var shakeTrigger by remember { mutableIntStateOf(0) }
-    var confirmReset by remember { mutableStateOf(false) }
     var metricsOpen by remember { mutableStateOf(false) }
     // True while the shell drives the pager, so settle haptics stay for swipes.
     var programmatic by remember { mutableStateOf(false) }
@@ -366,8 +363,9 @@ fun DashboardScreen(
                             outcome = state.outcome,
                             toolEvents = state.toolEvents,
                             followups = state.followups,
-                            onFollowup = actions.onAsk,
-                            onNewConversation = { confirmReset = true },
+                            conversationActive = state.conversationActive,
+                            onFollowup = actions.onContinue,
+                            onContinue = { continueVoice.launch(continuePrompt) },
                             onBlockedContent = actions.onBlockedContent,
                         )
                         HomePages.SESIONES -> SessionsPage(
@@ -387,31 +385,6 @@ fun DashboardScreen(
         claudeStatus = state.claudeStatus,
         metrics = state.metrics,
         onDismiss = { metricsOpen = false },
-    )
-
-    // "Nueva conversación" always confirms before wiping the thread.
-    AlertDialog(
-        visible = confirmReset,
-        onDismissRequest = { confirmReset = false },
-        title = { Text(stringResource(R.string.home_reset_title), textAlign = TextAlign.Center) },
-        text = { Text(stringResource(R.string.home_reset_body), textAlign = TextAlign.Center) },
-        confirmButton = {
-            AlertDialogDefaults.ConfirmButton(
-                onClick = {
-                    Haptics.tick(context)
-                    confirmReset = false
-                    resetVoice.launch(resetPrompt)
-                },
-            )
-        },
-        dismissButton = {
-            AlertDialogDefaults.DismissButton(
-                onClick = {
-                    Haptics.tick(context)
-                    confirmReset = false
-                },
-            )
-        },
     )
 }
 

@@ -2,6 +2,7 @@ package com.caamano.ccwearos.presentation.home
 
 import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.BlockerKind
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.ToolEvent
@@ -29,12 +30,12 @@ sealed interface SendState {
      */
     data class Sending(
         val text: String,
-        val wire: String,
+        val mode: PromptMode,
         val outcomeAtSend: RunOutcome?,
     ) : SendState
 
     /** Not picked up in time (or the write failed). Offers Reintentar / Cancelar. */
-    data class Failed(val text: String, val wire: String) : SendState
+    data class Failed(val text: String, val mode: PromptMode) : SendState
 }
 
 /** One-shot moments the UI turns into haptics + motion. */
@@ -73,7 +74,8 @@ sealed interface HomeMode {
         val failure: LastRun?,
     ) : HomeMode
 
-    data class Sending(val text: String) : HomeMode
+    /** [mode] drives the meta line: "Pregunta nueva" vs "Siguiendo la conversación". */
+    data class Sending(val text: String, val mode: PromptMode = PromptMode.NEW) : HomeMode
     data class SendFailed(val text: String) : HomeMode
     data object Running : HomeMode
     data object Waiting : HomeMode
@@ -88,7 +90,7 @@ fun homeMode(
     conversationActive: Boolean,
     lastRun: LastRun?,
 ): HomeMode = when {
-    send is SendState.Sending -> HomeMode.Sending(send.text)
+    send is SendState.Sending -> HomeMode.Sending(send.text, send.mode)
     send is SendState.Failed -> HomeMode.SendFailed(send.text)
     // A cc/hook session owns the Mac pty: asking would clobber it.
     sharedSession != null -> HomeMode.Shared(sharedSession)

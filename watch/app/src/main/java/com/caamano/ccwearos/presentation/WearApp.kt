@@ -249,7 +249,7 @@ private fun DashboardRoute(vm: CcwearosViewModel, modifier: Modifier) {
     val actions = remember(vm) {
         DashboardActions(
             onAsk = vm::sendPrompt,
-            onAskWithReset = vm::askWithReset,
+            onContinue = vm::continueConversation,
             onCancelSend = vm::cancelSend,
             onRetry = vm::retrySend,
             onStop = vm::stop,

@@ -24,5 +24,5 @@
     <string name="result_tool_web">Web</string>
     <string name="result_tool_agent">Agente</string>
 
-    <string name="result_new_conversation">Nueva conversación</string>
+    <string name="result_continue_conversation">Seguir esta conversación</string>
 </resources>

@@ -8,6 +8,8 @@
     <string name="home_cancel">Cancelar</string>
     <string name="home_retry">Reintentar</string>
     <string name="home_send_failed">Tu Mac no tomó la pregunta</string>
+    <string name="home_sending_new">Pregunta nueva</string>
+    <string name="home_sending_continue">Siguiendo la conversación</string>
 
     <!-- Sin conexión -->
     <string name="home_offline_button">Sin conexión</string>
@@ -46,8 +48,6 @@
     <string name="home_close">Cerrar</string>
 
     <!-- Nueva conversación -->
-    <string name="home_reset_title">¿Empezar de cero?</string>
-    <string name="home_reset_body">Claude olvidará esta conversación.</string>
 
     <!-- Sesiones -->
     <string name="home_sessions_empty">No hay sesiones en tu Mac</string>

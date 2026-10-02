@@ -3,6 +3,7 @@ package com.caamano.ccwearos.presentation
 import com.caamano.ccwearos.data.AnswerGate
 import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.BlockerKind
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.WrapperStatus
 import com.caamano.ccwearos.presentation.home.HomeEvent
@@ -97,9 +98,9 @@ class HomeViewModelTest {
     // ─── 15s timeout ─────────────────────────────────────────────────────────
 
     @Test
-    fun `not picked up in 15s fails, retry re-sends the same text`() = runTest(dispatcher) {
+    fun `not picked up in 15s fails, retry re-sends the same text and mode`() = runTest(dispatcher) {
         val events = recordEvents()
-        vm.askWithReset("empieza de cero")
+        vm.continueConversation("empieza de cero")
         advanceTimeBy(CcwearosViewModel.PICKUP_TIMEOUT_MS - 1)
         assertTrue(vm.sendState.value is SendState.Sending)
         advanceTimeBy(2)
@@ -109,10 +110,8 @@ class HomeViewModelTest {
 
         vm.retrySend()
         assertTrue(vm.sendState.value is SendState.Sending)
-        assertEquals(
-            listOf("nueva conversación, empieza de cero", "nueva conversación, empieza de cero"),
-            repo.prompts,
-        )
+        assertEquals(listOf("empieza de cero", "empieza de cero"), repo.prompts)
+        assertEquals(listOf(PromptMode.CONTINUE, PromptMode.CONTINUE), repo.promptModes)
 
         vm.cancelSend()
         assertEquals(SendState.None, vm.sendState.value)
@@ -124,7 +123,7 @@ class HomeViewModelTest {
     fun `failed write goes straight to the retry card`() = runTest(dispatcher) {
         repo.failNextPrompt = true
         vm.sendPrompt("hola")
-        assertEquals(SendState.Failed("hola", "hola"), vm.sendState.value)
+        assertEquals(SendState.Failed("hola", PromptMode.NEW), vm.sendState.value)
     }
 
     @Test
@@ -162,29 +161,36 @@ class HomeViewModelTest {
         assertTrue(vm.watchOfflineBanner.value)
     }
 
-    // ─── conversationActive label ────────────────────────────────────────────
+    // ─── prompt mode routing ─────────────────────────────────────────────────
 
     @Test
-    fun `Seguir vs Preguntar comes from RTDB conversationActive`() {
-        fun label() = (
-            homeMode(
-                status = vm.status.value,
-                connected = vm.connected.value,
-                send = vm.sendState.value,
-                sharedSession = null,
-                conversationActive = vm.conversationActive.value,
-                lastRun = null,
-            ) as HomeMode.Idle
-            ).conversationActive
-
-        repo.status.value = WrapperStatus.IDLE
-        assertFalse(label())
+    fun `Preguntar always starts a new conversation, even inside a thread`() {
         repo.conversationActive.value = true
-        assertTrue(label())
-        // Reset prompts do not flip it locally; only the wrapper does.
-        vm.askWithReset("hola")
-        vm.cancelSend()
-        assertTrue(label())
+        vm.sendPrompt("  qué hora es ")
+        assertEquals(listOf("qué hora es"), repo.prompts)
+        assertEquals(listOf(PromptMode.NEW), repo.promptModes)
+        assertEquals(PromptMode.NEW, (vm.sendState.value as SendState.Sending).mode)
+    }
+
+    @Test
+    fun `Seguir esta conversacion and chips continue the thread, text sent as is`() {
+        vm.continueConversation("Escribe el test")
+        assertEquals(listOf("Escribe el test"), repo.prompts)
+        assertEquals(listOf(PromptMode.CONTINUE), repo.promptModes)
+    }
+
+    @Test
+    fun `sending state carries the mode for the meta line`() {
+        vm.continueConversation("sigue")
+        val mode = homeMode(
+            status = vm.status.value,
+            connected = true,
+            send = vm.sendState.value,
+            sharedSession = null,
+            conversationActive = true,
+            lastRun = null,
+        )
+        assertEquals(HomeMode.Sending("sigue", PromptMode.CONTINUE), mode)
     }
 
     // ─── completion via outcome ──────────────────────────────────────────────

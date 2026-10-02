@@ -111,9 +111,10 @@ class CcwearosRepository(
         ref("command").setValue(payload).await()
     }
 
-    override suspend fun sendPrompt(text: String) {
+    override suspend fun sendPrompt(text: String, mode: PromptMode) {
         val payload = mapOf<String, Any>(
             "text" to text,
+            "mode" to mode.wire,
             "issuedAt" to ServerValue.TIMESTAMP,
         )
         ref("prompt").setValue(payload).await()

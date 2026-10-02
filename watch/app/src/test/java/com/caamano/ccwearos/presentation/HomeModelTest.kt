@@ -2,6 +2,7 @@ package com.caamano.ccwearos.presentation
 
 import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.BlockerKind
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.ToolEvent
@@ -141,8 +142,8 @@ class HomeModeTest {
 
     @Test
     fun `sending outranks everything`() {
-        assertEquals(HomeMode.Sending("x"), mode(status = WrapperStatus.RUNNING, send = SendState.Sending("x", "x", null)))
-        assertEquals(HomeMode.SendFailed("x"), mode(send = SendState.Failed("x", "x")))
+        assertEquals(HomeMode.Sending("x"), mode(status = WrapperStatus.RUNNING, send = SendState.Sending("x", PromptMode.NEW, null)))
+        assertEquals(HomeMode.SendFailed("x"), mode(send = SendState.Failed("x", PromptMode.NEW)))
     }
 
     @Test
@@ -178,8 +179,8 @@ class HomeModeTest {
         assertEquals(MascotState.Offline, mascotFor(mode(connected = false), WrapperStatus.IDLE, null))
         assertEquals(MascotState.Blocked, mascotFor(mode(), WrapperStatus.IDLE, Blocker(BlockerKind.TRUST)))
         assertEquals(MascotState.Error, mascotFor(mode(lastRun = LastRun(false, 1, false)), WrapperStatus.IDLE, null))
-        assertEquals(MascotState.Sending, mascotFor(mode(send = SendState.Sending("a", "a", null)), WrapperStatus.IDLE, null))
-        assertEquals(MascotState.Error, mascotFor(mode(send = SendState.Failed("a", "a")), WrapperStatus.IDLE, null))
+        assertEquals(MascotState.Sending, mascotFor(mode(send = SendState.Sending("a", PromptMode.NEW, null)), WrapperStatus.IDLE, null))
+        assertEquals(MascotState.Error, mascotFor(mode(send = SendState.Failed("a", PromptMode.NEW)), WrapperStatus.IDLE, null))
         assertEquals(MascotState.Running, mascotFor(mode(status = WrapperStatus.RUNNING), WrapperStatus.RUNNING, null))
     }
 }

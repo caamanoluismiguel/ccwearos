@@ -54,6 +54,7 @@ import androidx.wear.tooling.preview.devices.WearDevices
 import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.presentation.Haptics
@@ -78,8 +79,10 @@ import kotlinx.coroutines.delay
 // INICIO — the instrument, minimal on purpose: only what you need, and a
 // button only when you have to step in.
 //
-//  Idle      mascot, "Listo", last-response link, Preguntar/Seguir, usage.
-//  Sending   mascot, "Enviando…", what you said (≤2 lines). Cancelar shows
+//  Idle      mascot, "Listo", last-response link, Preguntar (always a NEW
+//            conversation; continuing lives on Resultado), usage.
+//  Sending   mascot, "Enviando…", what you said (≤2 lines) and a meta line
+//            "Pregunta nueva" / "Siguiendo la conversación". Cancelar shows
 //            up only after 5s.
 //  Running   mascot inside a ProgressHalo, ONE plain line from the latest
 //            tool ("Editando parser.ts"), a small timer. No buttons: tap (or
@@ -314,10 +317,15 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
                         color = if (failure?.stoppedByUser == true) CcPalette.TextSecondary else StatusColors.error,
                     )
                 }
-                DetailKind.SENDING -> BodyText(
-                    stringResource(R.string.home_sent_quote, (mode as? HomeMode.Sending)?.text.orEmpty()),
-                    maxLines = 2,
-                )
+                DetailKind.SENDING -> {
+                    val sending = mode as? HomeMode.Sending
+                    BodyText(stringResource(R.string.home_sent_quote, sending?.text.orEmpty()), maxLines = 2)
+                    MetaText(
+                        stringResource(
+                            if (sending?.mode == PromptMode.CONTINUE) R.string.home_sending_continue else R.string.home_sending_new,
+                        ),
+                    )
+                }
                 DetailKind.SEND_FAILED -> BodyText(stringResource(R.string.home_send_failed), color = StatusColors.error, maxLines = 2)
                 DetailKind.RUNNING -> RunningLine(ui, now)
                 DetailKind.STALE -> BodyText(stringResource(R.string.home_stale_question), color = StatusColors.waiting)
@@ -400,7 +408,7 @@ private fun lastResponseLabel(at: Long?, now: Long): String {
 
 // ─── Actions: only when you have to step in ──────────────────────────────────
 
-private enum class ActionKind { ASK, CONTINUE, OFFLINE_WATCH, OFFLINE_MAC, CANCEL, RETRY, STOP, STOP_STALE, NONE }
+private enum class ActionKind { ASK, OFFLINE_WATCH, OFFLINE_MAC, CANCEL, RETRY, STOP, STOP_STALE, NONE }
 
 @Composable
 private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, callbacks: HomeCallbacks) {
@@ -419,7 +427,7 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, cal
         is HomeMode.Idle -> when (mode.offline) {
             OfflineReason.WATCH -> ActionKind.OFFLINE_WATCH
             OfflineReason.MAC -> ActionKind.OFFLINE_MAC
-            null -> if (mode.conversationActive) ActionKind.CONTINUE else ActionKind.ASK
+            null -> ActionKind.ASK
         }
         is HomeMode.Sending -> if (cancelReady) ActionKind.CANCEL else ActionKind.NONE
         is HomeMode.SendFailed -> ActionKind.RETRY
@@ -449,12 +457,6 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, cal
             when (k) {
                 ActionKind.ASK -> HomeButton(
                     label = stringResource(R.string.action_ask),
-                    style = HomeButtonStyle.PRIMARY,
-                    icon = PixelIcons.Mic,
-                    onClick = callbacks.onAsk,
-                )
-                ActionKind.CONTINUE -> HomeButton(
-                    label = stringResource(R.string.action_continue),
                     style = HomeButtonStyle.PRIMARY,
                     icon = PixelIcons.Mic,
                     onClick = callbacks.onAsk,
@@ -634,7 +636,7 @@ private fun idle(conversationActive: Boolean = false, failure: LastRun? = null, 
 @Composable
 private fun PreviewIdle() = PreviewHome(HomeUi(idle(), MascotState.Idle, claudeStatus = previewStatus))
 
-@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Seguir + última respuesta")
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · última respuesta")
 @Composable
 private fun PreviewIdleContinue() = PreviewHome(
     HomeUi(
@@ -649,7 +651,7 @@ private fun PreviewIdleContinue() = PreviewHome(
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Enviando")
 @Composable
 private fun PreviewSending() = PreviewHome(
-    HomeUi(HomeMode.Sending("arregla el test del parser y corre todo"), MascotState.Sending),
+    HomeUi(HomeMode.Sending("arregla el test del parser y corre todo", PromptMode.CONTINUE), MascotState.Sending),
 )
 
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · No la tomó")

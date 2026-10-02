@@ -10,6 +10,7 @@ import com.caamano.ccwearos.data.ClaimResult
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.CommandText
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
@@ -402,26 +403,20 @@ class CcwearosViewModel(
         launchAction(ErrorCopy.RESET_FAILED) { repo.forceResetUi() }
     }
 
-    // Voice / text input from the watch. Daemon picks it up and runs
-    // `claude -p <text>` (continuing the thread while /conversationActive).
-    fun sendPrompt(text: String) {
-        val trimmed = text.trim()
-        send(display = trimmed, wire = trimmed)
-    }
+    // Voice input from the watch; the daemon runs `claude -p <text>`.
+    // Inicio's "Preguntar" (and the tile) always start a NEW conversation:
+    // most of the time you want a fresh question, not the last thread.
+    fun sendPrompt(text: String) = send(text.trim(), PromptMode.NEW)
 
-    // Reset the conversation: prepend a phrase the wrapper's RESET_PHRASES
-    // detects ("nueva conversación") so the next run does NOT use --continue.
-    // The UI confirms "¿Empezar de cero?" before calling this.
-    fun askWithReset(text: String) {
-        val trimmed = text.trim()
-        send(display = trimmed, wire = "nueva conversación, $trimmed")
-    }
+    // Resultado's "Seguir esta conversación" and the follow-up chips continue
+    // the current thread (/prompt.mode = "continue" → `--continue`).
+    fun continueConversation(text: String) = send(text.trim(), PromptMode.CONTINUE)
 
-    /** Re-sends the exact text that was not picked up. */
+    /** Re-sends the exact text, in the same mode, that was not picked up. */
     fun retrySend() {
         val failed = _send.value as? SendState.Failed ?: return
         _send.value = SendState.None
-        send(display = failed.text, wire = failed.wire)
+        send(failed.text, failed.mode)
     }
 
     /**
@@ -467,7 +462,7 @@ class CcwearosViewModel(
         _blockedContent.value = blockedContentKey(r)
     }
 
-    private fun send(display: String, wire: String) {
+    private fun send(display: String, mode: PromptMode) {
         if (display.isEmpty()) return
         // No silent queueing: an offline write would replay minutes later.
         if (!connected.value) {
@@ -476,7 +471,7 @@ class CcwearosViewModel(
         }
         if (_send.value is SendState.Sending) return
         _lastRun.value = null
-        val pending = SendState.Sending(display, wire, outcome.value)
+        val pending = SendState.Sending(display, mode, outcome.value)
         _send.value = pending
         _events.tryEmit(HomeEvent.Sent)
         sendTimeoutJob?.cancel()
@@ -486,7 +481,7 @@ class CcwearosViewModel(
         }
         viewModelScope.launch {
             try {
-                repo.sendPrompt(wire)
+                repo.sendPrompt(display, mode)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -499,7 +494,7 @@ class CcwearosViewModel(
     private fun failSend(pending: SendState.Sending) {
         if (_send.value !== pending) return
         sendTimeoutJob?.cancel()
-        _send.value = SendState.Failed(pending.text, pending.wire)
+        _send.value = SendState.Failed(pending.text, pending.mode)
         _events.tryEmit(HomeEvent.SendFailed)
     }
 
