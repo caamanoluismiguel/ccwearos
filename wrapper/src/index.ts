@@ -516,7 +516,7 @@ async function runDaemon(): Promise<void> {
       console.log("[ccwearos] Handling prompt:", JSON.stringify(p.text));
       await setStatus("RUNNING");
       await setTask(p.text.slice(0, 60));
-      await setActivity("Thinking…");
+      await setActivity("Pensando…");
       await setResponse(null);
       await setToolEvents(null);
       await setTaskKind(null);
@@ -596,14 +596,13 @@ async function runDaemon(): Promise<void> {
       };
       let summary = "";
       const replaced = await publishVoiceRunEnd(facts, voiceSinks, async () => {
-        // Classify the run and surface either a TL;DR headline (info) or
-        // leave the tool chips alone (action). Race-safe: only after done.
+        // Classify the run and publish its TL;DR headline whenever Claude
+        // wrote one: action runs need it too (done notification, Inicio's
+        // "Listo" line). Race-safe: only after done.
         const kind = classifyTaskKind(observedTools, lastResponseSeen.length);
         await setTaskKind(kind);
-        if (kind === "info") {
-          const tldr = extractTldr(lastResponseSeen);
-          if (tldr) await setHeadline(tldr);
-        }
+        const tldr = extractTldr(lastResponseSeen);
+        if (tldr) await setHeadline(tldr);
         // Followups: contextual suggestions Claude appended to the response.
         // The watch's Page 4 renders these as tappable chips. Falls back to
         // null when Claude didn't include the block (tool-heavy runs usually
