@@ -26,6 +26,15 @@ interface WatchRepository {
     val recentSessions: Flow<List<RecentSession>>
     val claimResult: Flow<ClaimResult?>
 
+    /** Mac-only problem blocking Claude (trust/login/crash/timeout); null when none. */
+    val blocker: Flow<Blocker?>
+
+    /** Real exit status of the last voice run; null while running / before any run. */
+    val outcome: Flow<RunOutcome?>
+
+    /** True while voice prompts continue a thread (wrapper passes --continue). */
+    val conversationActive: Flow<Boolean>
+
     /** Writes /command. `promptId` is included only when non-null (allow/deny). */
     suspend fun sendCommand(text: String, promptId: String?)
     suspend fun sendPrompt(text: String)

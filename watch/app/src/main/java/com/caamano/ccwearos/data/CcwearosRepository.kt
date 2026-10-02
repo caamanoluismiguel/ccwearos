@@ -90,6 +90,15 @@ class CcwearosRepository(
     override val claimResult: Flow<ClaimResult?> =
         pathFlow("claimResult", null) { RtdbMappers.claimResult(it.value) }
 
+    override val blocker: Flow<Blocker?> =
+        pathFlow("blocker", null) { RtdbMappers.blocker(it.value) }
+
+    override val outcome: Flow<RunOutcome?> =
+        pathFlow("outcome", null) { RtdbMappers.outcome(it.value) }
+
+    override val conversationActive: Flow<Boolean> =
+        pathFlow("conversationActive", false) { RtdbMappers.bool(it.value) }
+
     override suspend fun sendCommand(text: String, promptId: String?) {
         // Use Firebase server timestamp (not System.currentTimeMillis) so a
         // skewed device clock — including Wear OS emulators with drifted time —
