@@ -74,6 +74,16 @@ import com.caamano.ccwearos.presentation.ui.rememberIsResumed
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import com.caamano.ccwearos.presentation.ui.shake
 import kotlinx.coroutines.delay
+import java.util.Calendar
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INICIO — the instrument, minimal on purpose: only what you need, and a
@@ -240,6 +250,26 @@ private fun MascotStage(ui: HomeUi) {
         MascotBubble.ASK -> stringResource(R.string.bubble_ask)
         null -> null
     }
+
+    // KAI item 2: time-of-day mood. Computed once per composition; the hour
+    // won't change while the screen is on, so no need to observe a clock.
+    // Hour 22..23 or 0..5 = drowsy (late night / early morning).
+    val hour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
+    val isDrowsy = hour >= 22 || hour < 6
+
+    // NOVA item 3: tool-event spark — a tiny coral pixel flashes at the mascot
+    // edge whenever a new tool event arrives, marking real-time activity.
+    val reduced = rememberReducedMotion()
+    val toolCount = ui.toolEvents.size
+    val sparkAlpha = remember { Animatable(0f) }
+    val context = LocalContext.current
+    LaunchedEffect(toolCount) {
+        if (toolCount > 0 && !reduced) {
+            sparkAlpha.snapTo(1f)
+            sparkAlpha.animateTo(0f, tween(280, easing = LinearEasing))
+        }
+    }
+
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         // Reserved slot so the bubble never pushes the layout around.
         Box(Modifier.height(24.dp), contentAlignment = Alignment.BottomCenter) {
@@ -248,7 +278,22 @@ private fun MascotStage(ui: HomeUi) {
         // ¿qué está pasando?: a calm halo laps the mascot while it works.
         Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
             ProgressHalo(active = ui.mode is HomeMode.Running, modifier = Modifier.fillMaxSize(), strokeWidth = 2.dp)
-            PixelMascot(state = ui.mascot, size = 34.dp, modifier = Modifier.shake(ui.errorShake))
+            PixelMascot(state = ui.mascot, size = 34.dp, modifier = Modifier.shake(ui.errorShake), isDrowsy = isDrowsy)
+            // Spark pixel: 3×3 coral flash at the upper-right of the mascot area,
+            // GPU-composited via graphicsLayer so it costs a single draw call.
+            // Spark pixel: only rendered while Running and alpha > 0.
+            // graphicsLayer handles alpha compositing on the GPU so no
+            // recomposition-driven alpha on the canvas draw call itself.
+            if (ui.mode is HomeMode.Running && sparkAlpha.value > 0f) {
+                Canvas(Modifier.fillMaxSize().graphicsLayer { alpha = sparkAlpha.value }) {
+                    val px = 3f * density
+                    drawRect(
+                        color = CcPalette.Coral,
+                        topLeft = Offset(size.width * 0.72f, size.height * 0.18f),
+                        size = Size(px, px),
+                    )
+                }
+            }
         }
     }
 }
@@ -257,7 +302,12 @@ private fun MascotStage(ui: HomeUi) {
 private fun StateWord(ui: HomeUi) {
     val reduced = rememberReducedMotion()
     val stopped = (ui.mode as? HomeMode.Idle)?.failure?.stoppedByUser == true
-    val res = if (stopped) R.string.state_stopped else ui.mascot.labelRes()
+    val res = when {
+        stopped -> R.string.state_stopped
+        // Cold-start grace: show "Conectando…" instead of mascot's label.
+        ui.mode is HomeMode.Connecting -> R.string.state_connecting
+        else -> ui.mascot.labelRes()
+    }
     AnimatedContent(
         targetState = res,
         transitionSpec = { crossfade(reduced) },
@@ -295,6 +345,8 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
         HomeMode.Running -> if (stale) DetailKind.STALE else DetailKind.RUNNING
         HomeMode.Waiting -> DetailKind.NONE
         is HomeMode.Shared -> DetailKind.SHARED
+        // Cold-start grace: no detail line while connecting.
+        HomeMode.Connecting -> DetailKind.NONE
     }
     AnimatedContent(
         targetState = kind,
@@ -366,9 +418,21 @@ private fun RunningLine(ui: HomeUi, now: Long) {
     val reduced = rememberReducedMotion()
     val line = workingLine(ui.toolEvents)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        // NOVA item 3: odometer roll — new tool verb slides up from below while the
+        // old one exits upward, like a departure board. GPU-composited (only
+        // translationY + alpha, no layout shift). Falls back to crossfade under
+        // reduced motion so the state word always reads correctly.
         AnimatedContent(
             targetState = line,
-            transitionSpec = { crossfade(reduced) },
+            transitionSpec = {
+                if (reduced) crossfade(true)
+                else {
+                    (fadeIn(tween(Motion.FAST, easing = Motion.EnterEasing)) +
+                        slideInVertically(tween(Motion.FAST + 40, easing = Motion.EnterEasing)) { it / 2 }) togetherWith
+                        (fadeOut(tween(Motion.FAST, easing = Motion.ExitEasing)) +
+                            slideOutVertically(tween(Motion.FAST, easing = Motion.ExitEasing)) { -it / 2 })
+                }
+            },
             label = "live-line",
         ) { t -> BodyText(t) }
         ui.runStartedAt?.let { started ->
@@ -436,7 +500,7 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, cal
             stopVisible -> ActionKind.STOP
             else -> ActionKind.NONE
         }
-        HomeMode.Waiting, is HomeMode.Shared -> ActionKind.NONE
+        HomeMode.Waiting, is HomeMode.Shared, HomeMode.Connecting -> ActionKind.NONE
     }
     AnimatedContent(
         targetState = kind,

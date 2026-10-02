@@ -80,8 +80,21 @@ sealed interface HomeMode {
     data object Running : HomeMode
     data object Waiting : HomeMode
     data class Shared(val meta: SharedSessionMeta) : HomeMode
+
+    /**
+     * Cold-start grace period: Firebase hasn't replied yet. Shows "Conectando…"
+     * with the Sending mascot (signal arcs = reaching out). Suppresses the
+     * "Sin conexión" state for [connectingGrace] seconds after launch so the
+     * app never flashes offline when it's just warming up.
+     */
+    data object Connecting : HomeMode
 }
 
+/**
+ * @param connectingGrace When true and the device looks offline, return
+ *   [HomeMode.Connecting] instead of [HomeMode.Idle] with an offline reason.
+ *   Defaults to false so all existing callers are unaffected.
+ */
 fun homeMode(
     status: WrapperStatus,
     connected: Boolean,
@@ -89,6 +102,7 @@ fun homeMode(
     sharedSession: SharedSessionMeta?,
     conversationActive: Boolean,
     lastRun: LastRun?,
+    connectingGrace: Boolean = false,
 ): HomeMode = when {
     send is SendState.Sending -> HomeMode.Sending(send.text, send.mode)
     send is SendState.Failed -> HomeMode.SendFailed(send.text)
@@ -96,6 +110,8 @@ fun homeMode(
     sharedSession != null -> HomeMode.Shared(sharedSession)
     status == WrapperStatus.RUNNING -> HomeMode.Running
     status == WrapperStatus.AWAITING_PERMISSION -> HomeMode.Waiting
+    // Suppress offline during cold-start grace: Firebase hasn't replied yet.
+    connectingGrace && (!connected || status == WrapperStatus.OFFLINE) -> HomeMode.Connecting
     else -> HomeMode.Idle(
         offline = when {
             !connected -> OfflineReason.WATCH

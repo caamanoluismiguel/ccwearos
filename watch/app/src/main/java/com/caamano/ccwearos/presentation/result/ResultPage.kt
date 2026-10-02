@@ -2,6 +2,10 @@ package com.caamano.ccwearos.presentation.result
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -83,7 +88,13 @@ import com.caamano.ccwearos.presentation.ui.PixelIcons
 import com.caamano.ccwearos.presentation.ui.pixelIcon
 import com.caamano.ccwearos.presentation.ui.pressFeedback
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
+import com.caamano.ccwearos.presentation.Haptics
+import com.caamano.ccwearos.presentation.ui.MascotState
+import com.caamano.ccwearos.presentation.ui.PixelMascot
+import com.caamano.ccwearos.presentation.ui.SpeechBubble
+import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // CONTRACT: the always-present "Resultado" page, minimal on purpose.
 // First screenful = the TL;DR card (✓/✗ glyph + ≤3 lines) and at most 3
@@ -147,14 +158,14 @@ fun ResultPage(
         ) {
             var order = 0
             when {
-                isEmpty -> item(key = "empty") { EmptyCard() }
+                isEmpty -> item(key = "empty") { MascotPeekCard() }
 
                 blocked -> Unit // The shell shows BlockedScreen.
 
                 else -> {
                     val oSummary = order++
                     item(key = "summary") {
-                        Reveal(revealActive, oSummary) { SummaryCard(first.tldr, status, outcome) }
+                        Reveal(revealActive, oSummary) { SummaryCard(first.tldr, status, outcome, revealActive) }
                     }
                     if (first.bullets.isNotEmpty()) {
                         val o = order++
@@ -292,15 +303,49 @@ private fun Modifier.card(shape: RoundedCornerShape = CardShape): Modifier = thi
     .background(CcPalette.Surface, shape)
     .border(BorderStroke(1.dp, CcPalette.Outline), shape)
 
+/**
+ * KAI item 8 — Empty state with personality: the mascot peeks up from inside
+ * the card, speaks the bubble, then the hint text follows. Spring slide-in
+ * (40dp rise, medium spring) gives it a living quality rather than a hard pop.
+ * Falls back to static layout under reduced motion.
+ */
 @Composable
-private fun EmptyCard() {
+private fun MascotPeekCard() {
+    val reduced = rememberReducedMotion()
+    val density = LocalDensity.current
+    val startOffsetPx = with(density) { 40.dp.toPx() }
+    // KAI: mascot slides up from below the card — spring settles naturally.
+    val slideY = remember { Animatable(if (reduced) 0f else startOffsetPx) }
+    val slideAlpha = remember { Animatable(if (reduced) 1f else 0f) }
+    LaunchedEffect(Unit) {
+        if (!reduced) {
+            launch { slideAlpha.animateTo(1f, tween(200)) }
+            slideY.animateTo(
+                0f,
+                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+            )
+        }
+    }
+
     Column(
         modifier = Modifier
             .card()
             .padding(horizontal = 14.dp, vertical = 16.dp)
-            .semantics(mergeDescendants = true) {},
+            .semantics(mergeDescendants = true) {}
+            .graphicsLayer {
+                translationY = slideY.value
+                alpha = slideAlpha.value
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Speech bubble above mascot: "Pregúntame algo"
+        SpeechBubble(stringResource(R.string.result_empty_bubble))
+        Spacer(Modifier.height(6.dp))
+        PixelMascot(
+            state = MascotState.Idle,
+            size = 32.dp,
+        )
+        Spacer(Modifier.height(10.dp))
         Text(
             text = stringResource(R.string.result_empty_title),
             color = MaterialTheme.colorScheme.onSurface,
@@ -324,9 +369,22 @@ private fun EmptyCard() {
  * The TL;DR, large, ≤3 lines, with a small ✓ / ✗ glyph from /outcome next
  * to it. No status chips: the glyph is enough. Without a TL;DR the glyph's
  * word ("Hecho" / "Falló") is the title.
+ *
+ * NOVA item 4 — The Reveal: when [revealActive] is true, words appear one by
+ * one (~80ms/word, LinearEasing) so you watch the TL;DR materialise. The ✓
+ * icon pops in after the last word (scale overshoot + fade) and a haptic tick
+ * fires at that moment so wrist + eye land on the finish together.
  */
 @Composable
-private fun SummaryCard(tldr: String?, status: ResultStatus, outcome: RunOutcome?) {
+private fun SummaryCard(
+    tldr: String?,
+    status: ResultStatus,
+    outcome: RunOutcome?,
+    revealActive: Boolean = false,
+) {
+    val reduced = rememberReducedMotion()
+    val context = LocalContext.current
+
     val statusWord = when (status) {
         ResultStatus.DONE -> stringResource(R.string.result_status_done)
         ResultStatus.FAILED -> if (outcome != null && outcome.exitCode != 0L) {
@@ -338,6 +396,39 @@ private fun SummaryCard(tldr: String?, status: ResultStatus, outcome: RunOutcome
     }
     val title = tldr ?: statusWord ?: return
     val cd = listOfNotNull(statusWord?.takeIf { tldr != null }, title).joinToString(". ")
+
+    // NOVA item 4: word-by-word reveal. Capture revealActive at composition
+    // so the animation keeps running even after the reveal window closes.
+    val words = remember(title) { title.split(" ").filter { it.isNotEmpty() } }
+    val shouldReveal = remember { revealActive && !reduced && words.isNotEmpty() }
+    val hasStatusIcon = status == ResultStatus.DONE || status == ResultStatus.FAILED
+    // Word progress: 0 → words.size. Starts at end when no reveal needed.
+    val wordProg = remember { Animatable(if (shouldReveal) 0f else words.size.toFloat()) }
+    // Icon enters after text: starts invisible only during the reveal.
+    val iconAlpha = remember { Animatable(if (shouldReveal && hasStatusIcon) 0f else 1f) }
+    val iconScale = remember { Animatable(if (shouldReveal && hasStatusIcon) 0f else 1f) }
+
+    LaunchedEffect(Unit) {
+        if (wordProg.value < words.size.toFloat()) {
+            // ~80ms per word; minimum 400ms for very short TL;DRs.
+            wordProg.animateTo(
+                words.size.toFloat(),
+                tween(durationMillis = (words.size * 80).coerceAtLeast(400), easing = LinearEasing),
+            )
+            // Words done — pop the icon in and fire the haptic.
+            Haptics.tick(context)
+            launch { iconAlpha.animateTo(1f, tween(150)) }
+            iconScale.animateTo(1.2f, tween(100))   // overshoot
+            iconScale.animateTo(1f, tween(80))      // settle
+        }
+    }
+
+    val visibleText = if (shouldReveal && wordProg.value < words.size.toFloat()) {
+        words.take(wordProg.value.toInt()).joinToString(" ")
+    } else {
+        title
+    }
+
     Row(
         modifier = Modifier
             .card()
@@ -348,19 +439,24 @@ private fun SummaryCard(tldr: String?, status: ResultStatus, outcome: RunOutcome
             },
         verticalAlignment = Alignment.Top,
     ) {
-        if (status == ResultStatus.DONE || status == ResultStatus.FAILED) {
+        if (hasStatusIcon) {
             Icon(
                 imageVector = if (status == ResultStatus.DONE) PixelIcons.Check else PixelIcons.Cross,
                 contentDescription = null,
                 tint = if (status == ResultStatus.DONE) StatusColors.running else StatusColors.error,
                 modifier = Modifier
                     .padding(top = 4.dp)
-                    .size(14.dp),
+                    .size(14.dp)
+                    .graphicsLayer {
+                        scaleX = iconScale.value
+                        scaleY = iconScale.value
+                        alpha = iconAlpha.value
+                    },
             )
             Spacer(Modifier.width(8.dp))
         }
         Text(
-            text = title,
+            text = visibleText,
             color = MaterialTheme.colorScheme.onSurface,
             fontSize = ResultType.title,
             lineHeight = ResultType.titleLine,

@@ -103,6 +103,8 @@ data class DashboardState(
     val outcome: RunOutcome? = null,
     val followups: List<String> = emptyList(),
     val recentSessions: List<RecentSession> = emptyList(),
+    /** True for ~6s after launch: suppresses the offline flash while Firebase connects. */
+    val connectingGrace: Boolean = false,
 )
 
 data class DashboardActions(
@@ -137,6 +139,8 @@ internal fun mascotFor(mode: HomeMode, status: WrapperStatus, blocker: Blocker?)
     HomeMode.Running -> MascotState.Running
     HomeMode.Waiting -> MascotState.Waiting
     is HomeMode.Shared -> status.toMascotState()
+    // Connecting: signal arcs pulsing upward read as "reaching out / booting up".
+    HomeMode.Connecting -> MascotState.Sending
 }
 
 private val pageEnterSpec = tween<Float>(Motion.SLOW, easing = Motion.EnterEasing)
@@ -203,7 +207,10 @@ fun DashboardScreen(
     fun playEnd(end: RunEnd, haptic: Boolean, buzzError: Boolean) {
         when (end) {
             RunEnd.DONE -> {
-                if (haptic) Haptics.done(context)
+                // NOVA: signature motif (slow bloom → tick → click) synced to
+                // the mascot's first hop. Replaces the generic done() so the
+                // "it worked" moment has a distinct CCWEAROS identity.
+                if (haptic) Haptics.signature(context)
                 doneFlash = true
                 ringTrigger++
                 transientBubble = MascotBubble.DONE
@@ -273,6 +280,18 @@ fun DashboardScreen(
         if (resumed) unseen.onResume(System.currentTimeMillis())?.let { playEnd(it, haptic = false, buzzError = false) }
     }
 
+    // KAI: Signature motif fires ONCE on cold app open (not on resume from ambient).
+    // Synced with the mascot's first blink sequence (~200ms after the screen is live).
+    // Uses a one-shot flag so navigation or screen-off/on never re-fires it.
+    var appOpenSignatureFired by remember { mutableStateOf(false) }
+    LaunchedEffect(resumed) {
+        if (resumed && !appOpenSignatureFired) {
+            appOpenSignatureFired = true
+            delay(200L)
+            Haptics.signature(context)
+        }
+    }
+
     // Low-frequency swipe feedback: one light tap when a swipe settles on a page.
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }.drop(1).collect { page ->
@@ -301,6 +320,7 @@ fun DashboardScreen(
         sharedSession = state.sharedSession,
         conversationActive = state.conversationActive,
         lastRun = state.lastRun,
+        connectingGrace = state.connectingGrace,
     )
     val settled = mascotFor(mode, state.status, state.blocker)
     val mascot = if (doneFlash && mode is HomeMode.Idle && settled == MascotState.Idle) MascotState.Done else settled

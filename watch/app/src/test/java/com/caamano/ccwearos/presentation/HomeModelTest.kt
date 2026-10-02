@@ -293,3 +293,46 @@ class ContinuityMathTest {
         assertEquals(0, pageDirection(page = 0, currentPage = 0, currentPageOffsetFraction = 0f))
     }
 }
+
+// ─── Cold-start grace (item 9) ────────────────────────────────────────────────
+
+class ConnectingGraceTest {
+    private fun mode(
+        status: WrapperStatus = WrapperStatus.IDLE,
+        connected: Boolean = true,
+        connectingGrace: Boolean = false,
+    ) = homeMode(status, connected, SendState.None, null, false, null, connectingGrace)
+
+    @Test fun `grace off — offline is normal Idle`() {
+        val watchOffline = mode(connected = false)
+        assertTrue("Expected Idle(WATCH), got $watchOffline", watchOffline is HomeMode.Idle && (watchOffline as HomeMode.Idle).offline == OfflineReason.WATCH)
+        val macOffline = mode(status = WrapperStatus.OFFLINE)
+        assertTrue("Expected Idle(MAC), got $macOffline", macOffline is HomeMode.Idle && (macOffline as HomeMode.Idle).offline == OfflineReason.MAC)
+    }
+
+    @Test fun `grace on — watch offline becomes Connecting`() {
+        assertEquals(HomeMode.Connecting, mode(connected = false, connectingGrace = true))
+    }
+
+    @Test fun `grace on — mac offline becomes Connecting`() {
+        assertEquals(HomeMode.Connecting, mode(status = WrapperStatus.OFFLINE, connectingGrace = true))
+    }
+
+    @Test fun `grace on — already connected is not Connecting`() {
+        val result = mode(status = WrapperStatus.IDLE, connected = true, connectingGrace = true)
+        assertTrue("Expected Idle, got $result", result is HomeMode.Idle)
+    }
+
+    @Test fun `grace does not suppress RUNNING or WAITING`() {
+        assertEquals(HomeMode.Running, mode(status = WrapperStatus.RUNNING, connectingGrace = true))
+        assertEquals(HomeMode.Waiting, mode(status = WrapperStatus.AWAITING_PERMISSION, connectingGrace = true))
+    }
+
+    @Test fun `all existing offline tests pass with default grace = false`() {
+        // Regression: the default param keeps all prior call sites unchanged.
+        val watchIdle = mode(connected = false, connectingGrace = false)
+        assertTrue(watchIdle is HomeMode.Idle && (watchIdle as HomeMode.Idle).offline == OfflineReason.WATCH)
+        val macIdle = mode(status = WrapperStatus.OFFLINE, connectingGrace = false)
+        assertTrue(macIdle is HomeMode.Idle && (macIdle as HomeMode.Idle).offline == OfflineReason.MAC)
+    }
+}

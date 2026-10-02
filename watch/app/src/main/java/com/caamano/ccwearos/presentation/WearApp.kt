@@ -245,6 +245,7 @@ private fun DashboardRoute(vm: CcwearosViewModel, modifier: Modifier) {
     val outcome by vm.outcome.collectAsStateWithLifecycle()
     val followups by vm.followups.collectAsStateWithLifecycle()
     val recentSessions by vm.recentSessions.collectAsStateWithLifecycle()
+    val connectingGrace by vm.connectingGrace.collectAsStateWithLifecycle()
 
     val actions = remember(vm) {
         DashboardActions(
@@ -280,6 +281,7 @@ private fun DashboardRoute(vm: CcwearosViewModel, modifier: Modifier) {
             outcome = outcome,
             followups = followups,
             recentSessions = recentSessions,
+            connectingGrace = connectingGrace,
         ),
         actions = actions,
         events = vm.events,

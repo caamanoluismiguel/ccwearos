@@ -159,6 +159,25 @@ object Haptics {
         listOf(Prim(Composition.PRIMITIVE_LOW_TICK, 0.4f)),
         longArrayOf(0, 8),
     )
+
+    /**
+     * CCWEAROS signature motif: a slow bloom followed by two sharp accents.
+     * Synced to the mascot's celebratory hop on Done, and fired once on app
+     * open. Distinguishes this app's "it worked" moment from any generic
+     * Android pattern. Priority 3, same as [done] — replaces it for the Done
+     * moment so the wrist only feels one pattern, not two.
+     */
+    @SuppressLint("InlinedApi")
+    fun signature(context: Context) = play(
+        context,
+        priority = 3,
+        listOf(
+            Prim(Composition.PRIMITIVE_SLOW_RISE, 0.65f),
+            Prim(Composition.PRIMITIVE_TICK, 0.85f, 50),
+            Prim(Composition.PRIMITIVE_CLICK, 1f, 40),
+        ),
+        longArrayOf(0, 90, 50, 15, 40, 30),
+    )
 }
 
 /**
