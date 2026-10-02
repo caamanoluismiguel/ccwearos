@@ -12,7 +12,9 @@ import com.caamano.ccwearos.presentation.MainActivity
 import com.google.common.util.concurrent.ListenableFuture
 
 /**
- * Status Tile: Listo / Trabajando / Permiso / Sin conexión.
+ * Status Tile: Listo / Trabajando / Permiso / Necesita tu Mac / Listo ✓ (Done)
+ * / Sin conexión. "Preguntar" deep-links into voice input and "Ver resultado"
+ * into the Resultado page (see [com.caamano.ccwearos.notifications.DeepLinks]).
  *
  * A TileService can't hold a live listener, so each request does fresh
  * single reads (see [TileDataSource]) and asks to be refreshed every
@@ -54,6 +56,7 @@ class StatusTileService : TileService() {
         if (feedback != null) ComplicationUpdater.requestUpdate(this@StatusTileService)
 
         val root = TileLayouts.root(
+            this@StatusTileService,
             renderState,
             packageName = packageName,
             activityClass = MainActivity::class.java.name,

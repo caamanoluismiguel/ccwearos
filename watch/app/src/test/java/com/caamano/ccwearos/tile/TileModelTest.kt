@@ -137,14 +137,78 @@ class TileMapperTest {
         assertEquals("0", TileMapper.formatTokens(-5))
     }
 
-    @Test fun short_labels_fit_complication() {
-        val states = listOf(
-            TileState.SignedOut, TileState.NoSignal, TileState.Offline,
-            TileState.Idle(0, 18), TileState.Idle(0, null),
-            TileState.Running(null, 3), TileState.Awaiting("", null, false),
-        )
-        states.forEach { assertTrue(TileMapper.shortLabel(it).length <= 7) }
-        assertEquals("18%", TileMapper.shortLabel(TileState.Idle(0, 18)))
-        assertEquals("Permiso", TileMapper.shortLabel(TileState.Awaiting("", null, false)))
+    // --- Blocked ---
+
+    @Test fun blocker_while_idle_or_running_is_blocked_with_first_hint_line() {
+        val s = snap("IDLE").copy(blocked = true, blockerHint = "\n  Confía en la carpeta en tu Mac \nsegunda")
+        assertEquals(TileState.Blocked("Confía en la carpeta en tu Mac"), TileMapper.map(s, true))
+        assertEquals(TileState.Blocked(null), TileMapper.map(snap("RUNNING").copy(blocked = true, blockerHint = " "), true))
+    }
+
+    @Test fun pending_prompt_beats_blocker() {
+        val s = snap("AWAITING_PERMISSION", "Bash: npm test", "p1").copy(blocked = true, blockerHint = "x")
+        assertTrue(TileMapper.map(s, true) is TileState.Awaiting)
+    }
+
+    @Test fun blocker_with_wrapper_offline_is_offline() {
+        assertEquals(TileState.Offline, TileMapper.map(snap("OFFLINE").copy(blocked = true), true))
+        assertEquals(TileState.Offline, TileMapper.map(snap(null).copy(blocked = true), true))
+    }
+
+    // --- Done ---
+
+    private val now = 10_000_000_000L
+
+    @Test fun fresh_outcome_while_idle_is_done_with_headline_first_line() {
+        val s = snap("IDLE").copy(outcomeOk = true, outcomeTs = now - 60_000, headline = "Tests verdes\nmás texto")
+        assertEquals(TileState.Done(true, "Tests verdes", 18), TileMapper.map(s, true, now))
+    }
+
+    @Test fun failed_outcome_is_done_not_ok() {
+        val s = snap("IDLE").copy(outcomeOk = false, outcomeTs = now, headline = null)
+        assertEquals(TileState.Done(false, null, 18), TileMapper.map(s, true, now))
+    }
+
+    @Test fun stale_outcome_falls_back_to_idle() {
+        val s = snap("IDLE").copy(outcomeOk = true, outcomeTs = now - TileMapper.DONE_FRESH_MS - 1)
+        assertEquals(TileState.Idle(45_200, 18), TileMapper.map(s, true, now))
+    }
+
+    @Test fun unstamped_or_future_outcome_counts_as_fresh() {
+        assertTrue(TileMapper.map(snap("IDLE").copy(outcomeOk = true, outcomeTs = 0), true, now) is TileState.Done)
+        assertTrue(TileMapper.map(snap("IDLE").copy(outcomeOk = true, outcomeTs = now + 5_000), true, now) is TileState.Done)
+    }
+
+    @Test fun running_ignores_previous_outcome() {
+        val s = snap("RUNNING").copy(outcomeOk = true, outcomeTs = now)
+        assertEquals(TileState.Running("Crunching…", 18), TileMapper.map(s, true, now))
+    }
+
+    // --- Complication ---
+
+    @Test fun complication_state_words() {
+        assertEquals(StateWord.OPEN, TileMapper.stateWord(TileState.SignedOut))
+        assertEquals(StateWord.NO_SIGNAL, TileMapper.stateWord(TileState.NoSignal))
+        assertEquals(StateWord.MAC_OFFLINE, TileMapper.stateWord(TileState.Offline))
+        assertEquals(StateWord.READY, TileMapper.stateWord(TileState.Idle(0, 18)))
+        assertEquals(StateWord.READY, TileMapper.stateWord(TileState.Done(true, null, null)))
+        assertEquals(StateWord.FAILED, TileMapper.stateWord(TileState.Done(false, null, null)))
+        assertEquals(StateWord.WORKING, TileMapper.stateWord(TileState.Running(null, 3)))
+        assertEquals(StateWord.PERMISSION, TileMapper.stateWord(TileState.Awaiting("", null, false)))
+        assertEquals(StateWord.MAC, TileMapper.stateWord(TileState.Blocked(null)))
+    }
+
+    @Test fun attention_glyph_only_for_waiting_and_blocked() {
+        assertTrue(TileMapper.needsAttention(TileState.Awaiting("", null, false)))
+        assertTrue(TileMapper.needsAttention(TileState.Blocked("x")))
+        listOf(
+            TileState.SignedOut, TileState.NoSignal, TileState.Offline, TileState.Idle(0, 1),
+            TileState.Running(null, 1), TileState.Done(true, null, 1),
+        ).forEach { assertFalse("$it", TileMapper.needsAttention(it)) }
+    }
+
+    @Test fun context_pct_for_arc_and_ranged_value() {
+        assertEquals(18, TileMapper.contextPct(TileState.Done(true, null, 18)))
+        assertEquals(null, TileMapper.contextPct(TileState.Blocked(null)))
     }
 }

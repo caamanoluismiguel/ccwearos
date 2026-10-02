@@ -2,6 +2,7 @@ package com.caamano.ccwearos.tile
 
 import android.util.Log
 import com.caamano.ccwearos.data.AnswerGate
+import com.caamano.ccwearos.data.RtdbMappers
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ServerValue
@@ -41,7 +42,17 @@ object TileDataSource {
                 val promptId = read("permissionPromptId")
                 val tokens = read("metrics/dailyTokens")
                 val ctx = read("claudeStatus/contextPct")
+                val blockerRaw = read("blocker")
+                val outcomeRaw = read("outcome")
+                val headline = read("headline")
+                val blocker = RtdbMappers.blocker(blockerRaw.await().value)
+                val outcome = RtdbMappers.outcome(outcomeRaw.await().value)
                 TileSnapshot(
+                    blocked = blocker != null,
+                    blockerHint = blocker?.hint,
+                    outcomeOk = outcome?.ok,
+                    outcomeTs = outcome?.ts ?: 0L,
+                    headline = RtdbMappers.string(headline.await().value),
                     status = status.await().getValue(String::class.java),
                     activity = activity.await().getValue(String::class.java),
                     permissionPrompt = prompt.await().getValue(String::class.java),

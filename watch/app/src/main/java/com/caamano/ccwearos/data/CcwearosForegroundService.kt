@@ -19,13 +19,20 @@ import androidx.core.content.ContextCompat
 import androidx.wear.ongoing.OngoingActivity
 import androidx.wear.ongoing.Status
 import com.caamano.ccwearos.R
+import com.caamano.ccwearos.notifications.OngoingStatus
+import com.caamano.ccwearos.notifications.OngoingStatusMapper
+import com.caamano.ccwearos.notifications.OutcomeGate
 import com.caamano.ccwearos.notifications.PermissionNotifier
+import com.caamano.ccwearos.notifications.RunNotifier
 import com.caamano.ccwearos.presentation.MainActivity
 import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -41,7 +48,8 @@ import kotlinx.coroutines.launch
 // foreground service is the supported way to opt out of that pause.
 //
 // The notification is an Ongoing Activity, so its status line ("Conectado a
-// tu Mac" / "Trabajando…" / "Esperando permiso") shows on the watch face and
+// tu Mac" / "Trabajando…" / "Esperando permiso" / "Claude necesita tu Mac")
+// shows on the watch face and
 // in the recents surface.
 //
 // Android 15+: dataSync FGS get ~6h per 24h. When the budget runs out the
@@ -53,6 +61,7 @@ class CcwearosForegroundService : Service() {
         const val NOTIFICATION_ID = 1
         const val CHANNEL_ID = "ccwearos_foreground"
         private const val TAG = "ccwearos-fg"
+        private const val HEADLINE_SETTLE_MS = 1_500L
 
         // Paths we ask Firebase to keep synced. These mirror the
         // SharingStarted.Eagerly flows in CcwearosViewModel that drive screen
@@ -62,6 +71,9 @@ class CcwearosForegroundService : Service() {
             "sharedSession",
             "permissionPrompt",
             "permissionPromptId",
+            "blocker",
+            "outcome",
+            "headline",
         )
 
         /**
@@ -82,7 +94,8 @@ class CcwearosForegroundService : Service() {
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var currentText = statusText(WrapperStatus.OFFLINE, connected = false)
+    // Resources aren't reachable before onCreate, so the initial text is resolved lazily.
+    private var currentText: String? = null
     private var watching = false
 
     override fun onCreate() {
@@ -106,7 +119,7 @@ class CcwearosForegroundService : Service() {
         try {
             startForeground(
                 NOTIFICATION_ID,
-                buildNotification(currentText),
+                buildNotification(currentText ?: getString(R.string.ongoing_no_connection)),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
         } catch (e: Exception) {
@@ -148,7 +161,7 @@ class CcwearosForegroundService : Service() {
         val repo = CcwearosRepository()
         // Ongoing Activity status line.
         scope.launch {
-            combine(repo.status, repo.connected) { s, c -> statusText(s, c) }
+            combine(repo.status, repo.connected, repo.blocker) { s, c, b -> statusText(s, c, b != null) }
                 .distinctUntilChanged()
                 .collect { text ->
                     currentText = text
@@ -181,15 +194,58 @@ class CcwearosForegroundService : Service() {
                     PermissionNotifier.update(this@CcwearosForegroundService, snapshot, visible)
                 }
         }
+        // Tile + complication show the blocker and the last outcome too.
+        scope.launch {
+            combine(repo.blocker, repo.outcome, repo.headline) { b, o, h -> Triple(b, o, h) }
+                .distinctUntilChanged()
+                .collect {
+                    TileUpdater.requestUpdate(this@CcwearosForegroundService)
+                    ComplicationUpdater.requestUpdate(this@CcwearosForegroundService)
+                }
+        }
+        // "Claude necesita tu Mac" notification (only while the app is hidden).
+        scope.launch {
+            combine(repo.blocker, AppVisibility.foreground) { b, visible -> b to visible }
+                .distinctUntilChanged()
+                .collect { (blocker, visible) ->
+                    RunNotifier.updateBlocker(this@CcwearosForegroundService, blocker, visible)
+                }
+        }
+        // Opening the app clears "Claude terminó": the app shows the result itself.
+        scope.launch {
+            AppVisibility.foreground.collect { visible ->
+                if (visible) RunNotifier.cancelAll(this@CcwearosForegroundService)
+            }
+        }
+        // "Claude terminó" notification, once per finished run.
+        val headline = repo.headline.stateIn(scope, SharingStarted.Eagerly, null)
+        val outcomeGate = OutcomeGate()
+        scope.launch {
+            repo.outcome.distinctUntilChanged().collect { outcome ->
+                if (!outcomeGate.shouldNotify(outcome) || outcome == null) return@collect
+                // The wrapper may write /headline right after /outcome.
+                delay(HEADLINE_SETTLE_MS)
+                RunNotifier.runFinished(
+                    this@CcwearosForegroundService,
+                    outcome,
+                    headline.value,
+                    AppVisibility.foreground.value,
+                )
+            }
+        }
     }
 
-    private fun statusText(status: WrapperStatus, connected: Boolean): String = when {
-        !connected -> "Sin conexión"
-        status == WrapperStatus.AWAITING_PERMISSION -> "Esperando permiso"
-        status == WrapperStatus.RUNNING -> "Trabajando…"
-        status == WrapperStatus.OFFLINE -> "Tu Mac no responde"
-        else -> "Conectado a tu Mac"
-    }
+    private fun statusText(status: WrapperStatus, connected: Boolean, blocked: Boolean): String =
+        getString(
+            when (OngoingStatusMapper.map(status, connected, blocked)) {
+                OngoingStatus.NO_CONNECTION -> R.string.ongoing_no_connection
+                OngoingStatus.AWAITING -> R.string.ongoing_awaiting
+                OngoingStatus.BLOCKED -> R.string.ongoing_blocked
+                OngoingStatus.RUNNING -> R.string.ongoing_running
+                OngoingStatus.MAC_OFFLINE -> R.string.ongoing_mac_offline
+                OngoingStatus.CONNECTED -> R.string.ongoing_connected
+            },
+        )
 
     private fun buildNotification(text: String): Notification {
         val tapIntent = Intent(this, MainActivity::class.java)
@@ -201,7 +257,7 @@ class CcwearosForegroundService : Service() {
         )
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("CCWEAROS")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setOngoing(true)
             .setShowWhen(false)
