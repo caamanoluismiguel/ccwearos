@@ -96,6 +96,9 @@ class CcwearosRepository(
     override val outcome: Flow<RunOutcome?> =
         pathFlow("outcome", null) { RtdbMappers.outcome(it.value) }
 
+    override val progress: Flow<RunProgress?> =
+        pathFlow("progress", null) { RtdbMappers.progress(it.value) }
+
     override val conversationActive: Flow<Boolean> =
         pathFlow("conversationActive", false) { RtdbMappers.bool(it.value) }
 

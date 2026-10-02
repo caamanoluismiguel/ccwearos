@@ -35,6 +35,9 @@ interface WatchRepository {
     /** True while voice prompts continue a thread (wrapper passes --continue). */
     val conversationActive: Flow<Boolean>
 
+    /** Live progress of the running voice run; null when idle. */
+    val progress: Flow<RunProgress?>
+
     /** Writes /command. `promptId` is included only when non-null (allow/deny). */
     suspend fun sendCommand(text: String, promptId: String?)
     /** Writes /prompt {text, mode, issuedAt}; [mode] picks a new thread or the current one. */

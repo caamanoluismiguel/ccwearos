@@ -97,6 +97,20 @@ export interface RtdbRoot {
   // a reset. Lets the watch label its button "Seguir" vs "Preguntar" even
   // after its process was killed.
   conversationActive: boolean | null;
+  // Live progress of the running voice run, so long tasks never feel stuck.
+  // Written (throttled, ≤1/s) by the daemon from the stream-json events;
+  // null at run start and after the run ends.
+  progress: RunProgress | null;
+}
+
+export interface RunProgress {
+  step: number; // 1-based count of tool calls so far this run (0 = thinking, no tool yet)
+  label: string; // Spanish short phrase for the current step, ≤28 chars ("Buscando archivos")
+  detail?: string; // short target of the current step, ≤40 chars ("~/Downloads")
+  intent?: string; // Claude's latest interim sentence (its own words), ≤90 chars
+  stepStartedAt: number; // unix ms when the current step (tool) began
+  lastEventAt: number; // unix ms of the latest stream event (liveness heartbeat)
+  runStartedAt: number; // unix ms when the run began
 }
 
 export type BlockerKind = "trust" | "login" | "crash" | "timeout" | "other";
@@ -240,4 +254,5 @@ export const RTDB_PATHS = {
   blocker: "/blocker",
   outcome: "/outcome",
   conversationActive: "/conversationActive",
+  progress: "/progress",
 } as const;

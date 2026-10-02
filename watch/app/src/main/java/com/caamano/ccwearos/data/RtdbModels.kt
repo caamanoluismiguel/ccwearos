@@ -162,3 +162,14 @@ data class RunOutcome(
     val ts: Long = 0,
     val stopped: Boolean = false,
 )
+
+// Mirrors RunProgress: live progress of the running voice run.
+data class RunProgress(
+    val step: Long = 0,
+    val label: String = "",
+    val detail: String? = null,
+    val intent: String? = null,
+    val stepStartedAt: Long = 0,
+    val lastEventAt: Long = 0,
+    val runStartedAt: Long = 0,
+)

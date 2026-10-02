@@ -7,6 +7,7 @@ import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.RunOutcome
+import com.caamano.ccwearos.data.RunProgress
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
@@ -34,6 +35,7 @@ class FakeWatchRepository : WatchRepository {
     override val blocker = MutableStateFlow<Blocker?>(null)
     override val outcome = MutableStateFlow<RunOutcome?>(null)
     override val conversationActive = MutableStateFlow(false)
+    override val progress = MutableStateFlow<RunProgress?>(null)
 
     val commands = mutableListOf<Pair<String, String?>>()
     var failNextCommand = false

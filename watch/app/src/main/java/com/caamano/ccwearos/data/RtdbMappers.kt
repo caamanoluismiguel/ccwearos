@@ -104,6 +104,19 @@ object RtdbMappers {
         return Blocker(kind = kind, hint = m.str("hint") ?: "", cwd = m.str("cwd"), ts = m.long("ts"))
     }
 
+    fun progress(raw: Any?): RunProgress? {
+        val m = raw.asMap() ?: return null
+        return RunProgress(
+            step = m.long("step"),
+            label = m.str("label") ?: "",
+            detail = m.str("detail"),
+            intent = m.str("intent"),
+            stepStartedAt = m.long("stepStartedAt"),
+            lastEventAt = m.long("lastEventAt"),
+            runStartedAt = m.long("runStartedAt"),
+        )
+    }
+
     fun outcome(raw: Any?): RunOutcome? {
         val m = raw.asMap() ?: return null
         return RunOutcome(
