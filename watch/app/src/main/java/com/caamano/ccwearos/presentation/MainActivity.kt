@@ -1,34 +1,25 @@
 package com.caamano.ccwearos.presentation
 
 import android.Manifest
+import android.app.LocaleManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.LocaleList
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.wear.compose.material3.Button
-import androidx.wear.compose.material3.Text
+import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.AppVisibility
 import com.caamano.ccwearos.data.CcwearosForegroundService
 import com.caamano.ccwearos.notifications.PermissionNotifier
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
+import com.caamano.ccwearos.presentation.ui.MascotState
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.messaging.FirebaseMessaging
@@ -37,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pinSpanishLocale()
         signInThenRender()
         maybeRequestNotificationPermission()
     }
@@ -91,6 +83,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // The owner speaks Spanish but the watch OS runs in English. values/ is
+    // Spanish-only already; pinning es-CO as the per-app locale (API 33+) also
+    // gives Spanish dates/numbers and keeps it if a translation is ever added.
+    // Only when unset, so a choice made in system per-app language settings
+    // wins. Setting it recreates the activity once.
+    private fun pinSpanishLocale() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        runCatching {
+            val manager = getSystemService(LocaleManager::class.java) ?: return
+            if (manager.applicationLocales.isEmpty) {
+                manager.applicationLocales = LocaleList.forLanguageTags(APP_LOCALE)
+            }
+        }.onFailure { Log.w(TAG, "could not pin app locale: ${it.message}") }
+    }
+
     // Wear OS 4+ (API 33+) needs runtime consent for notifications, or the
     // "Claude necesita permiso" heads-up never shows. Asked once; after that
     // the user decides in system settings.
@@ -142,35 +149,20 @@ class MainActivity : ComponentActivity() {
         const val PREFS = "ccwearos"
         const val KEY_ASKED_NOTIFICATIONS = "asked_post_notifications"
         const val REQ_NOTIFICATIONS = 1
+        const val APP_LOCALE = "es-CO"
     }
 }
 
+// Same designed state as BlockedScreen: still X-eyed mascot, one title, one
+// line, one coral "Reintentar".
 @Composable
 private fun SignInErrorScreen(onRetry: () -> Unit) {
-    Box(
-        Modifier.fillMaxSize().background(Color.Black),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = "No pude conectarme",
-                color = Color.White,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-            )
-            Text(
-                text = "Revisa la conexión del reloj e intenta de nuevo.",
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = 11.sp,
-                textAlign = TextAlign.Center,
-            )
-            Button(onClick = onRetry) {
-                Text("Reintentar")
-            }
-        }
-    }
+    BlockedLayout(
+        mascot = MascotState.Error,
+        title = stringResource(R.string.signin_error_title),
+        body = stringResource(R.string.signin_error_body),
+        primaryLabel = stringResource(R.string.signin_error_action),
+        onPrimary = onRetry,
+        haptic = BlockedHaptic.ERROR,
+    )
 }

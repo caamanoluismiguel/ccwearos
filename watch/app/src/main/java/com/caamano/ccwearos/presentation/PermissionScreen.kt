@@ -1,6 +1,7 @@
 package com.caamano.ccwearos.presentation
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -27,11 +29,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -45,16 +51,22 @@ import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.EdgeButton
 import androidx.wear.compose.material3.EdgeButtonSize
+import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.OutlinedButton
 import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
 import androidx.wear.compose.ui.tooling.preview.WearPreviewDevices
 import androidx.wear.compose.ui.tooling.preview.WearPreviewLargeRound
+import com.caamano.ccwearos.R
 import com.caamano.ccwearos.presentation.permission.HoldRing
 import com.caamano.ccwearos.presentation.permission.Risk
 import com.caamano.ccwearos.presentation.permission.classifyRisk
 import com.caamano.ccwearos.presentation.permission.parsePrompt
 import com.caamano.ccwearos.presentation.permission.rememberHoldToConfirm
+import com.caamano.ccwearos.presentation.theme.StatusColors
+import com.caamano.ccwearos.presentation.ui.Motion
+import com.caamano.ccwearos.presentation.ui.PixelIcons
+import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import kotlinx.coroutines.delay
 
 // Permission v2 palette: quiet wrist instrument on true black. Flat solids only;
@@ -211,7 +223,7 @@ fun PermissionScreen(
                     }
                     parsed.tool == null -> item(key = "fallback") {
                         Text(
-                            text = "Claude necesita tu permiso.",
+                            text = stringResource(R.string.permission_fallback),
                             color = PermissionColors.textPrimary,
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center,
@@ -222,17 +234,20 @@ fun PermissionScreen(
 
                 if (!canAnswer) {
                     item(key = "state") {
-                        val offline = !connected
-                        Text(
-                            text = if (offline) "Sin conexión: no se puede responder" else "Respuesta enviada",
-                            color = if (offline) PermissionColors.waiting else PermissionColors.textSecondary,
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 4.dp),
-                        )
+                        if (!connected) {
+                            Text(
+                                text = stringResource(R.string.permission_offline),
+                                color = PermissionColors.waiting,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                            )
+                        } else {
+                            AnsweredConfirmation()
+                        }
                     }
                 }
 
@@ -255,18 +270,32 @@ fun PermissionScreen(
 
 @Composable
 private fun PermissionHeader(risky: Boolean) {
+    // One pulse on arrival (1 → 1.08 → 1) so the eye finds the header, then
+    // still. Keyed per composition: a new prompt remounts the screen.
+    val reduced = rememberReducedMotion()
+    val pulse = remember { Animatable(1f) }
+    LaunchedEffect(Unit) {
+        if (reduced) return@LaunchedEffect
+        pulse.animateTo(1.08f, Motion.enter(Motion.MEDIUM))
+        pulse.animateTo(1f, Motion.settle())
+    }
+    val headerCd = stringResource(if (risky) R.string.permission_header_risky_cd else R.string.permission_header)
     Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = pulse.value
+                scaleY = pulse.value
+            }
             .semantics(mergeDescendants = true) {
                 heading()
-                contentDescription = if (risky) "Permiso, comando riesgoso" else "Permiso"
+                contentDescription = headerCd
             },
     ) {
         Text(
-            text = "PERMISO",
+            text = stringResource(R.string.permission_header).uppercase(),
             color = PermissionColors.waiting,
             fontFamily = MonoFamily,
             fontSize = 12.sp,
@@ -275,7 +304,7 @@ private fun PermissionHeader(risky: Boolean) {
         )
         if (risky) {
             Text(
-                text = "RIESGO",
+                text = stringResource(R.string.permission_risk).uppercase(),
                 color = PermissionColors.danger,
                 fontFamily = MonoFamily,
                 fontSize = 12.sp,
@@ -291,6 +320,7 @@ private fun PermissionHeader(risky: Boolean) {
 
 @Composable
 private fun CommandBox(command: String) {
+    val commandCd = stringResource(R.string.permission_command_cd, command)
     // Full text, no maxLines: the user must be able to read every character
     // of what they are approving. The list scrolls instead.
     Box(
@@ -299,7 +329,7 @@ private fun CommandBox(command: String) {
             .background(PermissionColors.surface, RoundedCornerShape(8.dp))
             .border(BorderStroke(1.dp, PermissionColors.outline), RoundedCornerShape(8.dp))
             .padding(horizontal = 10.dp, vertical = 8.dp)
-            .semantics(mergeDescendants = true) { contentDescription = "Comando: $command" },
+            .semantics(mergeDescendants = true) { contentDescription = commandCd },
     ) {
         Text(
             text = command,
@@ -315,9 +345,14 @@ private fun CommandBox(command: String) {
 
 @Composable
 private fun DenyButton(enabled: Boolean, onClick: () -> Unit) {
+    val denyCd = stringResource(R.string.permission_deny_cd)
+    val disabledState = stringResource(R.string.permission_disabled)
+    val source = remember { MutableInteractionSource() }
+    val scale by animatePressScale(source)
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
+        interactionSource = source,
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = PermissionColors.danger,
             disabledContentColor = PermissionColors.disabled,
@@ -326,13 +361,17 @@ private fun DenyButton(enabled: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .height(52.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .semantics {
-                contentDescription = "Rechazar comando"
-                if (!enabled) stateDescription = "Desactivado"
+                contentDescription = denyCd
+                if (!enabled) stateDescription = disabledState
             },
     ) {
         Text(
-            text = "Rechazar",
+            text = stringResource(R.string.permission_deny),
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
             textAlign = TextAlign.Center,
@@ -350,6 +389,9 @@ private fun AllowEdgeButton(
     onAccessibleHoldConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val allowCd = stringResource(if (risky) R.string.permission_allow_hold_cd else R.string.permission_allow_cd)
+    val allowLabel = stringResource(R.string.permission_allow_cd)
+    val disabledState = stringResource(R.string.permission_disabled)
     EdgeButton(
         onClick = onClick,
         enabled = enabled,
@@ -363,12 +405,12 @@ private fun AllowEdgeButton(
         ),
         border = if (enabled) null else BorderStroke(1.dp, PermissionColors.outline),
         modifier = modifier.semantics {
-            contentDescription = if (risky) "Permitir comando. Mantén presionado para confirmar" else "Permitir comando"
-            if (!enabled) stateDescription = "Desactivado"
+            contentDescription = allowCd
+            if (!enabled) stateDescription = disabledState
             // TalkBack's double tap never produces a press, so a hold can't be
             // timed. Expose the long-press action instead (double tap and hold).
             if (risky && enabled) {
-                onLongClick(label = "Permitir comando") {
+                onLongClick(label = allowLabel) {
                     onAccessibleHoldConfirm()
                     true
                 }
@@ -376,12 +418,54 @@ private fun AllowEdgeButton(
         },
     ) {
         Text(
-            text = if (risky) "Mantén para permitir" else "Permitir",
+            text = stringResource(if (risky) R.string.permission_allow_hold else R.string.permission_allow),
             fontSize = 15.sp,
             lineHeight = 18.sp,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
             maxLines = 2,
+        )
+    }
+}
+
+// "Respuesta enviada" with a check that pops in (scale settle + fade): the
+// distinct ending from the feedback contract. Visual only; the haptic for the
+// answer itself already fired on tap.
+@Composable
+private fun AnsweredConfirmation() {
+    val reduced = rememberReducedMotion()
+    val pop = remember { Animatable(if (reduced) 1f else 0f) }
+    LaunchedEffect(Unit) {
+        if (!reduced) pop.animateTo(1f, Motion.settle())
+    }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+    ) {
+        Icon(
+            imageVector = PixelIcons.Check,
+            contentDescription = null,
+            tint = StatusColors.running,
+            modifier = Modifier
+                .size(14.dp)
+                .graphicsLayer {
+                    val p = pop.value
+                    scaleX = 0.4f + 0.6f * p
+                    scaleY = 0.4f + 0.6f * p
+                    alpha = p.coerceIn(0f, 1f)
+                },
+        )
+        Text(
+            text = stringResource(R.string.permission_answered),
+            color = PermissionColors.textSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.graphicsLayer { alpha = pop.value.coerceIn(0f, 1f) },
         )
     }
 }

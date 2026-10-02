@@ -162,7 +162,7 @@ fun ConfirmClaimDialog(
 }
 
 // "ccwearos" rather than "/Users/.../CCWEAROS". Falls back to the raw cwd.
-private fun projectBasename(cwd: String): String {
+internal fun projectBasename(cwd: String): String {
     val trimmed = cwd.trimEnd('/')
     val slash = trimmed.lastIndexOf('/')
     return if (slash >= 0 && slash < trimmed.length - 1) {

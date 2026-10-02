@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:locale="es">
     <string name="app_name" translatable="false">CCWEAROS</string>
 
     <!-- Estado de Claude (Page 0, mascota, accesibilidad) -->
@@ -15,7 +15,7 @@
     <string name="action_continue">Seguir</string>
     <string name="action_stop">Detener</string>
     <string name="action_stop_cd">Detener. Mantén presionado para reiniciar el estado</string>
-    <string name="voice_prompt_ask">¿Qué le pregunto a Claude?</string>
+    <string name="voice_prompt_ask">¿Qué le digo a Claude?</string>
     <string name="voice_prompt_continue">Seguir la conversación</string>
     <string name="voice_prompt_reset">Nueva conversación</string>
     <string name="voice_unavailable">Este reloj no tiene reconocimiento de voz</string>
@@ -57,9 +57,6 @@
     <string name="time_yesterday">ayer</string>
     <string name="time_days">hace %1$d d</string>
 
-    <!-- Sin conexión -->
-    <string name="offline_title">Sin conexión con tu Mac</string>
-    <string name="offline_hint">Revisa que el daemon esté corriendo</string>
 
     <!-- Retomar sesión -->
     <string name="claim_title">Retomar sesión</string>
@@ -71,4 +68,49 @@
     <string name="claim_failed">No se pudo abrir</string>
     <string name="state_sending">Enviando</string>
     <string name="state_blocked">Necesita tu Mac</string>
+
+    <!-- Pantallas de bloqueo (BlockedScreen) -->
+    <string name="blocked_mac_offline_title">Tu Mac no responde</string>
+    <string name="blocked_mac_offline_body">Puede estar dormido o sin internet.</string>
+    <string name="blocked_mac_offline_action">Reintentar</string>
+    <string name="blocked_watch_offline_title">El reloj está sin conexión</string>
+    <string name="blocked_watch_offline_body">Tus acciones esperan hasta reconectar.</string>
+    <string name="blocked_watch_offline_action">Entendido</string>
+    <string name="blocked_crashed_title">Claude se cerró</string>
+    <string name="blocked_crashed_body">La tarea no terminó.</string>
+    <string name="blocked_crashed_action">Volver a intentar</string>
+    <string name="blocked_needs_mac_title">Claude necesita tu Mac</string>
+    <string name="blocked_needs_mac_trust_body">Hay que confiar en la carpeta %1$s en la Terminal. Desde el reloj no se puede.</string>
+    <string name="blocked_needs_mac_trust_body_no_cwd">Hay que confiar en la carpeta en la Terminal. Desde el reloj no se puede.</string>
+    <string name="blocked_needs_mac_login_body">Inicia sesión en Claude desde la Terminal de tu Mac.</string>
+    <string name="blocked_needs_mac_body">Resuélvelo en la Terminal de tu Mac.</string>
+    <string name="blocked_needs_mac_action">Entendido</string>
+    <string name="blocked_no_dictation_title">Este reloj no tiene dictado</string>
+    <string name="blocked_no_dictation_body">Instala el dictado de Google o usa una sugerencia.</string>
+    <string name="blocked_no_dictation_action">Ver sugerencias</string>
+    <string name="blocked_close">Cerrar</string>
+
+    <!-- Inicio de sesión -->
+    <string name="signin_error_title">No pude conectarme</string>
+    <string name="signin_error_body">Revisa la conexión del reloj e intenta de nuevo.</string>
+    <string name="signin_error_action">Reintentar</string>
+
+    <!-- Aviso de resultado -->
+    <string name="banner_dismiss_label">Cerrar aviso</string>
+
+    <!-- Permiso -->
+    <string name="permission_header">Permiso</string>
+    <string name="permission_header_risky_cd">Permiso, comando riesgoso</string>
+    <string name="permission_risk">Riesgo</string>
+    <string name="permission_fallback">Claude necesita tu permiso.</string>
+    <string name="permission_offline">Sin conexión: no se puede responder</string>
+    <string name="permission_answered">Respuesta enviada</string>
+    <string name="permission_command_cd">Comando: %1$s</string>
+    <string name="permission_deny">Rechazar</string>
+    <string name="permission_deny_cd">Rechazar comando</string>
+    <string name="permission_allow">Permitir</string>
+    <string name="permission_allow_cd">Permitir comando</string>
+    <string name="permission_allow_hold">Mantén para permitir</string>
+    <string name="permission_allow_hold_cd">Permitir comando. Mantén presionado para confirmar</string>
+    <string name="permission_disabled">Desactivado</string>
 </resources>
