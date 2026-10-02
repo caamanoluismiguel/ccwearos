@@ -275,7 +275,7 @@ Two ways the watch sees Mac sessions:
    - `/ccwearos` — marks this session as bridged. The hook now publishes every pending tool to `/permissionPrompt` and waits up to 55s for the watch's Allow/Deny. If the watch doesn't answer, the hook returns `ask` and Claude falls back to its normal Terminal permission prompt.
    - `/ccwearos-off` — clears the bridge. Subsequent tool calls go through Claude's default flow.
 
-   While `kind="hook"` is active, the daemon's `watchCommands` handler YIELDS — it sees the watch's `/command` write but doesn't consume it, so the hook gets the reply. Voice prompts (Page 1 of the watch) are still gated off.
+   While `kind="hook"` is active, the daemon's `watchCommands` handler YIELDS — it sees the watch's `/command` write but doesn't consume it, so the hook gets the reply. Voice prompts (Inicio) are still gated off.
 
    Watch's Inicio SharedSessionBlock text differentiates the two kinds:
    - `kind="wrapper-pty"` (cc / takeover) → "📟 sesión compartida · activa en tu Mac · cc"
@@ -321,7 +321,7 @@ Spanish only (es-CO forced via `LocaleManager` + `res/xml/locales_config.xml`; t
 
 1. **Context note** — tells Claude he IS running on the user's macOS via pty with Bash. Without this, imperative voice commands like "abre Final Cut Pro" trigger a "I have no desktop access" refusal even though the Bash tool can run `open -a "Final Cut Pro"`. Bilingual (es/en) per the prompt language heuristic.
 2. **Response format directive** — primera línea `**TL;DR:**` (≤18 palabras) + opcionalmente detalles. Only when no tools are needed.
-3. **Followups directive** — ALWAYS end with `Sugerencias:` / `Followups:` + 2-3 short bullets. Parsed by `extractFollowups()` and surfaced as Page 4 chips.
+3. **Followups directive** — ALWAYS end with `Sugerencias:` / `Followups:` + 2-3 short bullets. Parsed by `extractFollowups()` and surfaced as chips at the end of Resultado.
 
 The prefix is appended with `PROMPT_END_MARKER` so the parser can slice off everything before Claude's actual response.
 
