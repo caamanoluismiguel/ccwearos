@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Canales -->
+    <string name="notif_channel_permissions">Permisos</string>
+    <string name="notif_channel_permissions_desc">Avisa cuando Claude necesita tu permiso para continuar.</string>
+    <string name="notif_channel_results">Resultados</string>
+    <string name="notif_channel_results_desc">Avisa cuando Claude termina una tarea.</string>
+    <string name="notif_channel_mac">Tu Mac</string>
+    <string name="notif_channel_mac_desc">Avisa cuando Claude necesita que hagas algo en tu Mac.</string>
+
+    <!-- Permiso -->
+    <string name="notif_permission_title">Claude pide permiso</string>
+    <string name="notif_permission_fallback">Revisa el permiso en la app</string>
+    <string name="notif_action_allow">Permitir</string>
+    <string name="notif_action_deny">Rechazar</string>
+    <string name="notif_action_open">Abrir</string>
+    <string name="notif_allowed">Permitido ✓</string>
+    <string name="notif_denied">Rechazado</string>
+    <string name="notif_send_failed">No se pudo enviar tu respuesta.</string>
+    <string name="notif_offline">Sin conexión. Abre la app para responder.</string>
+    <string name="notif_open_to_allow">Este permiso se revisa en la app.</string>
+
+    <!-- Claude terminó -->
+    <string name="notif_done_title">Claude terminó</string>
+    <string name="notif_done_ok">Listo</string>
+    <string name="notif_done_ok_headline">Listo: %1$s</string>
+    <string name="notif_done_failed">Algo falló</string>
+
+    <!-- Bloqueo en el Mac -->
+    <string name="notif_blocked_title">Claude necesita tu Mac</string>
+    <string name="notif_blocked_fallback">Revisa tu Mac para seguir.</string>
+
+    <!-- Actividad en curso (servicio en primer plano) -->
+    <string name="ongoing_no_connection">Sin conexión</string>
+    <string name="ongoing_awaiting">Esperando permiso</string>
+    <string name="ongoing_blocked">Claude necesita tu Mac</string>
+    <string name="ongoing_running">Trabajando…</string>
+    <string name="ongoing_mac_offline">Tu Mac no responde</string>
+    <string name="ongoing_connected">Conectado a tu Mac</string>
+</resources>

@@ -1,6 +1,8 @@
 package com.caamano.ccwearos.notifications
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -15,7 +17,7 @@ import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.PermissionSnapshot
 import com.caamano.ccwearos.data.WrapperStatus
 import com.caamano.ccwearos.presentation.Haptics
-import com.caamano.ccwearos.presentation.MainActivity
+import com.caamano.ccwearos.tile.RiskClassifier
 
 /**
  * Heads-up notification for a pending permission prompt, so a prompt that
@@ -24,12 +26,19 @@ import com.caamano.ccwearos.presentation.MainActivity
  *   • the foreground service's live RTDB listener;
  *   • an FCM wake, which reads the state once (the FGS may be dead).
  *
+ * Title "Claude pide permiso", body `Herramienta · objetivo`, BigText with the
+ * full prompt. Permitir / Rechazar only for prompts the risk classifier calls
+ * safe; a risky one only gets "Abrir" (never one-tap allow a risky command
+ * from a notification). After an action the same notification turns into a
+ * short silent confirmation ("Permitido ✓" / "Rechazado") for ~2s.
+ *
  * While MainActivity is visible the PermissionScreen owns the prompt, so the
  * notification is withheld (and cancelled) to avoid a double buzz.
  */
 object PermissionNotifier {
     const val CHANNEL_ID = "ccwearos_permisos"
     const val NOTIFICATION_ID = 2
+    const val CONFIRMATION_MS = 2_000L
     private const val TAG = "ccwearos-notif"
 
     // Last prompt id we buzzed for: each prompt vibrates once, even if the
@@ -37,20 +46,26 @@ object PermissionNotifier {
     private var lastBuzzedId: String? = null
     private var postedId: String? = null
 
+    // Prompt id whose "Permitido ✓" / "Rechazado" confirmation is showing.
+    // While set, the wrapper clearing that prompt must not cancel it early.
+    private var confirmingId: String? = null
+
+    /** Creates every app notification channel (permission, results, Mac). Idempotent. */
     fun createChannel(context: Context) {
-        val channel = NotificationChannel(
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        val permissions = NotificationChannel(
             CHANNEL_ID,
-            "Permisos",
+            context.getString(R.string.notif_channel_permissions),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "Avisa cuando Claude necesita tu permiso para continuar."
+            description = context.getString(R.string.notif_channel_permissions_desc)
             // The vibration comes from Haptics.permission (same pattern as the
             // in-app screen); the channel's own would double it.
             enableVibration(false)
             setShowBadge(true)
         }
-        context.getSystemService(NotificationManager::class.java)
-            ?.createNotificationChannel(channel)
+        nm.createNotificationChannel(permissions)
+        RunNotifier.createChannels(context, nm)
     }
 
     @Synchronized
@@ -61,7 +76,8 @@ object PermissionNotifier {
             !prompt.isNullOrBlank() && id != null
         if (!pending) {
             lastBuzzedId = null
-            cancel(context)
+            // The answered prompt was just cleared; its confirmation ends on its own timer.
+            if (confirmingId == null) cancel(context)
             return
         }
         if (appVisible) {
@@ -70,8 +86,10 @@ object PermissionNotifier {
             cancel(context)
             return
         }
-        if (postedId == id) return
-        post(context, prompt!!, id!!)
+        // Already posted, or just answered and waiting for the wrapper to clear it.
+        if (postedId == id || confirmingId == id) return
+        if (!post(context, prompt!!, id!!)) return
+        confirmingId = null
         if (lastBuzzedId != id) {
             lastBuzzedId = id
             runCatching { Haptics.permission(context) }
@@ -81,41 +99,81 @@ object PermissionNotifier {
     @Synchronized
     fun cancel(context: Context) {
         postedId = null
+        confirmingId = null
         NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
     }
 
-    private fun post(context: Context, prompt: String, promptId: String) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.w(TAG, "POST_NOTIFICATIONS not granted; prompt notification skipped")
-            return
-        }
+    /** Swaps the prompt notification for a silent "Permitido ✓" / "Rechazado". */
+    @Synchronized
+    fun showConfirmation(context: Context, promptId: String, allowed: Boolean) {
+        postedId = null
+        confirmingId = promptId
+        val text = context.getString(if (allowed) R.string.notif_allowed else R.string.notif_denied)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(text)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .build()
+        notify(context, notification)
+    }
+
+    /** Ends the confirmation for [promptId], unless a newer prompt replaced it. */
+    @Synchronized
+    fun endConfirmation(context: Context, promptId: String) {
+        if (confirmingId != promptId) return
+        confirmingId = null
+        if (postedId == null) NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+    }
+
+    private fun post(context: Context, prompt: String, promptId: String): Boolean {
+        val summary = NotificationText.promptSummary(prompt)
+            ?: context.getString(R.string.notif_permission_fallback)
         val open = PendingIntent.getActivity(
             context,
             REQ_OPEN,
-            Intent(context, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            DeepLinks.intent(context),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Claude necesita permiso")
-            .setContentText(prompt)
+            .setContentTitle(context.getString(R.string.notif_permission_title))
+            .setContentText(summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(prompt))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setOnlyAlertOnce(true)
             .setAutoCancel(true)
             .setContentIntent(open)
-            .addAction(0, "Permitir", actionIntent(context, PermissionActionReceiver.ACTION_ALLOW, promptId, REQ_ALLOW))
-            .addAction(0, "Rechazar", actionIntent(context, PermissionActionReceiver.ACTION_DENY, promptId, REQ_DENY))
-            .build()
-        try {
+        if (RiskClassifier.isRisky(prompt)) {
+            builder.addAction(0, context.getString(R.string.notif_action_open), open)
+        } else {
+            builder
+                .addAction(0, context.getString(R.string.notif_action_allow), actionIntent(context, PermissionActionReceiver.ACTION_ALLOW, promptId, REQ_ALLOW))
+                .addAction(0, context.getString(R.string.notif_action_deny), actionIntent(context, PermissionActionReceiver.ACTION_DENY, promptId, REQ_DENY))
+        }
+        if (!notify(context, builder.build())) return false
+        postedId = promptId
+        return true
+    }
+
+    @SuppressLint("MissingPermission") // checked right above the notify call
+    private fun notify(context: Context, notification: Notification): Boolean {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "POST_NOTIFICATIONS not granted; permission notification skipped")
+            return false
+        }
+        return try {
             NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
-            postedId = promptId
+            true
         } catch (e: SecurityException) {
             Log.w(TAG, "notify refused: ${e.message}")
+            false
         }
     }
 
