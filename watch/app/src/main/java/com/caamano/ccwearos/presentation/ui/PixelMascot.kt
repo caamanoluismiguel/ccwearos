@@ -41,26 +41,32 @@ import kotlinx.coroutines.launch
  *  - Error:   still, X eyes.
  *  - Offline: still, grey body, closed eyes.
  */
-enum class MascotState { Idle, Running, Waiting, Done, Error, Offline }
+// Sending = prompt spoken, waiting for the Mac to pick it up.
+// Blocked = something only the Mac can fix (folder trust, login).
+enum class MascotState { Idle, Sending, Running, Waiting, Done, Error, Blocked, Offline }
 
 /** Human state word, shared by Page 0 and the mascot's contentDescription. */
 @StringRes
 fun MascotState.labelRes(): Int = when (this) {
     MascotState.Idle -> R.string.state_idle
+    MascotState.Sending -> R.string.state_sending
     MascotState.Running -> R.string.state_running
     MascotState.Waiting -> R.string.state_waiting
     MascotState.Done -> R.string.state_done
     MascotState.Error -> R.string.state_error
+    MascotState.Blocked -> R.string.state_blocked
     MascotState.Offline -> R.string.state_offline
 }
 
 /** Semantic colour of a state (status dot, gauge accents). */
 fun MascotState.statusColor(): Color = when (this) {
     MascotState.Idle -> StatusColors.idle
+    MascotState.Sending -> StatusColors.running
     MascotState.Running -> StatusColors.running
     MascotState.Waiting -> StatusColors.waiting
     MascotState.Done -> StatusColors.running
     MascotState.Error -> StatusColors.error
+    MascotState.Blocked -> StatusColors.waiting
     MascotState.Offline -> StatusColors.offline
 }
 
@@ -123,7 +129,7 @@ fun PixelMascot(
                     }
                 }
             }
-            MascotState.Running -> while (true) {
+            MascotState.Running, MascotState.Sending -> while (true) {
                 delay(300)
                 walkFrame = 1 - walkFrame
                 lift = if (walkFrame == 1) -1 else 0
@@ -140,7 +146,7 @@ fun PixelMascot(
                 lift = -1; delay(60)
                 lift = 0
             }
-            MascotState.Error, MascotState.Offline -> Unit
+            MascotState.Error, MascotState.Blocked, MascotState.Offline -> Unit
         }
     }
 

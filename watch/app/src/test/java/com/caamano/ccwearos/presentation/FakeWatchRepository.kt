@@ -1,9 +1,11 @@
 package com.caamano.ccwearos.presentation
 
+import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.ClaimResult
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.RecentSession
+import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
@@ -28,6 +30,9 @@ class FakeWatchRepository : WatchRepository {
     override val sharedSession = MutableStateFlow<SharedSessionMeta?>(null)
     override val recentSessions = MutableStateFlow<List<RecentSession>>(emptyList())
     override val claimResult = MutableStateFlow<ClaimResult?>(null)
+    override val blocker = MutableStateFlow<Blocker?>(null)
+    override val outcome = MutableStateFlow<RunOutcome?>(null)
+    override val conversationActive = MutableStateFlow(false)
 
     val commands = mutableListOf<Pair<String, String?>>()
     var failNextCommand = false

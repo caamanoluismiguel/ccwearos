@@ -92,6 +92,23 @@ object RtdbMappers {
         )
     }
 
+    fun blocker(raw: Any?): Blocker? {
+        val m = raw.asMap() ?: return null
+        val kind = when (m.str("kind")) {
+            "trust" -> BlockerKind.TRUST
+            "login" -> BlockerKind.LOGIN
+            "crash" -> BlockerKind.CRASH
+            "timeout" -> BlockerKind.TIMEOUT
+            else -> BlockerKind.OTHER
+        }
+        return Blocker(kind = kind, hint = m.str("hint") ?: "", cwd = m.str("cwd"), ts = m.long("ts"))
+    }
+
+    fun outcome(raw: Any?): RunOutcome? {
+        val m = raw.asMap() ?: return null
+        return RunOutcome(ok = m["ok"] as? Boolean ?: false, exitCode = m.long("exitCode"), ts = m.long("ts"))
+    }
+
     /** Children of a list-ish node, in the order given; non-matching entries dropped. */
     fun <T> list(children: Iterable<Any?>, item: (Any?) -> T?): List<T> =
         children.mapNotNull { runCatching { item(it) }.getOrNull() }

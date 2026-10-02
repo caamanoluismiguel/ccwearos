@@ -86,6 +86,32 @@ export interface RtdbRoot {
   // sessionId echoes the request so stale results (from a previous tap)
   // can be filtered client-side.
   claimResult: ClaimResult | null;
+  // Something only the Mac can resolve is blocking Claude (folder trust,
+  // login, crash, timeout). The watch shows a designed "Claude necesita tu
+  // Mac" screen instead of raw text. Cleared when the next run starts.
+  blocker: Blocker | null;
+  // How the last voice run ended — the real exit status, so the watch's
+  // ✓ / ✗ never has to guess from the response text. Cleared on run start.
+  outcome: RunOutcome | null;
+  // True while voice prompts continue a thread (--continue); false/null after
+  // a reset. Lets the watch label its button "Seguir" vs "Preguntar" even
+  // after its process was killed.
+  conversationActive: boolean | null;
+}
+
+export type BlockerKind = "trust" | "login" | "crash" | "timeout" | "other";
+
+export interface Blocker {
+  kind: BlockerKind;
+  hint: string; // Spanish (tuteo), one or two sentences: what to do on the Mac
+  cwd?: string; // folder involved, when relevant (trust)
+  ts: number; // unix epoch ms
+}
+
+export interface RunOutcome {
+  ok: boolean;
+  exitCode: number;
+  ts: number; // unix epoch ms
 }
 
 export interface SharedSessionMeta {
@@ -202,4 +228,7 @@ export const RTDB_PATHS = {
   auditLog: "/auditLog",
   claimRequest: "/claimRequest",
   claimResult: "/claimResult",
+  blocker: "/blocker",
+  outcome: "/outcome",
+  conversationActive: "/conversationActive",
 } as const;

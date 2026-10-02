@@ -76,6 +76,16 @@ object Haptics {
         longArrayOf(0, 20),
     )
 
+    /** The Mac picked up the prompt: a soft double tick ("recibido"). */
+    fun sent(context: Context) = play(
+        context,
+        listOf(
+            VibrationEffect.Composition.PRIMITIVE_TICK to 0.6f,
+            VibrationEffect.Composition.PRIMITIVE_TICK to 0.9f,
+        ),
+        longArrayOf(0, 15, 60, 20),
+    )
+
     /** Hold-to-confirm progress step (fired every 25% of the hold). */
     fun holdStep(context: Context) = play(
         context,

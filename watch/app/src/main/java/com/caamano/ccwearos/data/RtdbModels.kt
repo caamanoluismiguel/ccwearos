@@ -140,3 +140,22 @@ data class ClaimResult(
     val sessionId: String = "",
     val ts: Long = 0,
 )
+
+// Mirrors wrapper/src/types/schema.ts Blocker. Something only the Mac can
+// resolve (folder trust, login, crash, timeout); the watch shows a designed
+// "Claude necesita tu Mac" screen, never raw text.
+data class Blocker(
+    val kind: BlockerKind = BlockerKind.OTHER,
+    val hint: String = "",
+    val cwd: String? = null,
+    val ts: Long = 0,
+)
+
+enum class BlockerKind { TRUST, LOGIN, CRASH, TIMEOUT, OTHER }
+
+// Mirrors RunOutcome: the real exit status of the last voice run.
+data class RunOutcome(
+    val ok: Boolean = false,
+    val exitCode: Long = 0,
+    val ts: Long = 0,
+)
