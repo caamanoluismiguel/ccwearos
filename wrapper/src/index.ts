@@ -15,10 +15,13 @@ import {
   registerCrashCleanup,
   sendFcmWake,
   setActivity,
+  setBlocker,
   setClaimResult,
   setClaudeStatus,
+  setConversationActive,
   setFollowups,
   setHeadline,
+  setOutcome,
   setPermissionPrompt,
   setResponse,
   setStatus,
@@ -37,7 +40,13 @@ import type { SharedSessionMeta } from "./types/schema.js";
 import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
-import { finalizeVoiceOutcome } from "./voice-outcome.js";
+import {
+  clearVoiceRunEnd,
+  nextHasPriorSession,
+  publishVoiceRunEnd,
+  voiceBlocker,
+  type VoiceRunSinks,
+} from "./voice-outcome.js";
 import { handleClaimRequest, spawnAsync } from "./claim-handler.js";
 import { resolveSessionCwd } from "./claim-cwd.js";
 import {
@@ -228,6 +237,21 @@ async function runDaemon(): Promise<void> {
   // Set when the watch's Stop killed the current run (reset per prompt), so a
   // user-cancelled run isn't reported as "Claude terminó con un error".
   let voiceStopRequested = false;
+  // RTDB writers for the run's start/end contract (/blocker, /outcome + the
+  // headline/response fallback) — see src/voice-outcome.ts.
+  const voiceSinks: VoiceRunSinks = {
+    setBlocker,
+    setOutcome,
+    setResponse,
+    setTaskKind,
+    setHeadline,
+    setFollowups,
+  };
+  // Fresh daemon = no thread to continue (hasPriorSession starts false).
+  // Unlike /blocker and /outcome this path survives clearStaleState.
+  await setConversationActive(false).catch((e) =>
+    console.error("[ccwearos] setConversationActive failed:", e),
+  );
   // One-time id of the voice run's permission prompt currently on the watch.
   const activePrompt = new ActivePrompt();
   // Currently-shared session (from `cc` / scripts/share.ts), if any. While
@@ -515,12 +539,15 @@ async function runDaemon(): Promise<void> {
       await setTaskKind(null);
       await setHeadline(null);
       await setFollowups(null);
+      await clearVoiceRunEnd(voiceSinks);
 
-      const shouldContinue = hasPriorSession && !isResetPrompt(p.text);
-      if (!shouldContinue && hasPriorSession) {
+      const reset = hasPriorSession && isResetPrompt(p.text);
+      const shouldContinue = hasPriorSession && !reset;
+      if (reset) {
         console.log(
           "[ccwearos] Reset phrase detected — starting fresh conversation.",
         );
+        await setConversationActive(false);
       }
 
       // Wrap the user prompt so Claude opens info answers with **TL;DR:**.
@@ -564,46 +591,49 @@ async function runDaemon(): Promise<void> {
       const result = await activeRunner.done;
       activeRunner = null;
 
-      if (result.exitCode === 0 && !result.blocked) hasPriorSession = true;
+      hasPriorSession = nextHasPriorSession({
+        hadPrior: hasPriorSession,
+        reset,
+        exitCode: result.exitCode,
+        blocked: result.blocked !== null,
+      });
+      await setConversationActive(hasPriorSession);
 
-      // Blocked on a trust/login dialog, or exited with an error and nothing
-      // readable: publish a clean explanation, never the raw TUI text.
-      const special = finalizeVoiceOutcome({
+      // /blocker (trust/login dialog, timeout, crash) + /outcome. Blocked or
+      // crashed runs also get a clean headline/response as the fallback for
+      // older watch builds — never the raw TUI text.
+      const facts = {
         blocked: result.blocked,
         exitCode: result.exitCode,
         response: lastResponseSeen,
         cwd: config.voiceCwd,
+        timedOut: result.timedOut,
         stopped: voiceStopRequested,
+      };
+      let summary = "";
+      const replaced = await publishVoiceRunEnd(facts, voiceSinks, async () => {
+        // Classify the run and surface either a TL;DR headline (info) or
+        // leave the tool chips alone (action). Race-safe: only after done.
+        const kind = classifyTaskKind(observedTools, lastResponseSeen.length);
+        await setTaskKind(kind);
+        if (kind === "info") {
+          const tldr = extractTldr(lastResponseSeen);
+          if (tldr) await setHeadline(tldr);
+        }
+        // Followups: contextual suggestions Claude appended to the response.
+        // The watch's Page 4 renders these as tappable chips. Falls back to
+        // null when Claude didn't include the block (tool-heavy runs usually
+        // skip it, by design of the prompt prefix).
+        const followups = extractFollowups(lastResponseSeen);
+        await setFollowups(followups.length > 0 ? followups : null);
+        summary = `kind=${kind} tools=${observedTools.length} followups=${followups.length}`;
       });
-      if (special) {
-        await setResponse(special.response);
-        await setTaskKind(special.taskKind);
-        await setHeadline(special.headline);
-        await setFollowups(special.followups);
-        console.log(
-          `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} blocked=${result.blocked?.kind ?? "no"} headline=${JSON.stringify(special.headline)} continue-next=${hasPriorSession}`,
-        );
-        return;
+      if (replaced) {
+        summary = `blocker=${voiceBlocker(facts)?.kind ?? "none"} dialog=${result.blocked?.kind ?? "none"}`;
       }
-
-      // Classify the run and surface either a TL;DR headline (info) or leave
-      // the tool chips alone (action). Race-safe: only set after done.
-      const kind = classifyTaskKind(observedTools, lastResponseSeen.length);
-      await setTaskKind(kind);
-      if (kind === "info") {
-        const tldr = extractTldr(lastResponseSeen);
-        if (tldr) await setHeadline(tldr);
-      }
-
-      // Followups: contextual suggestions Claude appended to the response.
-      // The watch's Page 4 renders these as tappable chips. Falls back to
-      // null when Claude didn't include the block (tool-heavy runs usually
-      // skip it, by design of the prompt prefix).
-      const followups = extractFollowups(lastResponseSeen);
-      await setFollowups(followups.length > 0 ? followups : null);
 
       console.log(
-        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} kind=${kind} tools=${observedTools.length} followups=${followups.length} continue-next=${hasPriorSession}`,
+        `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} ${summary} timedOut=${result.timedOut} continue-next=${hasPriorSession}`,
       );
     } catch (e) {
       console.error("[ccwearos] Voice run failed:", e);

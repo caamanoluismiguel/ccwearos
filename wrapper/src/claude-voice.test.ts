@@ -119,6 +119,24 @@ describe("runClaudeForVoice", () => {
     expect(o?.response).not.toMatch(/\x1b|❯|Esc to cancel/);
   });
 
+  it("stops a run that exceeds its time cap and reports timedOut", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const runner = runClaudeForVoice("PROMPT", callbacks(), {
+      cwd: "/tmp/v",
+      maxRunMs: 60_000,
+    });
+    // Keep output flowing so idle detection never ends the run first.
+    for (let t = 0; t < 70; t++) {
+      fake.emit(`tick ${t}\r\n`);
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    const result = await runner.done;
+    expect(fake.write).toHaveBeenCalledWith("/exit\r");
+    expect(fake.kill).toHaveBeenCalled();
+    expect(result.timedOut).toBe(true);
+    expect(result.blocked).toBeNull();
+  });
+
   it("normal run: types the prompt after warm-up and reports blocked=null", async () => {
     const { runClaudeForVoice } = await import("./claude-voice.js");
     const cb = callbacks();
@@ -131,6 +149,7 @@ describe("runClaudeForVoice", () => {
     fake.exit(0);
     const result = await runner.done;
     expect(result.blocked).toBeNull();
+    expect(result.timedOut).toBe(false);
     expect(cb.onResponse).toHaveBeenLastCalledWith(
       expect.stringContaining("Listo, moví 12 archivos."),
     );

@@ -3,6 +3,7 @@ import admin from "firebase-admin";
 import { config, loadServiceAccount } from "./config.js";
 import type {
   AuditEntry,
+  Blocker,
   ClaimResult,
   ClaudeStatus,
   Metrics,
@@ -10,6 +11,7 @@ import type {
   PendingCommand,
   PendingPrompt,
   RecentSession,
+  RunOutcome,
   SharedSessionMeta,
   TaskKind,
   ToolEvent,
@@ -96,6 +98,25 @@ export async function setFollowups(items: string[] | null): Promise<void> {
   await db()
     .ref("/followups")
     .set(items && items.length > 0 ? items : null);
+}
+
+// Something only the Mac can resolve (trust, login, crash, timeout). Cleared
+// at the start of every voice run.
+export async function setBlocker(blocker: Blocker | null): Promise<void> {
+  await db().ref("/blocker").set(blocker);
+}
+
+// Real end state of the last voice run. Cleared at the start of every run.
+export async function setOutcome(outcome: RunOutcome | null): Promise<void> {
+  await db().ref("/outcome").set(outcome);
+}
+
+// Whether the NEXT voice prompt continues the thread (--continue). Survives
+// crashes on purpose: not part of clearStaleState / registerCrashCleanup.
+export async function setConversationActive(
+  active: boolean | null,
+): Promise<void> {
+  await db().ref("/conversationActive").set(active);
 }
 
 export async function setSharedSession(
@@ -189,6 +210,10 @@ export async function clearStaleState(
       claudeStatus: null,
       command: null,
       prompt: null,
+      blocker: null,
+      outcome: null,
+      // conversationActive deliberately kept — it must survive restarts of
+      // the watch view; the daemon resets it itself on startup.
     });
   } catch (e) {
     console.error("[firebase] clearStaleState failed:", (e as Error).message);
@@ -226,6 +251,8 @@ export async function registerCrashCleanup(paths: {
         toolEvents: null,
         followups: null,
         command: null,
+        blocker: null,
+        outcome: null,
       }),
     );
   }

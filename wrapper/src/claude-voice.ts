@@ -78,6 +78,8 @@ export interface VoiceRunResult {
   // must not be answered from the watch (trust / auth / other). The caller
   // publishes a clean explanation instead of the raw TUI text.
   blocked: BlockingDialog | null;
+  // True when the run hit VOICE_MAX_RUN_MS and was stopped.
+  timedOut: boolean;
 }
 
 export interface VoiceRunner {
@@ -100,11 +102,19 @@ const IDLE_DETECT_MS = 30_000;
 // the trailing \r as submit (vs. just another newline in the buffer).
 const SUBMIT_DELAY_MS = 300;
 const RESPONSE_BUFFER_MAX = 16 * 1024;
+// Hard cap for one voice run (tool-heavy tasks included). Past this the run
+// is stopped and reported as a "timeout" blocker.
+export const VOICE_MAX_RUN_MS = 15 * 60_000;
 
 export function runClaudeForVoice(
   prompt: string,
   cb: VoiceCallbacks,
-  opts: { continueSession?: boolean; userEcho?: string; cwd?: string } = {},
+  opts: {
+    continueSession?: boolean;
+    userEcho?: string;
+    cwd?: string;
+    maxRunMs?: number;
+  } = {},
 ): VoiceRunner {
   const continueArg = opts.continueSession ? " --continue" : "";
   const cmd = `${config.claudeCliCommand}${continueArg}`;
@@ -129,7 +139,12 @@ export function runClaudeForVoice(
     return {
       send: () => {},
       kill: () => {},
-      done: Promise.resolve({ exitCode: null, rawBytes: 0, blocked: null }),
+      done: Promise.resolve({
+        exitCode: null,
+        rawBytes: 0,
+        blocked: null,
+        timedOut: false,
+      }),
     };
   }
 
@@ -140,6 +155,8 @@ export function runClaudeForVoice(
   const promptTracker = new PermissionPromptTracker();
   const dialogTracker = new BlockingDialogTracker();
   let blocked: BlockingDialog | null = null;
+  let timedOut = false;
+  const maxRunMs = opts.maxRunMs ?? VOICE_MAX_RUN_MS;
   let lastActivity: string | null = null;
   let lastTask: string | null = null;
   const accumulatedStatus: ClaudeStatus = {
@@ -256,12 +273,35 @@ export function runClaudeForVoice(
     }
   }, 2000);
 
+  // Hard cap on the whole run. Idle detection ends normal runs; this catches
+  // a run that keeps producing output (redraw loop, endless tool chain).
+  const maxRunTimer = setTimeout(() => {
+    timedOut = true;
+    console.warn(
+      `[voice] Run exceeded ${Math.round(maxRunMs / 1000)}s — stopping it.`,
+    );
+    clearInterval(idleCheck);
+    try {
+      pty.write("/exit\r");
+    } catch {
+      /* ignore */
+    }
+    setTimeout(() => {
+      try {
+        pty.kill();
+      } catch {
+        /* ignore */
+      }
+    }, 1500);
+  }, maxRunMs);
+
   // Trust / login / unknown confirm dialog: a security decision that belongs
   // at the Mac, not on the wrist. Don't answer it — stop the run and let the
   // caller publish an explanation (see voice-outcome.ts).
   const abortOnDialog = (d: BlockingDialog): void => {
     blocked = d;
     clearTimeout(warmupTimer);
+    clearTimeout(maxRunTimer);
     clearInterval(idleCheck);
     if (responseTimer) {
       clearTimeout(responseTimer);
@@ -381,6 +421,7 @@ export function runClaudeForVoice(
 
   pty.onExit(({ exitCode }) => {
     clearTimeout(warmupTimer);
+    clearTimeout(maxRunTimer);
     clearInterval(idleCheck);
     if (metricsTimer) clearTimeout(metricsTimer);
     if (responseTimer) clearTimeout(responseTimer);
@@ -400,7 +441,7 @@ export function runClaudeForVoice(
       }
     }
     cb.onActivity(null);
-    resolveDone({ exitCode, rawBytes: totalBytes, blocked });
+    resolveDone({ exitCode, rawBytes: totalBytes, blocked, timedOut });
   });
 
   return {

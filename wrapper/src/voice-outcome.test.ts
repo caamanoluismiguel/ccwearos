@@ -5,9 +5,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveVoiceCwd } from "./config.js";
 import {
   blockedDialogOutcome,
+  clearVoiceRunEnd,
   finalizeVoiceOutcome,
+  nextHasPriorSession,
+  publishVoiceRunEnd,
   VOICE_ERROR_HEADLINE,
+  VOICE_TIMEOUT_HEADLINE,
   VOICE_TRUST_HEADLINE,
+  voiceBlocker,
+  voiceRunOutcome,
+  type VoiceRunSinks,
 } from "./voice-outcome.js";
 
 const HOME = "/Users/me";
@@ -78,6 +85,17 @@ describe("finalizeVoiceOutcome", () => {
     }
   });
 
+  it("timed-out run with nothing readable → timeout headline", () => {
+    const o = finalizeVoiceOutcome({
+      ...base,
+      blocked: null,
+      exitCode: 1,
+      response: "",
+      timedOut: true,
+    });
+    expect(o?.headline).toBe(VOICE_TIMEOUT_HEADLINE);
+  });
+
   it("normal path (null) for a real answer or a user Stop", () => {
     expect(
       finalizeVoiceOutcome({
@@ -99,6 +117,183 @@ describe("finalizeVoiceOutcome", () => {
         stopped: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe("voiceBlocker (/blocker contract)", () => {
+  const base = { cwd: "/Users/me/.ccwearos/voice", home: HOME, response: "" };
+
+  it("maps dialogs: trust (with cwd), auth → login, other", () => {
+    const trust = voiceBlocker({
+      ...base,
+      blocked: { kind: "trust", detail: "" },
+      exitCode: 1,
+    });
+    expect(trust?.kind).toBe("trust");
+    expect(trust?.cwd).toBe("/Users/me/.ccwearos/voice");
+    expect(trust?.hint).toContain("Yes, I trust this folder");
+    const login = voiceBlocker({
+      ...base,
+      blocked: { kind: "auth", detail: "Invalid API key" },
+      exitCode: 1,
+    });
+    expect(login).toEqual({ kind: "login", hint: expect.stringContaining("/login") });
+    expect(
+      voiceBlocker({ ...base, blocked: { kind: "other", detail: "X" }, exitCode: 1 })
+        ?.kind,
+    ).toBe("other");
+  });
+
+  it("timeout beats crash; crash needs non-zero exit and no readable text", () => {
+    expect(
+      voiceBlocker({ ...base, blocked: null, exitCode: 1, timedOut: true })?.kind,
+    ).toBe("timeout");
+    expect(voiceBlocker({ ...base, blocked: null, exitCode: 2 })?.kind).toBe(
+      "crash",
+    );
+    expect(
+      voiceBlocker({ ...base, blocked: null, exitCode: 2, response: "Hecho." }),
+    ).toBeNull();
+    expect(
+      voiceBlocker({ ...base, blocked: null, exitCode: 1, stopped: true }),
+    ).toBeNull();
+    expect(voiceBlocker({ ...base, blocked: null, exitCode: 0 })).toBeNull();
+  });
+});
+
+describe("voiceRunOutcome (/outcome contract)", () => {
+  const base = { cwd: "/tmp/v", home: HOME, response: "ok listo" };
+  it("ok only for exit 0 without a blocker; null exit → -1", () => {
+    expect(voiceRunOutcome({ ...base, blocked: null, exitCode: 0 })).toEqual({
+      ok: true,
+      exitCode: 0,
+    });
+    expect(
+      voiceRunOutcome({
+        ...base,
+        blocked: { kind: "trust", detail: "" },
+        exitCode: 0,
+      }).ok,
+    ).toBe(false);
+    expect(voiceRunOutcome({ ...base, blocked: null, exitCode: 1 }).ok).toBe(
+      false,
+    );
+    expect(
+      voiceRunOutcome({ ...base, blocked: null, exitCode: null }).exitCode,
+    ).toBe(-1);
+  });
+});
+
+describe("nextHasPriorSession (/conversationActive)", () => {
+  it("a clean run starts or extends a thread", () => {
+    expect(
+      nextHasPriorSession({ hadPrior: false, reset: false, exitCode: 0, blocked: false }),
+    ).toBe(true);
+  });
+  it("a blocked or failed run keeps the previous state", () => {
+    expect(
+      nextHasPriorSession({ hadPrior: false, reset: false, exitCode: 0, blocked: true }),
+    ).toBe(false);
+    expect(
+      nextHasPriorSession({ hadPrior: true, reset: false, exitCode: 1, blocked: false }),
+    ).toBe(true);
+  });
+  it("a reset that failed still drops the old thread", () => {
+    expect(
+      nextHasPriorSession({ hadPrior: true, reset: true, exitCode: 1, blocked: false }),
+    ).toBe(false);
+  });
+});
+
+describe("clearVoiceRunEnd / publishVoiceRunEnd", () => {
+  function sinks() {
+    const calls: [string, unknown][] = [];
+    const rec =
+      (name: string) =>
+      async (v: unknown): Promise<void> => {
+        calls.push([name, v]);
+      };
+    const s: VoiceRunSinks = {
+      setBlocker: rec("blocker"),
+      setOutcome: rec("outcome"),
+      setResponse: rec("response"),
+      setTaskKind: rec("taskKind"),
+      setHeadline: rec("headline"),
+      setFollowups: rec("followups"),
+    };
+    return { s, calls };
+  }
+
+  it("run start clears /blocker and /outcome", async () => {
+    const { s, calls } = sinks();
+    await clearVoiceRunEnd(s);
+    expect(calls).toEqual([
+      ["blocker", null],
+      ["outcome", null],
+    ]);
+  });
+
+  it("blocked run: blocker, fallback text, outcome last; normal path skipped", async () => {
+    const { s, calls } = sinks();
+    let normal = false;
+    const replaced = await publishVoiceRunEnd(
+      {
+        blocked: { kind: "trust", detail: "" },
+        exitCode: 1,
+        response: "",
+        cwd: "/tmp/v",
+        home: HOME,
+      },
+      s,
+      async () => {
+        normal = true;
+      },
+      1234,
+    );
+    expect(replaced).toBe(true);
+    expect(normal).toBe(false);
+    expect(calls.map((c) => c[0])).toEqual([
+      "blocker",
+      "response",
+      "taskKind",
+      "headline",
+      "followups",
+      "outcome",
+    ]);
+    expect(calls[0]?.[1]).toMatchObject({ kind: "trust", cwd: "/tmp/v", ts: 1234 });
+    expect(calls.at(-1)?.[1]).toEqual({ ok: false, exitCode: 1, ts: 1234 });
+  });
+
+  it("clean run: no blocker, normal path, ok outcome", async () => {
+    const { s, calls } = sinks();
+    let normal = false;
+    const replaced = await publishVoiceRunEnd(
+      { blocked: null, exitCode: 0, response: "Listo", cwd: "/tmp/v", home: HOME },
+      s,
+      async () => {
+        normal = true;
+      },
+      5,
+    );
+    expect(replaced).toBe(false);
+    expect(normal).toBe(true);
+    expect(calls).toEqual([["outcome", { ok: true, exitCode: 0, ts: 5 }]]);
+  });
+
+  it("crash and timeout publish their blockers", async () => {
+    for (const [facts, kind] of [
+      [{ exitCode: 1 }, "crash"],
+      [{ exitCode: 1, timedOut: true }, "timeout"],
+    ] as const) {
+      const { s, calls } = sinks();
+      await publishVoiceRunEnd(
+        { blocked: null, response: "", cwd: "/tmp/v", home: HOME, ...facts },
+        s,
+        async () => {},
+      );
+      expect(calls[0]?.[0]).toBe("blocker");
+      expect((calls[0]?.[1] as { kind: string }).kind).toBe(kind);
+    }
   });
 });
 
