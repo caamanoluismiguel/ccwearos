@@ -2,12 +2,16 @@ package com.caamano.ccwearos.presentation.ui
 
 import android.animation.ValueAnimator
 import androidx.annotation.StringRes
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -15,11 +19,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.caamano.ccwearos.R
@@ -29,17 +32,25 @@ import com.caamano.ccwearos.presentation.theme.StatusColors
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.floor
+import kotlin.random.Random
 
 /**
  * What the mascot is telling you. The mascot is the single living status
- * indicator on the watch, so every state has its own motion + eyes:
+ * indicator on the watch, so every state has its own motion, eyes and (where
+ * it helps) a small pixel prop:
  *
- *  - Idle:    slow 4s breathe, blink every 6s.
- *  - Running: two-frame walk, 300ms per frame.
- *  - Waiting: 2px jump loop, "!" eyes (a permission needs you).
- *  - Done:    one hop, ✓ eyes.
- *  - Error:   still, X eyes.
- *  - Offline: still, grey body, closed eyes.
+ *  - Idle:    slow 4s breathe (1px), blink every ~6s (randomised, sometimes double).
+ *  - Sending: leans forward, signal arcs pulse outward above the head, 3 beats.
+ *  - Running: 4-frame walk (one step per 300ms) with pixel dust behind.
+ *  - Waiting: 2px hop loop, amber "!" above the head, eyes on you (catchlight).
+ *  - Done:    one hop, ✓ eyes for 1.2s, then settles back into Idle motion.
+ *  - Error:   X eyes, one damped shake (3 oscillations, 8dp max).
+ *  - Blocked: calm. Looks up at a small laptop with a "?", glances back at you.
+ *  - Offline: grey, still, eyes closed, a "z" drifts up every few seconds.
+ *
+ * State changes crossfade (no hard cut). With reduced motion every state is a
+ * single static frame that still reads correctly (✓, X, !, ?, z stay drawn).
  */
 // Sending = prompt spoken, waiting for the Mac to pick it up.
 // Blocked = something only the Mac can fix (folder trust, login).
@@ -77,12 +88,6 @@ fun WrapperStatus.toMascotState(): MascotState = when (this) {
     WrapperStatus.OFFLINE -> MascotState.Offline
 }
 
-// Grid: 16 columns × 15 rows. The top 3 rows are headroom for jumps/hops so
-// the sprite never clips; the body itself occupies rows 3..10, legs 11..13.
-private const val COLS = 16
-private const val ROWS = 15
-private const val HEADROOM = 3
-
 /** True when the user turned animations off (animator duration scale = 0). */
 @Composable
 fun rememberReducedMotion(): Boolean {
@@ -90,6 +95,11 @@ fun rememberReducedMotion(): Boolean {
     return remember { inPreview || !ValueAnimator.areAnimatorsEnabled() }
 }
 
+/**
+ * The pixel mascot. [size] is the footprint WIDTH; the height is
+ * `size * 18 / 16` because the top 7 grid rows are headroom for hops and the
+ * "!", "?", signal and "z" props, so nothing ever clips.
+ */
 @Composable
 fun PixelMascot(
     state: MascotState,
@@ -100,148 +110,331 @@ fun PixelMascot(
 ) {
     val reducedMotion = rememberReducedMotion()
     val shouldAnimate = animate && !reducedMotion
+    val description = stringResource(R.string.mascot_cd, stringResource(state.labelRes()))
 
-    // Whole-sprite vertical offset in grid pixels (negative = up).
-    var lift by remember { mutableIntStateOf(0) }
-    // Body-only offset (breathing squash onto the legs).
-    var breath by remember { mutableIntStateOf(0) }
-    var walkFrame by remember { mutableIntStateOf(0) }
-    var blinking by remember { mutableStateOf(false) }
-
-    // Pixel-snapped step animation: values change in whole grid pixels, which
-    // keeps the sprite crisp, and only the Canvas redraws (state is read in
-    // the draw lambda).
-    LaunchedEffect(state, shouldAnimate) {
-        lift = 0; breath = 0; walkFrame = 0; blinking = false
-        if (!shouldAnimate) return@LaunchedEffect
-        when (state) {
-            MascotState.Idle -> coroutineScope {
-                launch {
-                    while (true) {
-                        delay(2_000); breath = 1
-                        delay(2_000); breath = 0
-                    }
-                }
-                launch {
-                    while (true) {
-                        delay(6_000); blinking = true
-                        delay(140); blinking = false
-                    }
-                }
-            }
-            MascotState.Running, MascotState.Sending -> while (true) {
-                delay(300)
-                walkFrame = 1 - walkFrame
-                lift = if (walkFrame == 1) -1 else 0
-            }
-            MascotState.Waiting -> while (true) {
-                lift = -1; delay(70)
-                lift = -2; delay(160)
-                lift = -1; delay(70)
-                lift = 0; delay(700)
-            }
-            MascotState.Done -> {
-                lift = -1; delay(60)
-                lift = -3; delay(180)
-                lift = -1; delay(60)
-                lift = 0
-            }
-            MascotState.Error, MascotState.Blocked, MascotState.Offline -> Unit
-        }
-    }
-
-    val body = color ?: if (state == MascotState.Offline) StatusColors.offline else CcPalette.Coral
-    val eye = Color.Black
-    val description = stringResource(
-        R.string.mascot_cd,
-        stringResource(state.labelRes()),
-    )
-
-    Canvas(
+    Box(
         modifier = modifier
-            .size(width = size, height = size * ROWS / COLS)
-            .semantics { contentDescription = description },
+            .size(width = size, height = size * MascotGrid.ROWS / MascotGrid.COLS)
+            .clearAndSetSemantics { contentDescription = description },
     ) {
-        val p = this.size.width / COLS
-        drawMascot(
-            p = p,
-            state = state,
-            body = body,
-            eye = eye,
-            lift = lift,
-            breath = breath,
-            walkFrame = walkFrame,
-            blinking = blinking,
-        )
+        Crossfade(
+            targetState = state,
+            animationSpec = tween(if (shouldAnimate) Motion.MEDIUM else 0, easing = Motion.StandardEasing),
+            label = "mascot-state",
+        ) { s ->
+            MascotSprite(state = s, color = color, animate = shouldAnimate)
+        }
     }
 }
 
-private fun DrawScope.drawMascot(
-    p: Float,
+@Composable
+private fun MascotSprite(state: MascotState, color: Color?, animate: Boolean) {
+    var frame by remember(state) { mutableStateOf(MascotFrame.resting(state, animate)) }
+    val shake = remember(state) { Animatable(0f) }
+
+    LaunchedEffect(state, animate) {
+        if (!animate) return@LaunchedEffect
+        runMascotLoop(state, update = { frame = it(frame) }, shake = shake)
+    }
+
+    val body = color ?: if (state == MascotState.Offline) StatusColors.offline else CcPalette.Coral
+    val accent = if (state == MascotState.Waiting) StatusColors.waiting else body
+
+    Canvas(Modifier.fillMaxSize()) {
+        // Snap the grid pixel to whole device pixels so edges stay crisp
+        // (nearest-neighbour feel), and centre the sprite in the footprint.
+        val raw = size.width / MascotGrid.COLS
+        val p = if (raw >= 1f) floor(raw) else raw
+        val ox = (size.width - p * MascotGrid.COLS) / 2f + shake.value * density
+        val oy = (size.height - p * MascotGrid.ROWS) / 2f
+        for (px in mascotPixels(state, frame)) {
+            val c = when (px.ink) {
+                Ink.Body -> body
+                Ink.Eye -> CcPalette.Black
+                Ink.Glint -> CcPalette.TextPrimary
+                Ink.Accent -> accent
+                Ink.Muted -> CcPalette.TextSecondary
+            }
+            drawRect(
+                color = c,
+                topLeft = Offset(ox + px.x * p, oy + px.y * p),
+                size = Size(px.w * p, px.h * p),
+            )
+        }
+    }
+}
+
+/** Drives [MascotFrame] for one state. Pixel-stepped: values change in whole grid pixels. */
+private suspend fun runMascotLoop(
     state: MascotState,
-    body: Color,
-    eye: Color,
-    lift: Int,
-    breath: Int,
-    walkFrame: Int,
-    blinking: Boolean,
+    update: ((MascotFrame) -> MascotFrame) -> Unit,
+    shake: Animatable<Float, *>,
+) = coroutineScope {
+    // Blinks are shared by every state whose eyes are open.
+    fun launchBlinks(minMs: Long = 5_000, maxMs: Long = 7_000) = launch {
+        while (true) {
+            delay(Random.nextLong(minMs, maxMs))
+            update { it.copy(blink = true) }; delay(130)
+            update { it.copy(blink = false) }
+            if (Random.nextInt(4) == 0) { // occasional double blink
+                delay(160)
+                update { it.copy(blink = true) }; delay(110)
+                update { it.copy(blink = false) }
+            }
+        }
+    }
+    fun launchBreath() = launch {
+        while (true) {
+            delay(2_000); update { it.copy(breath = 1) }
+            delay(2_000); update { it.copy(breath = 0) }
+        }
+    }
+
+    when (state) {
+        MascotState.Idle -> { launchBreath(); launchBlinks() }
+
+        MascotState.Sending -> {
+            update { it.copy(lean = 1, beat = -1) }
+            launchBlinks()
+            launch {
+                while (true) {
+                    for (b in 0..2) {
+                        update { it.copy(beat = b) }; delay(180)
+                    }
+                    update { it.copy(beat = -1) }; delay(620)
+                }
+            }
+        }
+
+        MascotState.Running -> launch {
+            var f = 0
+            while (true) {
+                update { it.copy(walkFrame = f, lift = if (f % 2 == 1) -1 else 0, dust = f) }
+                delay(150)
+                f = (f + 1) % 4
+            }
+        }
+
+        MascotState.Waiting -> {
+            launchBlinks(4_000, 6_000)
+            launch {
+                while (true) {
+                    update { it.copy(lift = -1) }; delay(70)
+                    update { it.copy(lift = -2) }; delay(160)
+                    update { it.copy(lift = -1) }; delay(70)
+                    update { it.copy(lift = 0) }; delay(700)
+                }
+            }
+        }
+
+        MascotState.Done -> {
+            update { it.copy(lift = -1) }; delay(60)
+            update { it.copy(lift = -3) }; delay(180)
+            update { it.copy(lift = -1) }; delay(60)
+            update { it.copy(lift = 0) }
+            delay(DONE_CELEBRATE_MS - 300)
+            update { it.copy(celebrating = false) }
+            launchBreath(); launchBlinks()
+        }
+
+        MascotState.Error -> {
+            // 3 damped oscillations, 8dp max, ~360ms. Value is in dp.
+            val keys = floatArrayOf(8f, -8f, 5f, -5f, 2f, -2f, 0f)
+            for (k in keys) shake.animateTo(k, tween(durationMillis = 50))
+        }
+
+        MascotState.Blocked -> {
+            launchBlinks(6_000, 8_000)
+            launch {
+                while (true) {
+                    delay(Random.nextLong(4_000, 6_000))
+                    update { it.copy(gaze = 0) }; delay(1_000) // glance back at you
+                    update { it.copy(gaze = 1) }
+                }
+            }
+        }
+
+        MascotState.Offline -> launch {
+            while (true) {
+                delay(2_600)
+                for (z in 0..2) {
+                    update { it.copy(zzz = z) }; delay(500)
+                }
+                update { it.copy(zzz = -1) }
+            }
+        }
+    }
+}
+
+internal const val DONE_CELEBRATE_MS = 1_200L
+
+// ─── Pure sprite model (unit-tested in MascotSpriteTest) ────────────────────
+
+internal object MascotGrid {
+    const val COLS = 16
+    const val ROWS = 18
+
+    /** Rows above the body for hops (≤3) and props ("!", "?", signal, z). */
+    const val HEADROOM = 7
+}
+
+internal enum class Ink { Body, Eye, Glint, Accent, Muted }
+
+/** One lit rectangle in absolute grid coordinates. */
+internal data class MascotPixel(val x: Int, val y: Int, val w: Int, val h: Int, val ink: Ink)
+
+/**
+ * One animation frame. All offsets are in grid pixels.
+ *
+ * @param lift whole-sprite vertical offset (negative = up).
+ * @param breath body-only sink (breathing onto the legs).
+ * @param lean head/arms shifted right (Sending leans in).
+ * @param gaze eyes shifted right (1) or centred on you (0).
+ * @param celebrating Done shows ✓ eyes while true.
+ * @param beat Sending signal arc index 0..2, -1 none.
+ * @param dust Running dust puff phase 0..3, -1 none.
+ * @param zzz Offline "z" phase 0..2, -1 none.
+ * @param allSignal reduced-motion Sending: draw every arc at once.
+ */
+internal data class MascotFrame(
+    val lift: Int = 0,
+    val breath: Int = 0,
+    val lean: Int = 0,
+    val walkFrame: Int = 0,
+    val blink: Boolean = false,
+    val gaze: Int = 0,
+    val celebrating: Boolean = true,
+    val beat: Int = -1,
+    val dust: Int = -1,
+    val zzz: Int = -1,
+    val allSignal: Boolean = false,
 ) {
-    fun px(x: Int, y: Int, w: Int = 1, h: Int = 1, c: Color, dy: Int = 0) {
-        drawRect(
-            color = c,
-            topLeft = Offset(x * p, (y + HEADROOM + lift + dy) * p),
-            size = Size(w * p, h * p),
-        )
+    companion object {
+        /** First frame of a state; when [animate] is false it's the static readable pose. */
+        fun resting(state: MascotState, animate: Boolean): MascotFrame = when (state) {
+            MascotState.Sending -> MascotFrame(lean = 1, allSignal = !animate)
+            MascotState.Running -> MascotFrame(gaze = 1, dust = if (animate) -1 else 0)
+            MascotState.Blocked -> MascotFrame(gaze = 1)
+            MascotState.Offline -> MascotFrame(zzz = if (animate) -1 else 1)
+            else -> MascotFrame()
+        }
+    }
+}
+
+internal fun mascotPixels(state: MascotState, f: MascotFrame): List<MascotPixel> {
+    val out = ArrayList<MascotPixel>(48)
+    val top = MascotGrid.HEADROOM
+
+    // Sprite-relative pixel: rides lift (and breath / lean when asked).
+    fun sprite(x: Int, y: Int, w: Int = 1, h: Int = 1, ink: Ink = Ink.Body, dx: Int = 0, dy: Int = 0) {
+        out += MascotPixel(x + dx, top + f.lift + y + dy, w, h, ink)
+    }
+    // Absolute pixel: props pinned to the canvas (ground dust, "!", "?", z).
+    fun fixed(x: Int, y: Int, w: Int = 1, h: Int = 1, ink: Ink) {
+        out += MascotPixel(x, y, w, h, ink)
     }
 
-    // Legs (4). While walking, alternate pairs lift one pixel.
-    val legTop = 8
-    val legs = listOf(3, 5, 10, 12)
+    val b = f.breath
+    val lean = f.lean
+
+    // Legs (4). Walking cycles: A raised, passing, B raised, passing.
+    val legs = intArrayOf(3, 5, 10, 12)
     legs.forEachIndexed { i, x ->
-        val raised = state == MascotState.Running && (i % 2 == walkFrame)
-        px(x, legTop, h = if (raised) 2 else 3, c = body)
+        val raised = state == MascotState.Running &&
+            ((f.walkFrame == 0 && i % 2 == 0) || (f.walkFrame == 2 && i % 2 == 1))
+        sprite(x, 8, h = if (raised) 2 else 3)
     }
 
-    // Body + side arms. Breathing sinks the body (and eyes) one pixel.
-    px(2, 0, w = 12, h = 8, c = body, dy = breath)
-    px(0, 3, w = 2, h = 2, c = body, dy = breath)
-    px(14, 3, w = 2, h = 2, c = body, dy = breath)
+    // Body: the top rows (head) carry the lean; shoulders, arms and hips stay
+    // planted so the sprite never leaves the 16-column grid.
+    sprite(2, 0, w = 12, h = 3, dx = lean, dy = b)
+    sprite(2, 3, w = 12, h = 5, dy = b)
+    sprite(0, 3, w = 2, h = 2, dy = b)
+    sprite(14, 3, w = 2, h = 2, dy = b)
 
-    // Eyes, per state.
-    val b = breath
-    when {
-        state == MascotState.Offline -> {
-            px(5, 4, w = 2, c = eye, dy = b)
-            px(9, 4, w = 2, c = eye, dy = b)
-        }
-        state == MascotState.Error -> {
-            for (ox in listOf(4, 9)) {
-                px(ox, 2, c = eye, dy = b); px(ox + 2, 2, c = eye, dy = b)
-                px(ox + 1, 3, c = eye, dy = b)
-                px(ox, 4, c = eye, dy = b); px(ox + 2, 4, c = eye, dy = b)
-            }
-        }
-        state == MascotState.Done -> {
-            for (ox in listOf(3, 9)) {
-                px(ox, 4, c = eye, dy = b)
-                px(ox + 1, 5, c = eye, dy = b)
-                px(ox + 2, 4, c = eye, dy = b)
-                px(ox + 3, 3, c = eye, dy = b)
-            }
-        }
-        state == MascotState.Waiting -> {
-            for (ox in listOf(5, 9)) {
-                px(ox, 1, w = 2, h = 3, c = eye, dy = b)
-                px(ox, 5, w = 2, h = 1, c = eye, dy = b)
-            }
-        }
-        blinking -> {
-            px(5, 4, w = 2, c = eye, dy = b)
-            px(9, 4, w = 2, c = eye, dy = b)
-        }
-        else -> {
-            px(5, 2, w = 2, h = 3, c = eye, dy = b)
-            px(9, 2, w = 2, h = 3, c = eye, dy = b)
-        }
+    // Eyes.
+    val ex = lean + f.gaze
+    fun openEyes(h: Int = 3, y: Int = 2) {
+        sprite(5, y, w = 2, h = h, ink = Ink.Eye, dx = ex, dy = b)
+        sprite(9, y, w = 2, h = h, ink = Ink.Eye, dx = ex, dy = b)
     }
+    fun closedEyes() {
+        sprite(5, 4, w = 2, ink = Ink.Eye, dx = ex, dy = b)
+        sprite(9, 4, w = 2, ink = Ink.Eye, dx = ex, dy = b)
+    }
+    when (state) {
+        MascotState.Offline -> closedEyes()
+        MascotState.Error -> for (ox in intArrayOf(4, 9)) {
+            sprite(ox, 2, ink = Ink.Eye, dy = b); sprite(ox + 2, 2, ink = Ink.Eye, dy = b)
+            sprite(ox + 1, 3, ink = Ink.Eye, dy = b)
+            sprite(ox, 4, ink = Ink.Eye, dy = b); sprite(ox + 2, 4, ink = Ink.Eye, dy = b)
+        }
+        MascotState.Done -> if (f.celebrating) {
+            for (ox in intArrayOf(3, 9)) { // ✓ ✓
+                sprite(ox, 4, ink = Ink.Eye, dy = b)
+                sprite(ox + 1, 5, ink = Ink.Eye, dy = b)
+                sprite(ox + 2, 4, ink = Ink.Eye, dy = b)
+                sprite(ox + 3, 3, ink = Ink.Eye, dy = b)
+            }
+        } else if (f.blink) closedEyes() else openEyes()
+        MascotState.Waiting -> if (f.blink) closedEyes() else {
+            openEyes()
+            // Catchlights: eyes on you.
+            sprite(5, 2, ink = Ink.Glint, dy = b)
+            sprite(9, 2, ink = Ink.Glint, dy = b)
+        }
+        MascotState.Sending -> if (f.blink) closedEyes() else openEyes(h = 2, y = 3) // focused squint
+        MascotState.Blocked -> if (f.blink) closedEyes() else openEyes(h = 2, y = if (f.gaze > 0) 1 else 2)
+        else -> if (f.blink) closedEyes() else openEyes()
+    }
+
+    // Props.
+    when (state) {
+        MascotState.Sending -> {
+            val arcs = if (f.allSignal) 0..2 else if (f.beat >= 0) f.beat..f.beat else IntRange.EMPTY
+            for (a in arcs) when (a) {
+                0 -> sprite(7, -2, w = 2, ink = Ink.Accent, dx = lean)
+                1 -> {
+                    sprite(5, -3, ink = Ink.Accent, dx = lean)
+                    sprite(6, -4, w = 4, ink = Ink.Accent, dx = lean)
+                    sprite(10, -3, ink = Ink.Accent, dx = lean)
+                }
+                2 -> {
+                    sprite(3, -5, ink = Ink.Accent, dx = lean)
+                    sprite(4, -6, ink = Ink.Accent, dx = lean)
+                    sprite(5, -7, w = 6, ink = Ink.Accent, dx = lean)
+                    sprite(11, -6, ink = Ink.Accent, dx = lean)
+                    sprite(12, -5, ink = Ink.Accent, dx = lean)
+                }
+            }
+        }
+        MascotState.Running -> if (f.dust >= 0) {
+            val ground = top + 10
+            if (f.dust % 2 == 0) fixed(1, ground, ink = Ink.Muted) else fixed(0, ground - 1, ink = Ink.Muted)
+        }
+        MascotState.Waiting -> { // "!" pinned above the head; clears a 2px hop.
+            fixed(7, 0, w = 2, h = 3, ink = Ink.Accent)
+            fixed(7, 4, w = 2, ink = Ink.Accent)
+        }
+        MascotState.Blocked -> {
+            // "?" (3×5), upper left.
+            fixed(2, 0, w = 3, ink = Ink.Muted)
+            fixed(4, 1, ink = Ink.Muted)
+            fixed(3, 2, w = 2, ink = Ink.Muted)
+            fixed(3, 4, ink = Ink.Muted)
+            // Tiny laptop, upper right: screen + base.
+            fixed(11, 2, w = 4, h = 3, ink = Ink.Muted)
+            fixed(12, 3, w = 2, ink = Ink.Eye) // dark screen face
+            fixed(10, 5, w = 6, ink = Ink.Muted)
+        }
+        MascotState.Offline -> if (f.zzz >= 0) {
+            val zx = 11 + f.zzz
+            val zy = 4 - f.zzz * 2
+            fixed(zx, zy, w = 3, ink = Ink.Muted)
+            fixed(zx + 1, zy + 1, ink = Ink.Muted)
+            fixed(zx, zy + 2, w = 3, ink = Ink.Muted)
+        }
+        else -> Unit
+    }
+    return out
 }
