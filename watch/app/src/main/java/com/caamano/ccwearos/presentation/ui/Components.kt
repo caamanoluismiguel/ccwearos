@@ -1,9 +1,5 @@
 package com.caamano.ccwearos.presentation.ui
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -14,8 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -160,34 +154,11 @@ fun ArcGauge(
 
 /**
  * The "Terminado" moment: a 1dp coral ring sweeps once around the round
- * screen edge, then fades. Stroke only, no glow. Re-runs whenever [trigger]
- * changes to a positive value. Skipped entirely with reduced motion (the
- * haptic still fires).
+ * screen edge, then fades. Kept for existing callers; delegates to
+ * [SuccessRing] (Feedback.kt), which also shows a static ring under reduced
+ * motion instead of nothing.
  */
 @Composable
 fun CompletionRing(trigger: Int, modifier: Modifier = Modifier) {
-    if (trigger <= 0) return
-    if (rememberReducedMotion()) return
-    val sweep = remember(trigger) { Animatable(0f) }
-    val alpha = remember(trigger) { Animatable(1f) }
-    LaunchedEffect(trigger) {
-        sweep.animateTo(360f, tween(durationMillis = 700, easing = FastOutSlowInEasing))
-        alpha.animateTo(0f, tween(durationMillis = 300, easing = LinearEasing))
-    }
-    Box(modifier.fillMaxSize()) {
-        Canvas(Modifier.fillMaxSize()) {
-            if (alpha.value <= 0f) return@Canvas
-            val s = 1.dp.toPx()
-            drawArc(
-                color = CcPalette.Coral,
-                startAngle = -90f,
-                sweepAngle = sweep.value,
-                useCenter = false,
-                topLeft = Offset(s, s),
-                size = Size(size.width - 2 * s, size.height - 2 * s),
-                style = Stroke(width = s),
-                alpha = alpha.value,
-            )
-        }
-    }
+    SuccessRing(trigger = trigger, modifier = modifier, strokeWidth = 1.dp)
 }

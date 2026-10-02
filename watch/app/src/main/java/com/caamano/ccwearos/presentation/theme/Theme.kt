@@ -1,10 +1,14 @@
 package com.caamano.ccwearos.presentation.theme
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material3.ColorScheme
 import androidx.wear.compose.material3.MaterialTheme
@@ -27,6 +31,9 @@ object CcPalette {
     val Outline = Color(0xFF2A2A2A)
     val TextPrimary = Color(0xFFFFFFFF)
     val TextSecondary = Color(0xFF9A9A9A)
+
+    /** Second outline step for "raised" surfaces (elevation is a 1dp outline, never a shadow). */
+    val OutlineStrong = Color(0xFF3A3A3A)
 }
 
 /**
@@ -80,7 +87,7 @@ private val Sans = FontFamily.Default
 // count-up and live percentages don't jitter horizontally.
 private const val TNUM = "tnum"
 
-private val Numeral = TextStyle(
+internal val Numeral = TextStyle(
     fontFamily = Mono,
     fontWeight = FontWeight.Bold,
     fontFeatureSettings = TNUM,
@@ -116,6 +123,61 @@ val CcTypography = Typography(
     numeralSmall = Numeral.copy(fontSize = 22.sp),
     numeralExtraSmall = Numeral.copy(fontSize = 16.sp),
 )
+
+/**
+ * Standalone text styles not covered by the Wear [Typography] slots. All
+ * numerals are tabular (`tnum`) so live counters never jitter.
+ */
+object CcType {
+    /** Default live numeral (timers, counts inline with text): 16sp mono bold tnum. */
+    val numeral: TextStyle = Numeral.copy(fontSize = 16.sp, lineHeight = 20.sp)
+
+    /** Small numeral for chips / secondary counters: 12sp (the floor). */
+    val numeralSmall: TextStyle = Numeral.copy(fontSize = 12.sp, lineHeight = 16.sp)
+
+    /** Hero numeral (result totals): 34sp. Same as `displayLarge`. */
+    val numeralHero: TextStyle = Numeral.copy(fontSize = 34.sp, lineHeight = 38.sp)
+}
+
+/** Corner radii. Chips and buttons on a round watch read best fully rounded. */
+object CcRadius {
+    val none = 0.dp
+    val small = 6.dp
+    val medium = 12.dp
+    val large = 20.dp
+    val pill = 50.dp
+    val smallShape = RoundedCornerShape(small)
+    val mediumShape = RoundedCornerShape(medium)
+    val largeShape = RoundedCornerShape(large)
+    val pillShape = RoundedCornerShape(percent = 50)
+}
+
+/** Stroke widths. Hairline for structure, emphasis for live/primary arcs. */
+object CcStroke {
+    val hairline = 1.dp
+    val emphasis = 2.dp
+    val gauge = 3.dp
+}
+
+/**
+ * Elevation, expressed as flat outlines on true black (no shadows, no glow).
+ * Pair with `Modifier.border(CcElevation.level1, shape)`.
+ */
+object CcElevation {
+    val level0: BorderStroke? = null
+    val level1 = BorderStroke(CcStroke.hairline, CcPalette.Outline)
+    val level2 = BorderStroke(CcStroke.hairline, CcPalette.OutlineStrong)
+
+    /** Selected / focused: coral hairline. */
+    val selected = BorderStroke(CcStroke.hairline, CcPalette.Coral)
+}
+
+/** WCAG 2.x contrast ratio between two opaque colours (1.0 to 21.0). */
+fun contrastRatio(a: Color, b: Color): Float {
+    val la = a.luminance()
+    val lb = b.luminance()
+    return (maxOf(la, lb) + 0.05f) / (minOf(la, lb) + 0.05f)
+}
 
 @Composable
 fun CCWEAROSTheme(

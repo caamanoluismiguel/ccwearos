@@ -22,8 +22,13 @@ import androidx.compose.animation.core.tween
 //                         hop + ring sweep; failure = Haptics.error + X eyes +
 //                         one-line reason + one recovery action.
 //
+// Building blocks live in Feedback.kt: Modifier.pressFeedback (1), ProgressHalo
+// + ElapsedTimer + PixelMascot (2), SuccessRing / Modifier.shake (4),
+// StaggeredReveal for arrivals. Haptic table: Haptics.kt KDoc.
+//
 // Respect reduced motion: when animations are disabled system-wide
-// (ANIMATOR_DURATION_SCALE == 0) skip decorative motion, keep state changes.
+// (ANIMATOR_DURATION_SCALE == 0, see rememberReducedMotion) skip decorative
+// motion, keep state changes and keep every state readable in a still frame.
 object Motion {
     /** Press feedback, chip/button state flips. */
     const val FAST = 120
@@ -60,4 +65,13 @@ object Motion {
 
     /** Stagger between list items revealing in sequence. */
     const val STAGGER = 40
+
+    /** Idle breathing cycle (mascot, ambient pulses). Slow on purpose. */
+    const val BREATHE = 4_000
+
+    /** One lap of the ProgressHalo around the bezel. */
+    const val HALO_LAP = 3_200
+
+    /** Press-scale spring: quick, one soft overshoot back to 1. */
+    fun <T> press() = spring<T>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
 }
