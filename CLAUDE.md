@@ -50,15 +50,18 @@ Source of truth: `wrapper/src/types/schema.ts`. Watch-side Kotlin mirror in `wat
 | `/task`             | wrapper    | watch            | Current task description (from OSC title)                                                                                                                                                               |
 | `/response`         | wrapper    | watch            | Last ~1.5KB of Claude's response (markdown)                                                                                                                                                             |
 | `/headline`         | wrapper    | watch            | TL;DR one-liner extracted from response (info runs)                                                                                                                                                     |
-| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (Page 4)                                                                                                                                       |
-| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives Page 3 layout branch                                                                                                                                                      |
+| `/followups`        | wrapper    | watch            | 2-3 contextual chips Claude suggested at end of response (end of Resultado)                                                                                                                                       |
+| `/taskKind`         | wrapper    | watch            | `"action" \| "info"` — drives the Resultado layout branch                                                                                                                                                      |
 | `/toolEvents`       | wrapper    | watch            | Up to 12 tool invocations observed during the run                                                                                                                                                       |
 | `/claudeStatus`     | wrapper    | watch            | Parsed Claude status line: model, contextSize, monthlyCost, reset times                                                                                                                                 |
-| `/sharedSession`    | wrapper    | watch            | Active `cc`/share.ts session metadata. Gates voice prompts + Page 0 CTA.                                                                                                                                |
+| `/sharedSession`    | wrapper    | watch            | Active `cc`/share.ts session metadata. Gates voice prompts + the Inicio CTA.                                                                                                                                |
 | `/recentSessions`   | wrapper    | watch            | Mac-wide Claude session snapshot. Drives Page 5 grouped-by-project list.                                                                                                                                |
 | `/auditLog`         | wrapper    | (CLI only)       | Rolling 20-entry log of every permission decision; viewable via `scripts/audit.ts`. Written via `ref.transaction()` so voice + cc + hook writes don't lose entries.                                     |
 | `/claimRequest`     | watch      | wrapper (daemon) | `{sessionId, cwd, issuedAt}` — Sprint 4n. Watch writes when user taps a session row on Page 5 and confirms. Daemon's `watchClaimRequest` handler validates + spawns `cc --resume <id>` in new Terminal. |
 | `/claimResult`      | wrapper    | watch            | `{ok, reason?, sessionId, ts}` — daemon's response to the most recent claim. Watch shows banner; auto-dismisses after 4s.                                                                               |
+| `/blocker`          | wrapper    | watch            | `{kind: trust\|login\|crash\|timeout\|other, hint, cwd?, ts}`: something only the Mac can fix. Watch shows BlockedScreen ("Claude necesita tu Mac"). Cleared at run start. |
+| `/outcome`          | wrapper    | watch            | `{ok, exitCode, ts}`: real exit status of the last voice run. Drives ✓/✗ and the done moment (never text regex). Cleared at run start. |
+| `/conversationActive` | wrapper  | watch            | `true` while voice prompts continue a thread (`--continue`); `false` at daemon start / after reset. Drives "Seguir" vs "Preguntar". Survives crash cleanup. |
 | `/fcmToken`         | watch      | wrapper          | Watch's FCM registration token (for wake-ups)                                                                                                                                                           |
 
 Both `/command` and `/prompt` use Firebase `ServerValue.TIMESTAMP` for `issuedAt` to avoid clock-skew bugs on emulators.
@@ -74,7 +77,7 @@ Cuatro formas de que el reloj reciba permission prompts. Resumen rápido:
 | **Empezar nueva sesión y poder irte del Mac**                                       | `cc` (alias) en cualquier Terminal | Wrapper es dueño del pty desde el arranque. Tap watch = autoriza directo, sin Terminal prompt extra.                                                                                                                                     |
 | **Estoy en una sesión activa y me quiero ir AHORA mismo del Mac**                   | `/ccwearos-takeover` slash         | Abre nueva Terminal con `cc --resume <id> --permission-mode default`. La sesión continúa intacta en la ventana nueva y cada permiso llega al reloj. La vieja Terminal queda read-only; ciérrala cuando vuelvas. **Path canónico para "me voy".** |
 | **Monitorear desde el reloj sin perder la Terminal actual** (acepto double-confirm) | `/ccwearos` slash                  | Hook ya instalado en `~/.claude/settings.json`. Puede haber doble confirmación (reloj + Terminal); `enable-share.ts` te avisa.                                                                                              |
-| **Preguntar algo nuevo por voz desde el reloj**                                     | Page 0 botón "ask claude"          | Daemon spawn `claude -p` para esa pregunta.                                                                                                                                                                                              |
+| **Preguntar algo nuevo por voz desde el reloj**                                     | Inicio, botón "Preguntar"          | Daemon spawn `claude -p` para esa pregunta.                                                                                                                                                                                              |
 
 **Setup `cc` (una sola vez):**
 
@@ -236,16 +239,11 @@ After adding a new UID to rules, paste the JSON into Firebase Console → Realti
 
 ## Conversation continuity (Camino C-bis)
 
-Voice prompts auto-continue across runs: the daemon tracks `hasPriorSession` in memory and passes `--continue` to `claude` on every prompt after the first, unless the user's voice text matches a `RESET_PHRASES` entry ("nueva conversación", "olvida todo", `/new`, etc. — see `wrapper/src/index.ts`).
+Voice prompts auto-continue across runs: the daemon passes `--continue` to `claude` on every prompt after the first, unless the voice text matches a `RESET_PHRASES` entry ("nueva conversación", "olvida todo", `/new`, etc. in `wrapper/src/index.ts`). It publishes the state as `/conversationActive`, so the watch's primary button reads **"Seguir"** in a thread and **"Preguntar"** otherwise, even after the watch process was killed.
 
-Page 0's CTA reflects this:
+Voice runs execute in a dedicated folder, `CCWEAROS_VOICE_CWD` (default `~/.ccwearos/voice`, `src/config.ts`), never inside this repo. `--continue` continuity is per-cwd. Claude Code never saves trust for the home directory, which is why it isn't the default. **One-time setup:** `cd ~/.ccwearos/voice && claude`, choose "Yes, I trust this folder", `/exit`. Until then every voice run hits the trust dialog; the runner never answers it (kills the run, publishes `/blocker kind=trust`).
 
-- Cold app open / post-reset → **"ask claude"** (sentInSession=false in the watch ViewModel)
-- After a normal `sendPrompt` round-trip → **"continuar"** (sentInSession=true)
-
-Page 4 surfaces 2-3 contextual chips that Claude itself generates at the end of every textual answer (the `Sugerencias:` / `Followups:` bullet block, parsed by `extractFollowups`). Tap a chip = sends that exact text as the next prompt; wrapper continues the thread.
-
-The explicit reset path is the `↻ nueva conversación` button on Page 4 — the watch's `askWithReset()` prepends "nueva conversación, " before writing `/prompt`, which trips the wrapper's `isResetPrompt` detection.
+The end of the Resultado page shows Claude's own 2-3 chips (the `Sugerencias:` / `Followups:` block parsed by `extractFollowups`), then **Hablar/Seguir** and **Nueva conversación**. No fake fallback chips. "Nueva conversación" asks "¿Empezar de cero?" and then `askWithReset()` prepends "nueva conversación, " so the wrapper's `isResetPrompt` trips.
 
 ## Shared sessions + Page 5 (Camino D)
 
@@ -260,7 +258,7 @@ Two ways the watch sees Mac sessions:
 
    Then in any directory, type `cc` instead of `claude`. The wrapper script spawns Claude in a pty, mirrors output to your Terminal AND to RTDB. The watch sees `/status`, `/permissionPrompt`, `/response` etc. live, and Allow/Deny taps route back into the pty via `/command`. Your Terminal stays alive; come back to your Mac and the conversation is right where you left it.
 
-   While `cc` is running, `/sharedSession` is non-null. The daemon refuses voice prompts (Page 0's CTA hides behind a "📟 sesión compartida" block) to avoid two pty's clobbering RTDB. On clean exit (Ctrl+C / `/exit`) `/sharedSession` is cleared.
+   While `cc` is running, `/sharedSession` is non-null. The daemon refuses voice prompts (the Inicio CTA hides behind a "sesión compartida" block) to avoid two pty's clobbering RTDB. On clean exit (Ctrl+C / `/exit`) `/sharedSession` is cleared.
 
 2. **Read-only via sessions scanner.** Every 15s the wrapper scans `~/.claude/sessions/*.json` (active PIDs) + `~/.claude/projects/*/*.jsonl` (recent transcripts by mtime) and publishes a snapshot to `/recentSessions`. Page 5 lists them grouped by project, marking active processes with a green dot and the `cc`-shared one with a coral dot. No tap actions in V1 — claiming or resuming arbitrary sessions from the watch is Tier 2.
 
@@ -279,7 +277,7 @@ Two ways the watch sees Mac sessions:
 
    While `kind="hook"` is active, the daemon's `watchCommands` handler YIELDS — it sees the watch's `/command` write but doesn't consume it, so the hook gets the reply. Voice prompts (Page 1 of the watch) are still gated off.
 
-   Watch's Page 0 SharedSessionBlock text differentiates the two kinds:
+   Watch's Inicio SharedSessionBlock text differentiates the two kinds:
    - `kind="wrapper-pty"` (cc / takeover) → "📟 sesión compartida · activa en tu Mac · cc"
    - `kind="hook"` (/ccwearos) → "📟 puente activo · permisos vienen al reloj"
 
@@ -296,30 +294,26 @@ Two ways the watch sees Mac sessions:
 
 ## Watch UI affordances
 
-- **Page 0 — Command.** Shows brand + status + live activity. Bottom slot:
-  - `IDLE` + no shared session → `AskRow` (voice input button).
-  - `RUNNING` → `StopButton`. **Tap = SIGINT** (sends `` via `/command`; wrapper kills runner). **Long-press ≥500ms = force-reset** (writes `IDLE` / `null` directly to RTDB via `forceResetUi`). The long-press is the recovery affordance when the wrapper is dead and SIGINT goes nowhere.
-  - `AWAITING_PERMISSION` → routes to `PermissionScreen` overlay.
-  - `OFFLINE` → routes to `OfflineScreen`.
-  - `sharedSession != null` → `SharedSessionBlock` (text differs by `kind`).
-- **Page 1 — Metrics.** Token totals + Claude status line (model, contextSize, monthlyCost, resets).
-- **Page 2 — Response** (only when `hasResult`). Branches on `taskKind`: `action` → ✓/✗ confirmation card + tool breadcrumbs; `info` → scrollable markdown + TL;DR headline.
-- **Page 3 — Followups** (only when `hasResult`). Tappable chips from Claude's `Sugerencias:` / `Followups:` block, with bilingual hardcoded fallback ("Más detalles" / "Otra cosa" / "Deshacer") when Claude omits them. Reset button at bottom.
-- **Page 4 / Sessions** (only when `recentSessions` non-empty). Grouped by project. Coral dot = `cc`-shared; green dot = active; dim = historical. Read-only in V1.
-- **PermissionScreen overlay (v2).** Full command in a mono box (never truncated), coral `EdgeButton` "Permitir" + outlined "Rechazar". Risky commands (`classifyRisk` in `presentation/permission/PermissionPrompt.kt`: rm, git push, --force, reset --hard, sudo, chmod, curl|sh, writes outside the project, unreadable prompts) need a 1.2s press-and-hold. Buttons disable when offline or already answered (`AnswerGate`, shared with the notification). Haptics via `presentation/Haptics.kt`. `BackHandler` swallows swipe-back.
-- **"Permisos" notification.** When a prompt arrives and the app isn't visible, the foreground service posts it with Permitir/Rechazar actions (re-checks connection + promptId at tap time).
-- **Tile + complication.** `tile/StatusTileService` (state, tokens, context arc; Permitir/Rechazar only when the prompt isn't risky AND fits fully on the tile) and `complication/StatusComplicationService` (SHORT_TEXT + RANGED_VALUE). Refreshed by the foreground service on every status change.
+Spanish only (es-CO forced via `LocaleManager` + `res/xml/locales_config.xml`; there is no `values-en`). Dictation uses `EXTRA_LANGUAGE=es-CO`. Feedback contract in `presentation/ui/Motion.kt`: every action answers ¿qué hice? / ¿qué está pasando? / ¿qué puedo hacer? / ¿salió bien? visually and with a distinct haptic (`Haptics.kt`, rate-gated).
+
+- **Pager, 3 fixed pages** (`DashboardScreen.kt`), with continuity transitions (`home/Continuity.kt`: blur + stretch following the swipe live, iPhone Duo-inspired, blur only while moving, API 31+):
+  - **Inicio** (`home/HomePage.kt`): pixel mascot (state machine in `ui/PixelMascot.kt`), state word, ONE primary action per state (Preguntar/Seguir → Enviando "Le pedí: …" + Cancelar → Trabajando with live tool line + elapsed timer + Detener → done hop + ring + auto-slide to Resultado). 15s pickup timeout → "Tu Mac no tomó la pregunta" + Reintentar. "¿Sigue ahí?" + Reiniciar estado after 3 quiet minutes (long-press Detener still force-resets). Metrics row at the bottom opens a gauges dialog.
+  - **Resultado** (`result/ResultPage.kt`): TL;DR card, ✓ Hecho / ✗ Falló from `/outcome`, markdown blocks (`MarkdownBlocks.kt`: headings, lists, code, quotes, tables as cards), tool trail, chips. `ResponseSanitizer` treats TUI junk as blocked, never renders it.
+  - **Sesiones** (`home/SessionsPage.kt`): Mac sessions grouped by project, tap to claim.
+- **Overlays** above the pager (`routeOverlay` in `home/HomeModel.kt`): PermissionScreen; BlockedScreen (`MAC_OFFLINE`, `WATCH_OFFLINE` banner, `CLAUDE_CRASHED`, `NEEDS_MAC`, `NO_DICTATION`), dismissed locally only.
+- **PermissionScreen (v2).** Full command in a mono box, coral `EdgeButton` "Permitir" + outlined "Rechazar". Risky commands (`classifyRisk` in `presentation/permission/PermissionPrompt.kt`) need a 1.2s press-and-hold. Buttons disable when offline or already answered (`AnswerGate`, shared with notification + tile). `BackHandler` swallows swipe-back.
+- **Notifications** (`notifications/`): "Claude pide permiso" (Permitir/Rechazar; risky → only Abrir), "Claude terminó", "Claude necesita tu Mac". Not shown while the app is visible.
+- **Tile + complication.** States Listo/Trabajando/Permiso/Necesita tu Mac/Hecho; Permitir/Rechazar on the tile only for non-risky prompts that fit fully. Deep links via `notifications/DeepLinks.kt` (`action=voice` opens dictation, `action=result` opens Resultado).
+- **ClaimResultBanner** stays until tapped/swiped.
 
 ## Known limitations
 
 - The pty parser can't rebuild characters a partial terminal redraw skipped (rare `luism guelcaamano`-style gaps); the next full redraw wins. A real fix needs a terminal emulator (`@xterm/headless`).
-- Markdown rendering on watch is inline only (bold/italic/code). Block markdown (lists, headings, code blocks) renders as plain text.
-- Tables are flattened to `cell1 · cell2 · cell3` rows — multi-line table cells lose column association.
-- Action runs (tool-heavy) often skip the `Followups:` block — Page 4 falls back to bilingual hardcoded chips ("Más detalles" / "Otra cosa" / "Deshacer") via the Sprint 4k fallback path. Real Claude-generated chips are preferred when present.
+- Tables render as one card per row ("Columna: valor"); more than 4 columns shows "Tabla: ábrela en tu Mac".
+- Action runs (tool-heavy) often skip the `Followups:` block; Resultado then shows only Hablar / Nueva conversación.
 - ~~Phantom "wrapper not reachable" on wake~~ — **resolved in Sprint 4m** by the foreground service (process stays alive across screen-off) + `SharingStarted.Eagerly` on routing flows (listener never disconnects) + Firebase disk persistence (cold start hits cache before network). The trade-off is a persistent ongoing notification in the watch's panel and ~2-3%/day extra battery from the always-on listener; both judged worthwhile.
 - `/ccwearos-takeover` cannot resume the SAME session that invoked it (Claude rejects concurrent access to a locked sessionId). The script self-detects this when `detectSessionIdDetailed` returns `source === "session-file"` with `ownerPid === process.ppid` and refuses upfront. The weaker `jsonl-mtime` fallback emits a warning and proceeds — if the new window closes silently, that's the cause.
 - `cc` resume vs. self-takeover: the user must close the OLD Terminal window before the lock-bound `cc --resume` can take over; the takeover script does NOT kill the parent Claude. Manual coordination is the V1 contract.
-- `sentInSession` lives only in the watch ViewModel — Android process kill resets it to `false` mid-conversation, so the Page 0 button reads "ask claude" even though the daemon will silently `--continue`. Cosmetic mismatch; cleanest fix is `/conversationActive` in RTDB (Tier 2).
 
 ## Prompt prefix (wrapper)
 
