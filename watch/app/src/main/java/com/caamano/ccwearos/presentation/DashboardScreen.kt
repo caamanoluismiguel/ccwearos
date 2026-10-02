@@ -58,6 +58,7 @@ import com.caamano.ccwearos.presentation.ui.CompletionRing
 import com.caamano.ccwearos.presentation.ui.MascotState
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
+import com.caamano.ccwearos.notifications.DeepLinks
 import com.caamano.ccwearos.presentation.ui.rememberVoiceInput
 import com.caamano.ccwearos.presentation.ui.toMascotState
 import kotlinx.coroutines.delay
@@ -203,11 +204,22 @@ fun DashboardScreen(
         }
     }
 
-    // Low-frequency swipe feedback: one tick when a swipe settles on a page.
+    // Low-frequency swipe feedback: one light tap when a swipe settles on a page.
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }.drop(1).collect {
-            // TODO(integrate): Haptics.swipe (lane E) once it lands.
-            if (!programmatic) Haptics.tick(context)
+            if (!programmatic) Haptics.swipe(context)
+        }
+    }
+
+    // Deep links from the tile, complication and notifications.
+    LaunchedEffect(Unit) {
+        DeepLinks.pending.collect { action ->
+            when (action) {
+                DeepLinks.ACTION_VOICE -> { goTo(HomePages.INICIO); askVoice.launch(askPrompt) }
+                DeepLinks.ACTION_RESULT -> goTo(HomePages.RESULTADO)
+                else -> return@collect
+            }
+            DeepLinks.pending.value = null
         }
     }
 

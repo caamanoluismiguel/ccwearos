@@ -2,9 +2,6 @@
 <!-- Inicio, pager shell y rutas (lane B). Español de Colombia, tuteo. -->
 <resources>
     <!-- Páginas -->
-    <string name="home_page_inicio">Inicio</string>
-    <string name="home_page_result">Resultado</string>
-    <string name="home_page_sessions">Sesiones</string>
 
     <!-- Enviando -->
     <string name="home_sent_quote">Le pedí: “%1$s”</string>
@@ -51,7 +48,6 @@
     <!-- Nueva conversación -->
     <string name="home_reset_title">¿Empezar de cero?</string>
     <string name="home_reset_body">Claude olvidará esta conversación.</string>
-    <string name="home_reset_confirm">Empezar de cero</string>
 
     <!-- Sesiones -->
     <string name="home_sessions_empty">No hay sesiones en tu Mac</string>

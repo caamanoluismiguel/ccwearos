@@ -4,7 +4,6 @@
     <string name="result_empty_title">Aún no le has preguntado nada</string>
     <string name="result_empty_hint">Toca Preguntar en Inicio</string>
 
-    <string name="result_tldr_label">En corto</string>
     <string name="result_see_more">Ver más</string>
     <string name="result_see_less">Ver menos</string>
     <string name="result_see_all">Ver todo</string>
