@@ -69,4 +69,6 @@
     <string name="claim_id">id %1$s…</string>
     <string name="claim_ok">Sesión abierta en tu Mac</string>
     <string name="claim_failed">No se pudo abrir</string>
+    <string name="state_sending">Enviando</string>
+    <string name="state_blocked">Necesita tu Mac</string>
 </resources>
