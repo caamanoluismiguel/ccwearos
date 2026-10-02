@@ -21,10 +21,10 @@
     <string name="notif_open_to_allow">Este permiso se revisa en la app.</string>
 
     <!-- Claude terminó -->
-    <string name="notif_done_title">Claude terminó</string>
-    <string name="notif_done_ok">Listo</string>
-    <string name="notif_done_ok_headline">Listo: %1$s</string>
-    <string name="notif_done_failed">Algo falló</string>
+    <string name="notif_done_ok_title">¡Listo!</string>
+    <string name="notif_done_ok_fallback">Claude terminó. Toca para ver la respuesta.</string>
+    <string name="notif_done_failed_title">No se pudo</string>
+    <string name="notif_done_failed_fallback">Claude terminó con error (código %1$d)</string>
 
     <!-- Bloqueo en el Mac -->
     <string name="notif_blocked_title">Claude necesita tu Mac</string>

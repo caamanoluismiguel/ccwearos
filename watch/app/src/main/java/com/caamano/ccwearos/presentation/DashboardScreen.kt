@@ -29,6 +29,7 @@ import androidx.wear.compose.material3.HorizontalPagerScaffold
 import androidx.wear.compose.material3.Text
 import androidx.wear.tooling.preview.devices.WearDevices
 import com.caamano.ccwearos.R
+import com.caamano.ccwearos.data.AppVisibility
 import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
@@ -45,6 +46,9 @@ import com.caamano.ccwearos.presentation.home.HomePage
 import com.caamano.ccwearos.presentation.home.HomePages
 import com.caamano.ccwearos.presentation.home.HomeUi
 import com.caamano.ccwearos.presentation.home.LastRun
+import com.caamano.ccwearos.presentation.home.MascotBubble
+import com.caamano.ccwearos.presentation.home.RunEnd
+import com.caamano.ccwearos.presentation.home.UnseenCompletion
 import com.caamano.ccwearos.presentation.home.MetricsDialog
 import com.caamano.ccwearos.presentation.home.SendState
 import com.caamano.ccwearos.presentation.home.SessionsPage
@@ -53,10 +57,12 @@ import com.caamano.ccwearos.presentation.home.homeMode
 import com.caamano.ccwearos.presentation.home.pageDirection
 import com.caamano.ccwearos.presentation.home.pageProgress
 import com.caamano.ccwearos.presentation.result.ResultPage
+import com.caamano.ccwearos.presentation.result.resultTldr
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
 import com.caamano.ccwearos.presentation.ui.CompletionRing
 import com.caamano.ccwearos.presentation.ui.MascotState
 import com.caamano.ccwearos.presentation.ui.Motion
+import com.caamano.ccwearos.presentation.ui.rememberIsResumed
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import com.caamano.ccwearos.notifications.DeepLinks
 import com.caamano.ccwearos.presentation.ui.rememberVoiceInput
@@ -111,6 +117,7 @@ data class DashboardActions(
     val onStop: () -> Unit = {},
     val onForceReset: () -> Unit = {},
     val onClaim: (sessionId: String, cwd: String) -> Unit = { _, _ -> },
+    /** Resultado was opened: the failure line on Inicio has been seen. */
     val onClearLastRun: () -> Unit = {},
     val onBlockedContent: () -> Unit = {},
     /** Preguntar found no speech recognizer: route to BlockedScreen(NO_DICTATION). */
@@ -136,6 +143,9 @@ internal fun mascotFor(mode: HomeMode, status: WrapperStatus, blocker: Blocker?)
 
 private val pageEnterSpec = tween<Float>(Motion.SLOW, easing = Motion.EnterEasing)
 
+/** How long a run-end moment (bubble, done mascot) holds before it pops out. */
+private const val MOMENT_MS = 2_500L
+
 @Composable
 fun DashboardScreen(
     state: DashboardState,
@@ -160,6 +170,11 @@ fun DashboardScreen(
     var metricsOpen by remember { mutableStateOf(false) }
     // True while the shell drives the pager, so settle haptics stay for swipes.
     var programmatic by remember { mutableStateOf(false) }
+    // The mascot's transient bubble ("¡Listo!", "Uy, falló", "Detenido").
+    var transientBubble by remember { mutableStateOf<MascotBubble?>(null) }
+    var bubbleKey by remember { mutableIntStateOf(0) }
+    // A run that ended while the wrist was down replays once on wake.
+    val unseen = remember { UnseenCompletion() }
 
     fun goTo(page: Int) {
         if (pagerState.currentPage == page && pagerState.currentPageOffsetFraction == 0f) return
@@ -175,9 +190,47 @@ fun DashboardScreen(
 
     LaunchedEffect(doneFlash) {
         if (doneFlash) {
-            delay(2_500)
+            delay(MOMENT_MS)
             doneFlash = false
         }
+    }
+    LaunchedEffect(bubbleKey) {
+        if (transientBubble != null) {
+            delay(MOMENT_MS)
+            transientBubble = null
+        }
+    }
+
+    // The run-end moment. [haptic] is false on a wake replay: the "Claude
+    // terminó" notification already buzzed while the wrist was down.
+    fun playEnd(end: RunEnd, haptic: Boolean, buzzError: Boolean) {
+        when (end) {
+            RunEnd.DONE -> {
+                if (haptic) Haptics.done(context)
+                doneFlash = true
+                ringTrigger++
+                transientBubble = MascotBubble.DONE
+                if (pagerState.currentPage == HomePages.INICIO) {
+                    scope.launch {
+                        delay(MOMENT_MS + 300L) // the bubble pops out first
+                        goTo(HomePages.RESULTADO)
+                    }
+                }
+            }
+            RunEnd.STOPPED -> {
+                // Detener did what it said: a calm tick, no error look.
+                if (haptic) Haptics.tick(context)
+                doneFlash = false
+                transientBubble = MascotBubble.STOPPED
+            }
+            RunEnd.FAILED -> {
+                if (haptic && buzzError) Haptics.error(context)
+                doneFlash = false
+                shakeTrigger++
+                transientBubble = MascotBubble.FAILED
+            }
+        }
+        bubbleKey++
     }
 
     // ¿salió bien? / ¿qué está pasando?: every VM moment gets its haptic here.
@@ -187,30 +240,27 @@ fun DashboardScreen(
         events.collect { e ->
             when (e) {
                 HomeEvent.Sent -> {
+                    unseen.clear()
                     Haptics.tick(context)
                     // Sent from Resultado (Seguir / chip): come home to see it.
                     goTo(HomePages.INICIO)
                 }
-                HomeEvent.PickedUp -> Haptics.sent(context)
+                HomeEvent.PickedUp -> {
+                    unseen.clear()
+                    Haptics.sent(context)
+                }
                 HomeEvent.SendFailed -> Haptics.error(context)
-                is HomeEvent.Finished -> if (e.ok) {
-                    Haptics.done(context)
-                    doneFlash = true
-                    ringTrigger++
-                    if (pagerState.currentPage == HomePages.INICIO) {
-                        scope.launch {
-                            delay(900) // let the hop + ring be seen first
-                            goTo(HomePages.RESULTADO)
-                        }
+                is HomeEvent.Finished -> {
+                    val end = when {
+                        e.ok -> RunEnd.DONE
+                        e.stopped -> RunEnd.STOPPED
+                        else -> RunEnd.FAILED
                     }
-                } else if (e.stopped) {
-                    // Detener did what it said: a calm tick, no error look.
-                    Haptics.tick(context)
-                    doneFlash = false
-                } else {
-                    if (e.buzzError) Haptics.error(context)
-                    doneFlash = false
-                    shakeTrigger++
+                    // Same notion of "visible" as the notifier: when hidden,
+                    // the notification alerts and the moment waits for a wake.
+                    val seen = AppVisibility.foreground.value
+                    unseen.onFinished(end, System.currentTimeMillis(), seen)
+                    if (seen) playEnd(end, haptic = true, buzzError = e.buzzError)
                 }
                 HomeEvent.Blocked -> {
                     Haptics.error(context)
@@ -220,10 +270,18 @@ fun DashboardScreen(
         }
     }
 
+    // Raised the wrist within 30s of a finish nobody saw: play it now, once.
+    val resumed = rememberIsResumed()
+    LaunchedEffect(resumed) {
+        if (resumed) unseen.onResume(System.currentTimeMillis())?.let { playEnd(it, haptic = false, buzzError = false) }
+    }
+
     // Low-frequency swipe feedback: one light tap when a swipe settles on a page.
     LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.settledPage }.drop(1).collect {
+        snapshotFlow { pagerState.settledPage }.drop(1).collect { page ->
             if (!programmatic) Haptics.swipe(context)
+            // Seeing Resultado acknowledges a failure line on Inicio.
+            if (page == HomePages.RESULTADO) actions.onClearLastRun()
         }
     }
 
@@ -250,19 +308,20 @@ fun DashboardScreen(
     val settled = mascotFor(mode, state.status, state.blocker)
     val mascot = if (doneFlash && mode is HomeMode.Idle && settled == MascotState.Idle) MascotState.Done else settled
 
+    val doneTldr = remember(state.headline, state.response) { resultTldr(state.headline, state.response) }
     val homeUi = HomeUi(
         mode = mode,
         mascot = mascot,
         toolEvents = state.toolEvents,
-        activity = state.activity,
-        task = state.task,
         runStartedAt = state.runStartedAt,
         claudeStatus = state.claudeStatus,
         metrics = state.metrics,
         hasLastResponse = !state.response.isNullOrBlank() || state.taskKind != null,
         lastResponseAt = state.outcome?.ts?.takeIf { it > 0 },
-        voiceUnavailable = askVoice.unavailable || resetVoice.unavailable,
         errorShake = shakeTrigger,
+        // "¿Me dejas?" stays up while Claude waits on a decision.
+        bubble = transientBubble ?: if (mode == HomeMode.Waiting) MascotBubble.ASK else null,
+        doneTldr = doneTldr,
     )
     val homeCallbacks = HomeCallbacks(
         onAsk = { askVoice.launch(askPrompt) },
@@ -271,10 +330,6 @@ fun DashboardScreen(
         onStop = actions.onStop,
         onForceReset = actions.onForceReset,
         onOpenResult = { goTo(HomePages.RESULTADO) },
-        onSeeDetail = {
-            actions.onClearLastRun()
-            goTo(HomePages.RESULTADO)
-        },
         onOpenMetrics = { metricsOpen = true },
     )
 
@@ -311,9 +366,7 @@ fun DashboardScreen(
                             outcome = state.outcome,
                             toolEvents = state.toolEvents,
                             followups = state.followups,
-                            conversationActive = state.conversationActive,
                             onFollowup = actions.onAsk,
-                            onSpeak = { askVoice.launch(askPrompt) },
                             onNewConversation = { confirmReset = true },
                             onBlockedContent = actions.onBlockedContent,
                         )

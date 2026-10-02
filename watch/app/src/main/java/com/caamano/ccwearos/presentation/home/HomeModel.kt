@@ -147,6 +147,96 @@ internal fun shortTarget(verb: ToolVerb, arg: String?): String? {
     }
 }
 
+// ─── Working line (the one thing Inicio says while Claude works) ─────────────
+
+/** Longest working line; anything longer is ellipsized. */
+const val WORKING_LINE_MAX = 28
+
+/**
+ * Plain Spanish for what Claude is doing, from the latest tool event only:
+ * "Leyendo parser.ts", "Editando archivos", "Corriendo un comando", "Buscando
+ * en la web". Never the raw activity/task strings or a command line (those
+ * were TUI scrape and confused more than they told). At most
+ * [WORKING_LINE_MAX] chars. "Pensando…" before the first tool.
+ */
+fun workingLine(toolEvents: List<ToolEvent>): String {
+    val line = liveLine(toolEvents, activity = null) as? LiveLine.Tool ?: return WorkingCopy.THINKING
+    val file = line.target?.takeIf { line.verb in FILE_VERBS }
+    val text = when (line.verb) {
+        ToolVerb.READ -> file?.let { "Leyendo $it" } ?: WorkingCopy.READING
+        ToolVerb.EDIT -> file?.let { "Editando $it" } ?: WorkingCopy.EDITING
+        ToolVerb.WRITE -> file?.let { "Escribiendo $it" } ?: WorkingCopy.WRITING
+        ToolVerb.RUN -> WorkingCopy.RUNNING
+        ToolVerb.SEARCH -> WorkingCopy.SEARCHING
+        ToolVerb.FETCH -> WorkingCopy.FETCHING
+        ToolVerb.WEB -> WorkingCopy.WEB
+        ToolVerb.DELEGATE -> WorkingCopy.DELEGATING
+        ToolVerb.OTHER -> WorkingCopy.OTHER
+    }
+    return if (text.length <= WORKING_LINE_MAX) text else text.take(WORKING_LINE_MAX - 1).trimEnd() + "…"
+}
+
+private val FILE_VERBS = setOf(ToolVerb.READ, ToolVerb.EDIT, ToolVerb.WRITE)
+
+/** Working-line copy (es-CO, tuteo). Plain Kotlin so the mapping is JVM-testable. */
+object WorkingCopy {
+    const val THINKING = "Pensando…"
+    const val READING = "Leyendo archivos"
+    const val EDITING = "Editando archivos"
+    const val WRITING = "Escribiendo un archivo"
+    const val RUNNING = "Corriendo un comando"
+    const val SEARCHING = "Buscando en el código"
+    const val FETCHING = "Leyendo una página"
+    const val WEB = "Buscando en la web"
+    const val DELEGATING = "Delegando una tarea"
+    const val OTHER = "Usando una herramienta"
+}
+
+// ─── Completion moment (bubble + replay when unseen) ─────────────────────────
+
+/** What the mascot says in its speech bubble (≤12 chars each, see strings). */
+enum class MascotBubble { DONE, FAILED, STOPPED, ASK }
+
+/** How the last run ended, for the in-app moment. */
+enum class RunEnd { DONE, FAILED, STOPPED }
+
+/** A finished run that played while nobody was looking can replay this long after. */
+const val UNSEEN_REPLAY_WINDOW_MS = 30_000L
+
+/**
+ * Remembers a run end that happened while the app was not RESUMED (screen
+ * off, wrist down) and hands it back once on the next resume within
+ * [UNSEEN_REPLAY_WINDOW_MS], so raising the wrist still shows "¡Listo!".
+ * Pure; time is passed in.
+ */
+class UnseenCompletion {
+    private var pending: RunEnd? = null
+    private var at: Long = 0L
+
+    /** A run ended at [nowMs]; [seen] = the app was resumed and on screen. */
+    fun onFinished(end: RunEnd, nowMs: Long, seen: Boolean) {
+        if (seen) {
+            pending = null
+        } else {
+            pending = end
+            at = nowMs
+        }
+    }
+
+    /** The app resumed at [nowMs]: the moment to replay, at most once. */
+    fun onResume(nowMs: Long): RunEnd? {
+        val end = pending ?: return null
+        pending = null
+        val age = nowMs - at
+        return if (age in 0..UNSEEN_REPLAY_WINDOW_MS) end else null
+    }
+
+    /** A new run started: an old unseen ending is no longer news. */
+    fun clear() {
+        pending = null
+    }
+}
+
 // ─── Time formatting ─────────────────────────────────────────────────────────
 
 /** "04:07" for elapsed run time; "1:02:03" past an hour. */

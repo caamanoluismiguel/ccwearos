@@ -37,6 +37,21 @@ object NotificationText {
         return first.collapse()
     }
 
+    /** What "Claude terminó" says; [line] null = use the string fallback. */
+    data class DoneCopy(val ok: Boolean, val line: String?)
+
+    /**
+     * Whether and what to post for a finished run: nothing while the app is
+     * visible, for a run the user stopped, or for an outcome ts already
+     * alerted. ok → the headline's first line (the TL;DR); failure → null so
+     * the caller shows "Claude terminó con error (código N)".
+     */
+    fun doneCopy(outcome: RunOutcome, headline: String?, appVisible: Boolean, alreadyAlertedTs: Long?): DoneCopy? {
+        if (appVisible || outcome.stopped) return null
+        if (alreadyAlertedTs != null && outcome.ts == alreadyAlertedTs) return null
+        return if (outcome.ok) DoneCopy(true, firstLine(headline)) else DoneCopy(false, null)
+    }
+
     fun firstLine(text: String?): String? =
         text?.lineSequence()?.map { it.trim() }?.firstOrNull { it.isNotEmpty() }
 

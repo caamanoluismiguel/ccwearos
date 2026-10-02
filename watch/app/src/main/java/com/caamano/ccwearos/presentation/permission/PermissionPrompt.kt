@@ -33,6 +33,26 @@ fun parsePrompt(prompt: String?): ParsedPrompt {
     return ParsedPrompt(tool = tool, target = target, description = rest)
 }
 
+/**
+ * The description line worth showing, or null when it adds nothing: blank,
+ * or just the command again (same words, ignoring case, quotes, backticks and
+ * punctuation, or one containing the other).
+ */
+fun visibleDescription(parsed: ParsedPrompt): String? {
+    val desc = parsed.description?.trim()?.ifEmpty { null } ?: return null
+    val target = parsed.target ?: return desc
+    val d = normalizeForCompare(desc)
+    val t = normalizeForCompare(target)
+    if (d.isEmpty()) return null
+    if (d == t || d in t || (t.isNotEmpty() && t in d && d.length <= t.length + 12)) return null
+    return desc
+}
+
+private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
+
+private fun normalizeForCompare(s: String): String =
+    s.lowercase().replace(NON_WORD, " ").trim()
+
 // Shell patterns that can destroy work, escalate privileges or rewrite shared
 // history. Matched against the whole prompt text. Word boundaries keep
 // "perform", "git add" and friends from tripping `rm`/`dd`. False positives are

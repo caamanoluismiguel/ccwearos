@@ -6,8 +6,8 @@
     <string name="state_running">Trabajando</string>
     <string name="state_waiting">Esperando permiso</string>
     <string name="state_offline">Sin conexión</string>
-    <string name="state_done">Terminado</string>
-    <string name="state_error">Algo falló</string>
+    <string name="state_done">¡Listo!</string>
+    <string name="state_error">No se pudo</string>
     <string name="state_stopped">Detenido</string>
     <string name="mascot_cd">Claude: %1$s</string>
 
@@ -18,7 +18,6 @@
     <string name="voice_prompt_ask">¿Qué le digo a Claude?</string>
     <string name="voice_prompt_continue">Seguir la conversación</string>
     <string name="voice_prompt_reset">Nueva conversación</string>
-    <string name="voice_unavailable">Este reloj no tiene reconocimiento de voz</string>
 
     <!-- Sesión compartida -->
     <string name="shared_hook_title">Puente activo</string>
@@ -62,7 +61,7 @@
     <string name="claim_id">id %1$s…</string>
     <string name="claim_ok">Sesión abierta en tu Mac</string>
     <string name="claim_failed">No se pudo abrir</string>
-    <string name="state_sending">Enviando</string>
+    <string name="state_sending">Enviando…</string>
     <string name="state_blocked">Necesita tu Mac</string>
 
     <!-- Pantallas de bloqueo (BlockedScreen) -->

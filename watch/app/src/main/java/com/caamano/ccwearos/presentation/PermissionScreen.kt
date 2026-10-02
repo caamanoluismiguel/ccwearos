@@ -62,6 +62,7 @@ import com.caamano.ccwearos.presentation.permission.HoldRing
 import com.caamano.ccwearos.presentation.permission.Risk
 import com.caamano.ccwearos.presentation.permission.classifyRisk
 import com.caamano.ccwearos.presentation.permission.parsePrompt
+import com.caamano.ccwearos.presentation.permission.visibleDescription
 import com.caamano.ccwearos.presentation.permission.rememberHoldToConfirm
 import com.caamano.ccwearos.presentation.theme.StatusColors
 import com.caamano.ccwearos.presentation.ui.Motion
@@ -207,7 +208,8 @@ fun PermissionScreen(
                     item(key = "target") { CommandBox(command = target) }
                 }
 
-                val description = parsed.description
+                // Hidden when it only repeats the command (owner: only what's needed).
+                val description = visibleDescription(parsed)
                 when {
                     description != null -> item(key = "description") {
                         // Free-form prompt (no `Tool:` line): it IS the content,
