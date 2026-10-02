@@ -3,4 +3,58 @@
     <string name="tile_status_label" translatable="false">Claude</string>
     <string name="tile_status_description">Estado de Claude en tu Mac y permisos rápidos</string>
     <string name="complication_status_label" translatable="false">Claude</string>
+
+    <!-- Tile: chips -->
+    <string name="tile_open">Abrir</string>
+    <string name="tile_ask">Preguntar</string>
+    <string name="tile_allow">Permitir</string>
+    <string name="tile_deny">Rechazar</string>
+    <string name="tile_see_result">Ver resultado</string>
+
+    <!-- Tile: estados -->
+    <string name="tile_signed_out_title">Abre la app</string>
+    <string name="tile_signed_out_body">Inicia sesión en el reloj</string>
+    <string name="tile_no_signal_title">Sin señal</string>
+    <string name="tile_no_signal_body">Revisa la conexión del reloj</string>
+    <string name="tile_offline_title">Sin conexión</string>
+    <string name="tile_offline_body">Tu Mac no responde</string>
+    <string name="tile_ready">Listo</string>
+    <string name="tile_tokens_today">tokens hoy</string>
+    <string name="tile_working">Trabajando</string>
+    <string name="tile_working_fallback">Claude está en eso</string>
+    <string name="tile_permission">Permiso</string>
+    <string name="tile_permission_fallback">Claude pide permiso</string>
+    <string name="tile_blocked_title">Necesita tu Mac</string>
+    <string name="tile_blocked_fallback">Revisa tu Mac para seguir</string>
+    <string name="tile_done_ok">Listo ✓</string>
+    <string name="tile_done_failed">Falló ✗</string>
+    <string name="tile_done_ok_fallback">Claude terminó</string>
+    <string name="tile_done_failed_fallback">Algo falló en tu Mac</string>
+    <string name="tile_context_pct">contexto %1$d%%</string>
+
+    <!-- Tile: respuesta enviada desde el tile -->
+    <string name="tile_sent_allow">Permitido ✓</string>
+    <string name="tile_sent_deny">Rechazado</string>
+    <string name="tile_send_failed">No se pudo enviar</string>
+
+    <!-- Complicación: palabra de estado (SHORT_TEXT) -->
+    <string name="complication_word_open">Abrir</string>
+    <string name="complication_word_no_signal">Sin red</string>
+    <string name="complication_word_mac_offline">Sin Mac</string>
+    <string name="complication_word_ready">Listo</string>
+    <string name="complication_word_working">Trabajando</string>
+    <string name="complication_word_permission">Permiso</string>
+    <string name="complication_word_mac">Mac</string>
+    <string name="complication_word_failed">Falló</string>
+
+    <!-- Complicación: descripción para lector de pantalla -->
+    <string name="complication_cd_open">Abre la app para conectar</string>
+    <string name="complication_cd_no_signal">Sin señal</string>
+    <string name="complication_cd_mac_offline">Sin conexión con tu Mac</string>
+    <string name="complication_cd_ready">Claude listo</string>
+    <string name="complication_cd_ready_pct">Claude listo, contexto %1$d por ciento</string>
+    <string name="complication_cd_working">Claude trabajando</string>
+    <string name="complication_cd_permission">Claude pide permiso</string>
+    <string name="complication_cd_mac">Claude necesita tu Mac</string>
+    <string name="complication_cd_failed">Algo falló en la última tarea</string>
 </resources>

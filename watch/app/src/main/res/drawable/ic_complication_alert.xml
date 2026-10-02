@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome pixel "!" for complications: Claude is waiting on you
+     (permission) or on your Mac (blocker). Single white path; the watch face
+     tints it. Same 2-unit pixel grid as ic_complication_mascot. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10,2h4v13h-4z M10,18h4v4h-4z" />
+</vector>
