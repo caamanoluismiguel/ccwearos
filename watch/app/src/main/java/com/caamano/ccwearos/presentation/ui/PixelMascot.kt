@@ -32,6 +32,7 @@ import com.caamano.ccwearos.presentation.theme.StatusColors
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.Calendar
 import kotlin.math.floor
 import kotlin.random.Random
 
@@ -100,6 +101,9 @@ fun rememberReducedMotion(): Boolean {
  * The pixel mascot. [size] is the footprint WIDTH; the height is
  * `size * 18 / 16` because the top 7 grid rows are headroom for hops and the
  * "!", "?", signal and "z" props, so nothing ever clips.
+ *
+ * [isDrowsy]: time-of-day mood (hour 22-06). In Idle, blinks are slower and
+ * heavier — the mascot is half-asleep. Ignored under reduced motion.
  */
 @Composable
 fun PixelMascot(
@@ -108,6 +112,7 @@ fun PixelMascot(
     size: Dp = 32.dp,
     color: Color? = null,
     animate: Boolean = true,
+    isDrowsy: Boolean = false,
 ) {
     val reducedMotion = rememberReducedMotion()
     val shouldAnimate = animate && !reducedMotion
@@ -123,13 +128,13 @@ fun PixelMascot(
             animationSpec = tween(if (shouldAnimate) Motion.MEDIUM else 0, easing = Motion.StandardEasing),
             label = "mascot-state",
         ) { s ->
-            MascotSprite(state = s, color = color, animate = shouldAnimate)
+            MascotSprite(state = s, color = color, animate = shouldAnimate, isDrowsy = isDrowsy)
         }
     }
 }
 
 @Composable
-private fun MascotSprite(state: MascotState, color: Color?, animate: Boolean) {
+private fun MascotSprite(state: MascotState, color: Color?, animate: Boolean, isDrowsy: Boolean = false) {
     var frame by remember(state) { mutableStateOf(MascotFrame.resting(state, animate)) }
     val shake = remember(state) { Animatable(0f) }
     // Screen off / app hidden: the loop is cancelled, not left ticking.
@@ -137,7 +142,7 @@ private fun MascotSprite(state: MascotState, color: Color?, animate: Boolean) {
 
     LaunchedEffect(state, animate, resumed) {
         if (!animate || !resumed) return@LaunchedEffect
-        runMascotLoop(state, update = { frame = it(frame) }, shake = shake)
+        runMascotLoop(state, update = { frame = it(frame) }, shake = shake, isDrowsy = isDrowsy)
     }
 
     val body = color ?: if (state == MascotState.Offline) StatusColors.offline else CcPalette.Coral
@@ -172,6 +177,7 @@ private suspend fun runMascotLoop(
     state: MascotState,
     update: ((MascotFrame) -> MascotFrame) -> Unit,
     shake: Animatable<Float, *>,
+    isDrowsy: Boolean = false,
 ) = coroutineScope {
     // Blinks are shared by every state whose eyes are open.
     fun launchBlinks(minMs: Long = 5_000, maxMs: Long = 7_000) = launch {
@@ -192,9 +198,50 @@ private suspend fun runMascotLoop(
             delay(2_000); update { it.copy(breath = 0) }
         }
     }
+    // KAI: Drowsy blinks — slower interval, longer eye-closed hold (heavy lids).
+    // Hour 22-06: the mascot is half-asleep. Re-droops are more frequent.
+    fun launchDrowsy() = launch {
+        while (true) {
+            delay(Random.nextLong(3_000, 5_000))
+            update { it.copy(blink = true) }; delay(220)      // slow close
+            update { it.copy(blink = false) }
+            if (Random.nextInt(2) == 0) {                      // drowsy re-droop
+                delay(200)
+                update { it.copy(blink = true) }; delay(300)
+                update { it.copy(blink = false) }
+            }
+        }
+    }
 
     when (state) {
-        MascotState.Idle -> { launchBreath(); launchBlinks() }
+        MascotState.Idle -> {
+            // NOVA: Wrist-raise greeting — double-blink "I see you". Fires every
+            // time the loop restarts (screen-on / resume). Two blinks in ~400ms,
+            // then the normal idle loop, so it reads as a greeting, not a tic.
+            update { it.copy(blink = true) }; delay(100)
+            update { it.copy(blink = false) }; delay(120)
+            update { it.copy(blink = true) }; delay(80)
+            update { it.copy(blink = false) }
+
+            launchBreath()
+            if (isDrowsy) launchDrowsy() else launchBlinks()
+
+            // KAI: Micro-idle look-sideways. Longer gaps when awake (no twitching),
+            // shorter + longer hold when drowsy (tired gaze wanders and lingers).
+            launch {
+                while (true) {
+                    delay(
+                        Random.nextLong(
+                            if (isDrowsy) 15_000 else 30_000,
+                            if (isDrowsy) 45_000 else 80_000,
+                        ),
+                    )
+                    update { it.copy(gaze = 1) }
+                    delay(if (isDrowsy) 1_500 else 1_000)
+                    update { it.copy(gaze = 0) }
+                }
+            }
+        }
 
         MascotState.Sending -> {
             update { it.copy(lean = 1, beat = -1) }

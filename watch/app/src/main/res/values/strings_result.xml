@@ -3,6 +3,8 @@
     <!-- Página Resultado (presentation/result/ResultPage.kt) -->
     <string name="result_empty_title">Aún no le has preguntado nada</string>
     <string name="result_empty_hint">Toca Preguntar en Inicio</string>
+    <!-- Globo de mascota en estado vacío (máx 16 caracteres) -->
+    <string name="result_empty_bubble">Pregúntame algo</string>
 
     <string name="result_see_less">Ver menos</string>
 

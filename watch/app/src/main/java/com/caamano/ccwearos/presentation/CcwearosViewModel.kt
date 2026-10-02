@@ -536,6 +536,19 @@ class CcwearosViewModel(
         }
     }
 
+    /**
+     * True for [COLD_START_GRACE_MS] after the ViewModel is created. Suppresses
+     * the "Sin conexión" state while Firebase warms up, so the app never flashes
+     * offline on a normal cold start (Firebase typically connects within 1-3s).
+     * After the grace window the value drops to false and the normal offline
+     * logic takes over. StateFlow starts eagerly so the pager always has a value.
+     */
+    val connectingGrace: StateFlow<Boolean> = kotlinx.coroutines.flow.flow {
+        emit(true)
+        delay(COLD_START_GRACE_MS)
+        emit(false)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
     internal companion object {
         private const val TAG = "ccwearos-vm"
 
@@ -544,5 +557,8 @@ class CcwearosViewModel(
         const val WATCH_OFFLINE_DEBOUNCE_MS = 5_000L
         const val MAC_OFFLINE_DEBOUNCE_MS = 1_500L
         const val AWAITING_DEBOUNCE_MS = 2_000L
+
+        /** "Sin conexión" is suppressed while Firebase connects on cold start. */
+        const val COLD_START_GRACE_MS = 6_000L
     }
 }

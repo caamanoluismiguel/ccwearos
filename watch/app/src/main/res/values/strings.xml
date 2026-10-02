@@ -61,6 +61,7 @@
     <string name="claim_failed">No se pudo abrir</string>
     <string name="state_sending">Enviando…</string>
     <string name="state_blocked">Necesita tu Mac</string>
+    <string name="state_connecting">Conectando…</string>
 
     <!-- Pantallas de bloqueo (BlockedScreen) -->
     <string name="blocked_mac_offline_title">Tu Mac no responde</string>
