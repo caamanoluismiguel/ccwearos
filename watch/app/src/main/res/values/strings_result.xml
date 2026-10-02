@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Página Resultado (presentation/result/ResultPage.kt) -->
+    <string name="result_empty_title">Aún no le has preguntado nada</string>
+    <string name="result_empty_hint">Toca Preguntar en Inicio</string>
+
+    <string name="result_tldr_label">En corto</string>
+    <string name="result_see_more">Ver más</string>
+    <string name="result_see_less">Ver menos</string>
+    <string name="result_see_all">Ver todo</string>
+
+    <string name="result_status_done">Hecho</string>
+    <string name="result_status_failed">Falló</string>
+    <string name="result_status_failed_code">Falló · código %1$d</string>
+    <string name="result_status_info">Respuesta</string>
+
+    <string name="result_code_full">Ver código completo (%1$d líneas)</string>
+    <string name="result_code_cd">Código %1$s, %2$d líneas</string>
+    <string name="result_table_too_wide">Tabla: ábrela en tu Mac</string>
+    <string name="result_table_row_cd">Fila %1$d</string>
+
+    <string name="result_tools_title">Pasos</string>
+    <string name="result_tools_see_all">Ver los %1$d pasos</string>
+    <string name="result_tool_command">Comando</string>
+    <string name="result_tool_edit">Editó</string>
+    <string name="result_tool_read">Leyó</string>
+    <string name="result_tool_search">Buscó</string>
+    <string name="result_tool_web">Web</string>
+    <string name="result_tool_agent">Agente</string>
+
+    <string name="result_followups_title">Sugerencias</string>
+    <string name="result_speak">Hablar</string>
+    <string name="result_continue">Seguir</string>
+    <string name="result_new_conversation">Nueva conversación</string>
+</resources>
