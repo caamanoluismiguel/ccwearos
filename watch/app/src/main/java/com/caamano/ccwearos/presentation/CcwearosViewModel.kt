@@ -13,6 +13,7 @@ import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.RunOutcome
+import com.caamano.ccwearos.data.RunProgress
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.SharedSessionStaleness
 import com.caamano.ccwearos.data.TaskKind
@@ -198,6 +199,16 @@ class CcwearosViewModel(
     /** Real exit status of the last run. Eager: drives completion. */
     val outcome: StateFlow<RunOutcome?> = repo.outcome
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * /progress: rich step-by-step progress while the daemon runs a voice
+     * task. Null when idle, before the daemon publishes it, or when the
+     * daemon version predates the /progress contract.
+     * WhileSubscribed: display-only, stale on wake is fine (Firebase
+     * reconnects before the screen redraws).
+     */
+    val progress: StateFlow<RunProgress?> = repo.progress
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
      * RTDB /conversationActive: "Seguir" vs "Preguntar". Replaces the old

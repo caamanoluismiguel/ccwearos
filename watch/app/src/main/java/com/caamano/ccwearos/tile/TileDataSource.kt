@@ -45,6 +45,8 @@ object TileDataSource {
                 val blockerRaw = read("blocker")
                 val outcomeRaw = read("outcome")
                 val headline = read("headline")
+                val progressStep = read("progress/step")
+                val progressLabel = read("progress/label")
                 val blocker = RtdbMappers.blocker(blockerRaw.await().value)
                 val outcome = RtdbMappers.outcome(outcomeRaw.await().value)
                 TileSnapshot(
@@ -59,6 +61,8 @@ object TileDataSource {
                     permissionPromptId = promptId.await().getValue(String::class.java),
                     dailyTokens = (tokens.await().value as? Number)?.toLong(),
                     contextPct = (ctx.await().value as? Number)?.toDouble(),
+                    progressStep = (progressStep.await().value as? Number)?.toLong(),
+                    progressLabel = RtdbMappers.string(progressLabel.await().value),
                 )
             }
         }

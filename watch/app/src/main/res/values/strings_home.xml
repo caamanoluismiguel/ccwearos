@@ -38,6 +38,27 @@
     <!-- Trabajando sin botones: tocar muestra Detener unos segundos -->
     <string name="home_reveal_stop">Mostrar Detener</string>
 
+    <!-- Progreso de tarea larga (RunProgress) -->
+    <!-- Paso meta: "Paso 3 . Buscando archivos" -->
+    <string name="home_progress_step_dots_cd">Paso %1$d de %2$d completados</string>
+    <!-- Por que este paso tarda: aparece a los 20s en el mismo paso -->
+    <string name="home_progress_long_files">Revisando muchos archivos</string>
+    <string name="home_progress_long_command">El comando sigue corriendo</string>
+    <string name="home_progress_long_web">Esperando la respuesta de internet</string>
+    <string name="home_progress_long_thinking">Claude esta pensando a fondo</string>
+    <string name="home_progress_long_generic">Este paso esta tardando</string>
+    <!-- A los 60s en el mismo paso: el dueno puede bajar la muneca -->
+    <string name="home_progress_wrist_down">Puedes bajar la muneca, te aviso cuando termine</string>
+    <!-- Senales de vida: reemplaza "Sigue ahi?" cuando progress.lastEventAt esta disponible -->
+    <string name="home_stale_signal">Sin senales de Claude hace %1$d min</string>
+    <!-- Resumen al levantar la muneca despues de pasos perdidos -->
+    <string name="home_recap_one">Mientras no mirabas: 1 paso mas</string>
+    <string name="home_recap_many">Mientras no mirabas: %1$d pasos mas</string>
+    <!-- Confirmacion de cancelar tarea larga -->
+    <string name="home_stop_confirm">Detener la tarea</string>
+    <string name="home_stop_confirm_yes">Si, detener</string>
+    <string name="home_stop_confirm_no">Seguir</string>
+
     <!-- Métricas -->
     <string name="home_metrics_both">%1$s sesión · %2$s semana</string>
     <string name="home_metrics_session">%1$s sesión</string>

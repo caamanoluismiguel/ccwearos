@@ -83,12 +83,22 @@ internal object TileLayouts {
                     chip(s(R.string.tile_ask), launch(packageName, activityClass, DeepLinks.ACTION_VOICE), "ask", filled = true),
                 ),
             )
-            is TileState.Running -> column(
-                listOf(
-                    title(s(R.string.tile_working), CORAL),
-                    body(state.activity ?: s(R.string.tile_working_fallback), GRAY, 2),
-                ) + listOfNotNull(state.contextPct?.let { pctLabel(context, it) }),
-            )
+            is TileState.Running -> {
+                // ARIA: show step label when available ("Paso 3 · Buscando archivos"),
+                // otherwise fall back to the activity spinner text.
+                val progressLine: String? = when {
+                    state.step != null && state.stepLabel != null ->
+                        "Paso ${state.step} · ${state.stepLabel}"
+                    state.step != null -> "Paso ${state.step}"
+                    else -> null
+                }
+                column(
+                    listOf(
+                        title(s(R.string.tile_working), CORAL),
+                        body(progressLine ?: state.activity ?: s(R.string.tile_working_fallback), GRAY, 2),
+                    ) + listOfNotNull(state.contextPct?.let { pctLabel(context, it) }),
+                )
+            }
             is TileState.Awaiting -> awaiting(context, state, open, feedback, nonce)
             is TileState.Blocked -> column(
                 listOf(

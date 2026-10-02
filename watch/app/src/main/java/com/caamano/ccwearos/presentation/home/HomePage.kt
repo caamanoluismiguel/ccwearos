@@ -55,6 +55,7 @@ import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.PromptMode
+import com.caamano.ccwearos.data.RunProgress
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.presentation.Haptics
@@ -84,6 +85,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.unit.Dp
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INICIO — the instrument, minimal on purpose: only what you need, and a
@@ -124,6 +127,17 @@ data class HomeUi(
     val bubble: MascotBubble? = null,
     /** TL;DR shown under "¡Listo!" while the done moment plays. */
     val doneTldr: String? = null,
+    /**
+     * Rich progress from the daemon (/progress). Null while idle, before the
+     * daemon publishes it, or when the daemon is older. Degrades gracefully to
+     * the toolEvents / activity path when null.
+     */
+    val progress: RunProgress? = null,
+    /**
+     * Step the user last saw before the wrist went down; null = never went down
+     * while running. Set by DashboardScreen from the RESUMED lifecycle.
+     */
+    val recapFromStep: Int? = null,
 )
 
 /** Inicio callbacks. Haptics.tick is fired by the controls themselves. */
@@ -150,21 +164,35 @@ private object HomeType {
 private const val STOP_REVEAL_MS = 4_000L
 private const val CANCEL_DELAY_MS = 5_000L
 
+// How long a step heartbeat haptic waits between pulses (battery + non-annoyance).
+private const val HEARTBEAT_INTERVAL_MS = 2 * 60_000L
+
 @Composable
 fun HomePage(
     ui: HomeUi,
     callbacks: HomeCallbacks,
     nowMs: () -> Long = System::currentTimeMillis,
 ) {
-    // Progress clock for "¿Sigue ahí?": resets whenever the run shows life.
+    val context = LocalContext.current
+    val resumed = rememberIsResumed()
+    val running = ui.mode is HomeMode.Running
+    val now by tickingNow(enabled = running, nowMs = nowMs)
+
+    // ─── Staleness: prefer liveness-based (RunProgress) over blind timer ─────
+    // When progress is available use lastEventAt; when not, fall back to
+    // toolEvents/runStartedAt so existing behaviour is preserved exactly.
     var lastProgressAt by remember { mutableLongStateOf(nowMs()) }
     LaunchedEffect(ui.toolEvents, ui.runStartedAt) {
         lastProgressAt = nowMs()
     }
-    val running = ui.mode is HomeMode.Running
-    val now by tickingNow(enabled = running, nowMs = nowMs)
-    val stale = running && isRunStale(now, lastProgressAt)
+    val stale: Boolean = if (ui.progress != null && ui.progress.lastEventAt > 0) {
+        // ARIA: liveness-based — more honest than a blind 3-min clock.
+        running && livenessState(ui.progress.lastEventAt, now) == LivenessState.VERY_STALE
+    } else {
+        running && isRunStale(now, lastProgressAt)
+    }
 
+    // ─── Detener reveal (tap while working) ──────────────────────────────────
     // Detener is hidden while working; a tap reveals it for a few seconds.
     var stopReveal by remember { mutableIntStateOf(0) }
     var stopVisible by remember { mutableStateOf(false) }
@@ -177,8 +205,36 @@ fun HomePage(
     }
     LaunchedEffect(running) { if (!running) stopVisible = false }
 
+    // ─── Cancel confirm state ─────────────────────────────────────────────────
+    // KAI: runs > 10s get a two-step confirm so a long task can't be
+    // accidentally cancelled by a stray tap. Short runs cancel immediately.
+    var stopConfirmVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(running) { if (!running) stopConfirmVisible = false }
+
+    // ─── Haptic step pulse (new step started) ────────────────────────────────
+    // KAI: a light tick when Claude moves to the next step (only while the
+    // screen is on). Doesn't fire on step 0 (thinking) to avoid false starts.
+    val stepKey = ui.progress?.step ?: 0L
+    LaunchedEffect(stepKey) {
+        if (resumed && running && stepKey > 0L) Haptics.tick(context)
+    }
+
+    // ─── Haptic heartbeat ("still working") ──────────────────────────────────
+    // KAI: one barely-there swipe pulse every 2 min while the screen is on
+    // and not stale, so the wrist knows the run is alive. Nothing while
+    // screen-off (battery) or already showing the stale state.
+    LaunchedEffect(running, resumed, stale) {
+        if (running && resumed && !stale) {
+            delay(HEARTBEAT_INTERVAL_MS)
+            while (running && resumed && !stale) {
+                Haptics.swipe(context)
+                delay(HEARTBEAT_INTERVAL_MS)
+            }
+        }
+    }
+
     val revealLabel = stringResource(R.string.home_reveal_stop)
-    val tapToReveal = if (running && !stale) {
+    val tapToReveal = if (running && !stale && !stopConfirmVisible) {
         Modifier.combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
@@ -205,7 +261,24 @@ fun HomePage(
                 Spacer(Modifier.height(4.dp))
                 DetailSlot(ui = ui, now = now, stale = stale, callbacks = callbacks)
                 Spacer(Modifier.height(12.dp))
-                ActionSlot(mode = ui.mode, stale = stale, stopVisible = stopVisible, callbacks = callbacks)
+                // KAI: stop confirm intercepts callbacks.onStop so a long run
+                // never dies from a stray tap. Short runs bypass the confirm.
+                val wrappedCallbacks = if (running) callbacks.copy(
+                    onStop = {
+                        val elapsed = ui.runStartedAt?.let { nowMs() - it } ?: 0L
+                        if (requiresStopConfirm(elapsed)) stopConfirmVisible = true
+                        else callbacks.onStop()
+                    },
+                ) else callbacks
+                ActionSlot(
+                    mode = ui.mode,
+                    stale = stale,
+                    stopVisible = stopVisible,
+                    stopConfirmVisible = stopConfirmVisible,
+                    onStopConfirmYes = { stopConfirmVisible = false; callbacks.onStop() },
+                    onStopConfirmNo = { stopConfirmVisible = false },
+                    callbacks = wrappedCallbacks,
+                )
                 val mode = ui.mode
                 val plainIdle = mode is HomeMode.Idle && mode.failure == null &&
                     mode.offline == null && ui.mascot != MascotState.Done
@@ -380,7 +453,22 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
                 }
                 DetailKind.SEND_FAILED -> BodyText(stringResource(R.string.home_send_failed), color = StatusColors.error, maxLines = 2)
                 DetailKind.RUNNING -> RunningLine(ui, now)
-                DetailKind.STALE -> BodyText(stringResource(R.string.home_stale_question), color = StatusColors.waiting)
+                DetailKind.STALE -> {
+                    // ARIA: liveness-honest copy. When progress is available and
+                    // lastEventAt is known, show "Sin señales de Claude hace N min"
+                    // instead of the generic "¿Sigue ahí?" so the owner knows
+                    // specifically that the signal has been gone for a measured time.
+                    val p = ui.progress
+                    if (p != null && p.lastEventAt > 0) {
+                        val minutes = signalAbsentMinutes(p.lastEventAt, now)
+                        BodyText(
+                            stringResource(R.string.home_stale_signal, minutes),
+                            color = StatusColors.waiting,
+                        )
+                    } else {
+                        BodyText(stringResource(R.string.home_stale_question), color = StatusColors.waiting)
+                    }
+                }
                 DetailKind.SHARED -> (mode as? HomeMode.Shared)?.let { SharedSessionBlock(it.meta) }
             }
         }
@@ -416,14 +504,50 @@ private fun MetaText(text: String, color: Color = CcPalette.TextSecondary) {
 @Composable
 private fun RunningLine(ui: HomeUi, now: Long) {
     val reduced = rememberReducedMotion()
-    val line = workingLine(ui.toolEvents)
+    val p = ui.progress
+
+    // ─── Primary "what I'm doing" line ────────────────────────────────────
+    // NOVA: intent crossfade — Claude's own words are the clearest answer to
+    // "¿qué está pasando?". Falls back to the tool-verb line when intent is
+    // absent, preserving 100% of the existing behaviour.
+    val primaryLine: String = when {
+        p != null && !p.intent.isNullOrBlank() -> p.intent.take(90)
+        p != null && p.label.isNotBlank() -> workingLine(ui.toolEvents).let { tl ->
+            if (tl == WorkingCopy.THINKING && p.label.isNotBlank()) p.label else tl
+        }
+        else -> workingLine(ui.toolEvents)
+    }
+
+    // ─── Step meta line ("Paso 3 · Buscando archivos · ~/Downloads") ──────
+    val stepMeta: String? = p?.let { stepMetaLine(it.step, it.label, it.detail) }
+
+    // ─── Recap ("Mientras no mirabas: N pasos más") ───────────────────────
+    // NOVA: animates in for 2.5s on wrist raise, then crossfades to live line.
+    val recapFrom = ui.recapFromStep
+    val currentStep = p?.step?.toInt() ?: 0
+    val recapSteps = if (recapFrom != null) (currentStep - recapFrom).coerceAtLeast(0) else 0
+    val recapMessage = recapText(recapSteps)
+    var showRecap by remember(recapMessage) { mutableStateOf(recapMessage != null) }
+    LaunchedEffect(recapMessage) {
+        if (recapMessage != null) {
+            showRecap = true
+            delay(2_500)
+            showRecap = false
+        }
+    }
+
+    // ─── Long-step explanation ─────────────────────────────────────────────
+    // ARIA: after 20s on the same step, add a 12sp "why" line. After 60s
+    // add the wrist-down invitation.
+    val stepAgeMs: Long = if (p != null && p.stepStartedAt > 0) {
+        (now - p.stepStartedAt).coerceAtLeast(0)
+    } else 0L
+    val whyCopy: StepWhy? = p?.let { stepWhyCopy(it.label, stepAgeMs) }
+
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        // NOVA item 3: odometer roll — new tool verb slides up from below while the
-        // old one exits upward, like a departure board. GPU-composited (only
-        // translationY + alpha, no layout shift). Falls back to crossfade under
-        // reduced motion so the state word always reads correctly.
+        // Primary line: recap → live intent/tool verb (crossfade).
         AnimatedContent(
-            targetState = line,
+            targetState = if (showRecap && recapMessage != null) recapMessage else primaryLine,
             transitionSpec = {
                 if (reduced) crossfade(true)
                 else {
@@ -434,8 +558,46 @@ private fun RunningLine(ui: HomeUi, now: Long) {
                 }
             },
             label = "live-line",
-        ) { t -> BodyText(t) }
+        ) { t ->
+            BodyText(
+                text = t,
+                maxLines = 2,
+                color = if (showRecap) CcPalette.Coral else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+
+        // Step meta line + step dots (only when progress is rich).
+        if (stepMeta != null && !showRecap) {
+            Spacer(Modifier.height(2.dp))
+            MetaText(stepMeta)
+        }
+        if (p != null && p.step > 0 && !showRecap) {
+            Spacer(Modifier.height(4.dp))
+            StepDots(completedSteps = p.step.toInt(), currentPulsing = true)
+        }
+
+        // Long-step explanation (appears at 20s, wrist hint at 60s).
+        if (whyCopy != null && !showRecap) {
+            Spacer(Modifier.height(2.dp))
+            val whyRes = when (whyCopy.reason) {
+                StepReason.FILES -> R.string.home_progress_long_files
+                StepReason.COMMAND -> R.string.home_progress_long_command
+                StepReason.WEB -> R.string.home_progress_long_web
+                StepReason.THINKING -> R.string.home_progress_long_thinking
+                StepReason.GENERIC -> R.string.home_progress_long_generic
+            }
+            AnimatedContent(targetState = whyRes, transitionSpec = { crossfade(reduced) }, label = "step-why") {
+                MetaText(stringResource(it), color = CcPalette.Coral)
+            }
+            if (whyCopy.wristDown) {
+                Spacer(Modifier.height(1.dp))
+                MetaText(stringResource(R.string.home_progress_wrist_down), color = CcPalette.TextSecondary)
+            }
+        }
+
+        // Elapsed timer.
         ui.runStartedAt?.let { started ->
+            Spacer(Modifier.height(2.dp))
             val elapsed = formatElapsed(now - started)
             val cd = stringResource(R.string.home_elapsed_cd, elapsed)
             Text(
@@ -445,6 +607,56 @@ private fun RunningLine(ui: HomeUi, now: Long) {
                 lineHeight = HomeType.metaLine,
                 modifier = Modifier.semantics { contentDescription = cd },
             )
+        }
+    }
+}
+
+/**
+ * Row of pixel-square step dots. Completed = coral, current (last) = coral
+ * with a gentle alpha pulse, future = dark surface. Max 8 visible.
+ * GPU-composited: single Canvas draw call, no recomposition per dot.
+ *
+ * ZERO: Canvas only, no sub-Composables, no layout allocation per dot.
+ * ARIA: 5dp squares / 4dp gap keeps the row scannable at a glance.
+ */
+@Composable
+private fun StepDots(
+    completedSteps: Int,
+    currentPulsing: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val total = completedSteps.coerceIn(1, 8)
+    val dotSize = 5.dp
+    val dotGap = 4.dp
+    // Pulse alpha for the current (last completed) step: gentle 0.55..1 cycle.
+    val pulseAlpha = remember { Animatable(1f) }
+    val reduced = rememberReducedMotion()
+    LaunchedEffect(currentPulsing, reduced) {
+        if (!currentPulsing || reduced) return@LaunchedEffect
+        // 1.6s full cycle on repeat, gated on RESUMED by LaunchedEffect cancellation.
+        while (true) {
+            pulseAlpha.animateTo(0.55f, tween(800, easing = LinearEasing))
+            pulseAlpha.animateTo(1f, tween(800, easing = LinearEasing))
+        }
+    }
+    val coral = CcPalette.Coral
+    val surface = CcPalette.Surface
+    Canvas(
+        modifier = modifier
+            .then(Modifier.semantics { /* dots are decorative; step meta has the text */ }),
+    ) {
+        val dotPx = dotSize.toPx()
+        val gapPx = dotGap.toPx()
+        val totalWidth = total * dotPx + (total - 1) * gapPx
+        var x = (size.width - totalWidth) / 2f
+        for (i in 0 until total) {
+            val alpha = if (i == total - 1) pulseAlpha.value else 1f
+            drawRect(
+                color = if (i < total) coral.copy(alpha = alpha) else surface,
+                topLeft = Offset(x, (size.height - dotPx) / 2f),
+                size = androidx.compose.ui.geometry.Size(dotPx, dotPx),
+            )
+            x += dotPx + gapPx
         }
     }
 }
@@ -472,10 +684,18 @@ private fun lastResponseLabel(at: Long?, now: Long): String {
 
 // ─── Actions: only when you have to step in ──────────────────────────────────
 
-private enum class ActionKind { ASK, OFFLINE_WATCH, OFFLINE_MAC, CANCEL, RETRY, STOP, STOP_STALE, NONE }
+private enum class ActionKind { ASK, OFFLINE_WATCH, OFFLINE_MAC, CANCEL, RETRY, STOP, STOP_STALE, STOP_CONFIRM, NONE }
 
 @Composable
-private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, callbacks: HomeCallbacks) {
+private fun ActionSlot(
+    mode: HomeMode,
+    stale: Boolean,
+    stopVisible: Boolean,
+    callbacks: HomeCallbacks,
+    stopConfirmVisible: Boolean = false,
+    onStopConfirmYes: () -> Unit = {},
+    onStopConfirmNo: () -> Unit = {},
+) {
     val reduced = rememberReducedMotion()
     // Cancelar only after a few seconds: most prompts are picked up at once.
     val sending = mode is HomeMode.Sending
@@ -496,6 +716,7 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, cal
         is HomeMode.Sending -> if (cancelReady) ActionKind.CANCEL else ActionKind.NONE
         is HomeMode.SendFailed -> ActionKind.RETRY
         HomeMode.Running -> when {
+            stopConfirmVisible -> ActionKind.STOP_CONFIRM
             stale -> ActionKind.STOP_STALE
             stopVisible -> ActionKind.STOP
             else -> ActionKind.NONE
@@ -568,6 +789,27 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, cal
                             height = 36.dp,
                         )
                     }
+                }
+                // KAI: two-step confirm for long runs — prevents accidental cancel
+                // of a task the owner sent and then forgot about. Short label to fit
+                // on the round bezel. "Seguir" is the safe default (bigger target).
+                ActionKind.STOP_CONFIRM -> {
+                    MetaText(stringResource(R.string.home_stop_confirm), color = StatusColors.waiting)
+                    Spacer(Modifier.height(4.dp))
+                    HomeButton(
+                        label = stringResource(R.string.home_stop_confirm_yes),
+                        style = HomeButtonStyle.DANGER,
+                        icon = PixelIcons.Stop,
+                        onClick = onStopConfirmYes,
+                        height = 40.dp,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    HomeButton(
+                        label = stringResource(R.string.home_stop_confirm_no),
+                        style = HomeButtonStyle.OUTLINED,
+                        onClick = onStopConfirmNo,
+                        height = 36.dp,
+                    )
                 }
                 ActionKind.NONE -> Spacer(Modifier.height(4.dp))
             }
@@ -788,5 +1030,107 @@ private fun PreviewShared() = PreviewHome(
     HomeUi(
         HomeMode.Shared(SharedSessionMeta(cwd = "/Users/me/projects/CCWEAROS", kind = "hook")),
         MascotState.Running,
+    ),
+)
+
+// ─── Progress Previews (new long-task states) ─────────────────────────────
+
+private fun fakeProgress(
+    step: Long,
+    label: String,
+    detail: String? = null,
+    intent: String? = null,
+    stepStartedAt: Long = System.currentTimeMillis() - 3_000,
+    lastEventAt: Long = System.currentTimeMillis() - 5_000,
+): RunProgress = RunProgress(
+    step = step,
+    label = label,
+    detail = detail,
+    intent = intent,
+    stepStartedAt = stepStartedAt,
+    lastEventAt = lastEventAt,
+    runStartedAt = System.currentTimeMillis() - 60_000,
+)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Progreso · Pensando (paso 0)")
+@Composable
+private fun PreviewProgressThinking() = PreviewHome(
+    HomeUi(
+        HomeMode.Running, MascotState.Running,
+        progress = fakeProgress(step = 0, label = "Pensando…", intent = "Voy a revisar el archivo de configuracion"),
+        runStartedAt = System.currentTimeMillis() - 12_000,
+    ),
+)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Progreso · Paso 1 fresco")
+@Composable
+private fun PreviewProgressStep1() = PreviewHome(
+    HomeUi(
+        HomeMode.Running, MascotState.Running,
+        progress = fakeProgress(
+            step = 1, label = "Buscando archivos", detail = "~/Downloads",
+            intent = "Voy a buscar el archivo mas reciente y enviarlo por correo",
+        ),
+        runStartedAt = System.currentTimeMillis() - 18_000,
+    ),
+)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Progreso · Paso largo 25s")
+@Composable
+private fun PreviewProgressLongStep25() = PreviewHome(
+    HomeUi(
+        HomeMode.Running, MascotState.Running,
+        progress = fakeProgress(
+            step = 2, label = "Buscando archivos", detail = "~/projects",
+            intent = "Revisando todos los archivos del proyecto",
+            stepStartedAt = System.currentTimeMillis() - 25_000,
+        ),
+        runStartedAt = System.currentTimeMillis() - 80_000,
+    ),
+)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Progreso · Paso muy largo 70s")
+@Composable
+private fun PreviewProgressLongStep70() = PreviewHome(
+    HomeUi(
+        HomeMode.Running, MascotState.Running,
+        progress = fakeProgress(
+            step = 3, label = "Corriendo un comando",
+            intent = "Corriendo las pruebas del proyecto",
+            stepStartedAt = System.currentTimeMillis() - 70_000,
+        ),
+        runStartedAt = System.currentTimeMillis() - 3 * 60_000,
+    ),
+)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Progreso · Sin senales 2 min")
+@Composable
+private fun PreviewProgressStale2Min() {
+    val base = System.currentTimeMillis()
+    var calls = 0
+    CCWEAROSTheme {
+        HomePage(
+            ui = HomeUi(
+                HomeMode.Running, MascotState.Running,
+                progress = fakeProgress(
+                    step = 4, label = "Corriendo un comando",
+                    lastEventAt = base - 3 * 60_000,
+                ),
+                runStartedAt = base - 5 * 60_000,
+            ),
+            callbacks = HomeCallbacks(),
+            nowMs = { base },
+        )
+    }
+}
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Progreso · Resumen al despertar")
+@Composable
+private fun PreviewProgressRecap() = PreviewHome(
+    HomeUi(
+        HomeMode.Running, MascotState.Running,
+        progress = fakeProgress(step = 5, label = "Editando archivos", detail = "parser.ts"),
+        runStartedAt = System.currentTimeMillis() - 4 * 60_000,
+        recapFromStep = 3,
     ),
 )
