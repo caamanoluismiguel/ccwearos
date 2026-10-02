@@ -172,6 +172,29 @@ describe("runClaudeForVoice (claude -p stream-json)", () => {
     expect(r.result?.numTurns).toBe(3);
   });
 
+  it("publishes /progress: step 0 at spawn, each tool step, nothing after done", async () => {
+    const { runClaudeForVoice } = await import("./claude-voice.js");
+    const onProgress = vi.fn();
+    const runner = runClaudeForVoice("Contexto: x", { ...callbacks(), onProgress }, { cwd: "/tmp/v" });
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress.mock.calls[0]?.[0]).toMatchObject({ step: 0, label: "Pensando" });
+    const lines = fixture("tool-run.jsonl").trimEnd().split("\n");
+    feed(lines.slice(0, -1).join("\n") + "\n");
+    const snaps = onProgress.mock.calls.map((c) => c[0] as { step: number; label: string; intent?: string });
+    expect(snaps.find((p) => p.step === 1)).toMatchObject({
+      label: "Buscando archivos",
+      detail: "~/Downloads",
+      intent: "Voy a revisar tu carpeta de descargas.",
+    });
+    expect(snaps.find((p) => p.step === 2)).toMatchObject({ label: "Editando parser.ts" });
+    feed(`${lines.at(-1)}\n`);
+    child.emit("close", 0, null);
+    await runner.done;
+    const n = onProgress.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(onProgress).toHaveBeenCalledTimes(n);
+  });
+
   it("auth error: is_error result → blocked kind auth", async () => {
     const { runClaudeForVoice } = await import("./claude-voice.js");
     const runner = runClaudeForVoice("Contexto: x", callbacks(), { cwd: "/tmp/v" });

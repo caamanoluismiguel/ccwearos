@@ -12,6 +12,7 @@ import type {
   PendingPrompt,
   RecentSession,
   RunOutcome,
+  RunProgress,
   SharedSessionMeta,
   TaskKind,
   ToolEvent,
@@ -109,6 +110,11 @@ export async function setBlocker(blocker: Blocker | null): Promise<void> {
 // Real end state of the last voice run. Cleared at the start of every run.
 export async function setOutcome(outcome: RunOutcome | null): Promise<void> {
   await db().ref("/outcome").set(outcome);
+}
+
+// Live progress of the running voice run. null at run start / end.
+export async function setProgress(progress: RunProgress | null): Promise<void> {
+  await db().ref("/progress").set(progress);
 }
 
 // Whether the NEXT voice prompt continues the thread (--continue). Survives
@@ -209,6 +215,7 @@ export async function clearStaleState(
       command: null,
       prompt: null,
       blocker: null,
+      progress: null,
       // conversationActive deliberately kept — it must survive restarts of
       // the watch view; the daemon resets it itself on startup.
     });
@@ -245,6 +252,7 @@ export async function registerCrashCleanup(paths: {
         task: null,
         command: null,
         blocker: null,
+        progress: null,
       }),
     );
   }

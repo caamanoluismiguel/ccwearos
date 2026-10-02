@@ -23,6 +23,7 @@ import {
   setHeadline,
   setOutcome,
   setPermissionPrompt,
+  setProgress,
   setResponse,
   setStatus,
   setTask,
@@ -251,6 +252,7 @@ async function runDaemon(): Promise<void> {
     setTaskKind,
     setHeadline,
     setFollowups,
+    setProgress,
   };
   // Fresh daemon = no thread to continue (hasPriorSession starts false).
   // Unlike /blocker and /outcome this path survives clearStaleState.
@@ -555,6 +557,10 @@ async function runDaemon(): Promise<void> {
             observedTools = e;
             void setToolEvents(e);
           },
+          onProgress: (pr) =>
+            void setProgress(pr).catch((e) =>
+              console.error("[ccwearos] setProgress failed:", e),
+            ),
         },
         { continueSession: shouldContinue },
       );
@@ -629,6 +635,7 @@ async function runDaemon(): Promise<void> {
         await setActivity(null);
         await setTask(null);
         await setPermissionPrompt(null);
+        await setProgress(null);
         await setStatus("IDLE");
         await clearPrompt();
       } catch (cleanupErr) {

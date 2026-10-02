@@ -52,10 +52,20 @@ describe("firebase voice-run paths", () => {
     ]);
   });
 
+  it("setProgress writes /progress (and null clears it)", async () => {
+    const p = { step: 1, label: "Buscando archivos", detail: "~/Downloads", stepStartedAt: 2, lastEventAt: 3, runStartedAt: 1 };
+    await fb.setProgress(p);
+    await fb.setProgress(null);
+    expect(writes).toEqual([
+      { op: "set", path: "/progress", value: p },
+      { op: "set", path: "/progress", value: null },
+    ]);
+  });
+
   it("clearStaleState clears live state but keeps the last result + conversationActive", async () => {
     await fb.clearStaleState("IDLE");
     const v = writes[0]?.value as Record<string, unknown>;
-    expect(v).toMatchObject({ status: "IDLE", blocker: null, permissionPrompt: null });
+    expect(v).toMatchObject({ status: "IDLE", blocker: null, permissionPrompt: null, progress: null });
     for (const k of ["conversationActive", "response", "headline", "followups", "outcome", "toolEvents", "taskKind"])
       expect(v).not.toHaveProperty(k);
   });
@@ -66,7 +76,7 @@ describe("firebase voice-run paths", () => {
       string,
       unknown
     >;
-    expect(v).toMatchObject({ status: "OFFLINE", blocker: null });
+    expect(v).toMatchObject({ status: "OFFLINE", blocker: null, progress: null });
     for (const k of ["conversationActive", "response", "headline", "followups", "outcome"])
       expect(v).not.toHaveProperty(k);
   });

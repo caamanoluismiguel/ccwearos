@@ -239,16 +239,18 @@ describe("clearVoiceRunEnd / publishVoiceRunEnd", () => {
       setTaskKind: rec("taskKind"),
       setHeadline: rec("headline"),
       setFollowups: rec("followups"),
+      setProgress: rec("progress"),
     };
     return { s, calls };
   }
 
-  it("run start clears /blocker and /outcome", async () => {
+  it("run start clears /blocker, /outcome and /progress", async () => {
     const { s, calls } = sinks();
     await clearVoiceRunEnd(s);
     expect(calls).toEqual([
       ["blocker", null],
       ["outcome", null],
+      ["progress", null],
     ]);
   });
 
@@ -277,6 +279,7 @@ describe("clearVoiceRunEnd / publishVoiceRunEnd", () => {
       "taskKind",
       "headline",
       "followups",
+      "progress",
       "outcome",
     ]);
     expect(calls[0]?.[1]).toMatchObject({ kind: "trust", cwd: "/tmp/v", ts: 1234 });
@@ -296,7 +299,11 @@ describe("clearVoiceRunEnd / publishVoiceRunEnd", () => {
     );
     expect(replaced).toBe(false);
     expect(normal).toBe(true);
-    expect(calls).toEqual([["outcome", { ok: true, exitCode: 0, ts: 5 }]]);
+    // /progress is nulled right before /outcome.
+    expect(calls).toEqual([
+      ["progress", null],
+      ["outcome", { ok: true, exitCode: 0, ts: 5 }],
+    ]);
   });
 
   it("stopped run: no blocker, normal path, outcome carries stopped:true", async () => {
@@ -312,6 +319,7 @@ describe("clearVoiceRunEnd / publishVoiceRunEnd", () => {
     );
     expect(normal).toBe(true);
     expect(calls).toEqual([
+      ["progress", null],
       ["outcome", { ok: false, exitCode: 130, stopped: true, ts: 9 }],
     ]);
   });

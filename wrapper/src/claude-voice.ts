@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { createMetricsStore } from "./metrics-store.js";
 import type { BlockingDialog } from "./parser.js";
+import { ProgressPublisher, ProgressTracker } from "./progress.js";
 import {
   activityForTool,
   detectRunBlocker,
@@ -23,7 +24,7 @@ import {
   StreamJsonLines,
   type StreamResult,
 } from "./stream-json.js";
-import type { ClaudeStatus, Metrics, ToolEvent } from "./types/schema.js";
+import type { ClaudeStatus, Metrics, RunProgress, ToolEvent } from "./types/schema.js";
 import {
   VOICE_HOOK_WAIT_ENV,
   VOICE_RUN_ENV,
@@ -40,6 +41,10 @@ export interface VoiceCallbacks {
   onResponse: (r: string) => void;
   onClaudeStatus: (s: ClaudeStatus) => void;
   onToolEvents: (events: ToolEvent[]) => void;
+  // Live /progress snapshots (src/progress.ts): right after spawn, then on
+  // every step change, ≤1/s otherwise, and every 10s while nothing happens.
+  // Never called after `done` resolves.
+  onProgress?: (p: RunProgress) => void;
 }
 
 export interface VoiceRunResult {
@@ -181,9 +186,14 @@ export function runClaudeForVoice(
     pendingText = null;
   };
 
+  const progress = cb.onProgress
+    ? new ProgressPublisher(new ProgressTracker({ runStartedAt: Date.now() }), cb.onProgress)
+    : null;
+
   const finish = (exitCode: number | null): void => {
     if (finished) return;
     finished = true;
+    progress?.stop();
     for (const t of timers) clearTimeout(t);
     if (responseTimer) clearTimeout(responseTimer);
     cb.onActivity(null);
@@ -218,6 +228,8 @@ export function runClaudeForVoice(
     return { stop: () => {}, kill: () => {}, done };
   }
 
+  progress?.start();
+
   const signal = (sig: NodeJS.Signals): void => {
     if (exited) return;
     try {
@@ -244,6 +256,7 @@ export function runClaudeForVoice(
 
   const lines = new StreamJsonLines();
   const handle = (raw: unknown): void => {
+    progress?.ingest(raw);
     const u = parseStreamEvent(raw);
     if (u.model) {
       status.model = prettyModel(u.model);

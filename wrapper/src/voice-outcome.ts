@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import type { BlockingDialog } from "./parser.js";
 import { SHARED_SESSION_BLOCKER_HINT } from "./shared-session.js";
 import { shSingleQuote } from "./sh-escape.js";
-import type { BlockerKind, RunOutcome, TaskKind } from "./types/schema.js";
+import type { BlockerKind, RunOutcome, RunProgress, TaskKind } from "./types/schema.js";
 
 export interface VoiceOutcome {
   headline: string;
@@ -207,6 +207,7 @@ export interface VoiceRunSinks {
   setTaskKind: (k: TaskKind | null) => Promise<void>;
   setHeadline: (h: string | null) => Promise<void>;
   setFollowups: (f: string[] | null) => Promise<void>;
+  setProgress: (p: RunProgress | null) => Promise<void>;
 }
 
 // A live shared session (cc / /ccwearos) owns Claude on the Mac, so the
@@ -229,6 +230,7 @@ export async function publishSharedSessionDrop(
 export async function clearVoiceRunEnd(sinks: VoiceRunSinks): Promise<void> {
   await sinks.setBlocker(null);
   await sinks.setOutcome(null);
+  await sinks.setProgress(null);
 }
 
 // Run end: /blocker (if any), then either the plain-text fallback or the
@@ -252,6 +254,8 @@ export async function publishVoiceRunEnd(
   } else {
     await normalPath();
   }
+  // The run is over: no live progress once the watch sees /outcome.
+  await sinks.setProgress(null);
   await sinks.setOutcome({ ...voiceRunOutcome(f), ts: now });
   return special !== null;
 }
