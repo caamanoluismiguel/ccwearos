@@ -421,6 +421,12 @@ export function extractPermissionPrompt(chunk: string): string | null {
   // the wrist would trust a whole folder. Its "Yes, I trust this folder"
   // option must not reach the loose legacy matchers below.
   if (isTrustDialog(lines)) return null;
+  // Any other select-dialog footer without a readable permission box (a
+  // reworded trust dialog, an onboarding/MCP prompt) is NOT a permission
+  // prompt: its "1. Yes, …" option would otherwise hit the loose matchers
+  // below and the watch's Allow ("1\r") would answer the dialog. The
+  // blocking-dialog path reports it as kind "other" instead.
+  if (hasDialogFooter(lines)) return null;
 
   for (const re of PERMISSION_PATTERNS) {
     const line = lines.find((l) => re.test(l.text));
@@ -618,6 +624,17 @@ const AUTH_PREFIXES = ["invalidapikey", "pleaserun/login"];
 const AUTH_ANYWHERE = ["oauthtokenhasexpired", "pleaserun/login"];
 const LEADING_MARKS_RE = /^[\s⎿⏺●>│┃║]+/;
 
+// A footer ROW of a Claude Code select dialog ("Enter to confirm · Esc to
+// cancel", or a permission box's "Esc to cancel · Tab to amend"). Anchored at
+// the start of the row so prose like "press Esc to cancel" doesn't count.
+const DIALOG_FOOTER_PREFIXES = ["entertoconfirm", "esctocancel", "esctoexit"];
+function hasDialogFooter(lines: ScreenLine[]): boolean {
+  return lines.some((l) => {
+    const sq = squash(l.text.replace(BOX_DRAWING_RE, " "));
+    return DIALOG_FOOTER_PREFIXES.some((p) => sq.startsWith(p));
+  });
+}
+
 function isTrustDialog(lines: ScreenLine[]): boolean {
   const sq = lines.map((l) => squash(l.text));
   return (
@@ -687,10 +704,13 @@ export function extractBlockingDialog(buffer: string): BlockingDialog | null {
   if (isTrustDialog(lines)) return { kind: "trust", detail: trustFolder(lines) };
   const auth = authLine(lines);
   if (auth !== null) return { kind: "auth", detail: auth };
+  // A readable permission box is the only select box the watch may answer.
+  if (extractPermissionBox(lines) !== null) return null;
   const title = otherDialogTitle(lines);
-  if (title !== null && extractPermissionPrompt(buffer) === null) {
-    return { kind: "other", detail: title };
-  }
+  if (title !== null) return { kind: "other", detail: title };
+  // Footer without "Enter to confirm" next to "Esc" (reworded dialog, partial
+  // box): extractPermissionPrompt refuses it, so it must surface here.
+  if (hasDialogFooter(lines)) return { kind: "other", detail: "" };
   return null;
 }
 

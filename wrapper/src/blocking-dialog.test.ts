@@ -106,6 +106,42 @@ describe("extractPermissionPrompt vs trust dialog", () => {
   it("does not treat the workspace-trust dialog as a tool permission", () => {
     expect(extractPermissionPrompt(dialogFixture("trust.txt"))).toBeNull();
   });
+
+  // A future rewording drops every TRUST_MARKER. Its "1. Yes, …" option must
+  // still never reach the legacy matchers (the watch's Allow sends "1\r").
+  const reworded = tui(
+    "─".repeat(60),
+    " Workspace access",
+    " Do you allow Claude to read and run files here?",
+    "",
+    " ❯ 1. Yes, continue",
+    "   2. No, exit",
+    "",
+    " Enter to confirm · Esc to cancel",
+  );
+
+  it("reworded trust dialog: not a permission prompt", () => {
+    expect(extractPermissionPrompt(reworded)).toBeNull();
+  });
+
+  it("reworded trust dialog: reported as a blocking 'other' dialog", () => {
+    expect(extractBlockingDialog(reworded)).toEqual({
+      kind: "other",
+      detail: "Workspace access",
+    });
+  });
+
+  it("Esc-only footer with no readable box: blocking, never a permission", () => {
+    const text = tui(" ❯ 1. Yes", "   2. No", "", " Esc to cancel");
+    expect(extractPermissionPrompt(text)).toBeNull();
+    expect(extractBlockingDialog(text)?.kind).toBe("other");
+  });
+
+  it("prose that mentions 'Esc to cancel' is not dialog chrome", () => {
+    const text = tui("⏺ Press Esc to cancel the run.", "❯ 1. Yes");
+    expect(extractBlockingDialog(text)).toBeNull();
+    expect(extractPermissionPrompt(text)).not.toBeNull();
+  });
 });
 
 describe("BlockingDialogTracker", () => {
