@@ -24,6 +24,10 @@ data class TileSnapshot(
     /** /outcome.ts (Mac clock, ms). 0 when unknown. */
     val outcomeTs: Long = 0,
     val headline: String? = null,
+    /** /progress.step: tool calls so far; 0 = thinking. Null = path absent. */
+    val progressStep: Long? = null,
+    /** /progress.label: Spanish step description ("Buscando archivos"). */
+    val progressLabel: String? = null,
 )
 
 /** What the tile / complication renders. */
@@ -38,7 +42,14 @@ sealed class TileState {
 
     data class Idle(val dailyTokens: Long, val contextPct: Int?) : TileState()
 
-    data class Running(val activity: String?, val contextPct: Int?) : TileState()
+    data class Running(
+        val activity: String?,
+        val contextPct: Int?,
+        /** Step count from /progress; null when the daemon predates the contract. */
+        val step: Int? = null,
+        /** Step label ("Buscando archivos"); null when step is null. */
+        val stepLabel: String? = null,
+    ) : TileState()
 
     data class Awaiting(
         val promptPreview: String,
@@ -94,7 +105,12 @@ object TileMapper {
                     TileState.Idle(snapshot.dailyTokens ?: 0L, pct)
                 }
             }
-            "RUNNING" -> TileState.Running(snapshot.activity?.firstLine(), pct)
+            "RUNNING" -> TileState.Running(
+                activity = snapshot.activity?.firstLine(),
+                contextPct = pct,
+                step = snapshot.progressStep?.takeIf { it > 0 }?.toInt(),
+                stepLabel = snapshot.progressLabel?.takeIf { it.isNotBlank() },
+            )
             else -> TileState.Offline
         }
     }

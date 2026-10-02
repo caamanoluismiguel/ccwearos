@@ -31,6 +31,7 @@ import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.RunOutcome
+import com.caamano.ccwearos.data.RunProgress
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
@@ -105,6 +106,11 @@ data class DashboardState(
     val recentSessions: List<RecentSession> = emptyList(),
     /** True for ~6s after launch: suppresses the offline flash while Firebase connects. */
     val connectingGrace: Boolean = false,
+    /**
+     * Rich step-by-step progress from /progress. Null when idle or when the
+     * daemon predates the /progress contract; degrades to toolEvents path.
+     */
+    val progress: RunProgress? = null,
 )
 
 data class DashboardActions(
@@ -169,6 +175,10 @@ fun DashboardScreen(
     var ringTrigger by remember { mutableIntStateOf(0) }
     var shakeTrigger by remember { mutableIntStateOf(0) }
     var metricsOpen by remember { mutableStateOf(false) }
+    // NOVA: recap state — track what step the user last saw so that on wrist
+    // raise we can say "Mientras no mirabas: N pasos más".
+    var recapFromStep by remember { mutableStateOf<Int?>(null) }
+    val currentStep = state.progress?.step?.toInt() ?: 0
     // True while the shell drives the pager, so settle haptics stay for swipes.
     var programmatic by remember { mutableStateOf(false) }
     // The mascot's transient bubble ("¡Listo!", "Uy, falló", "Detenido").
@@ -280,6 +290,30 @@ fun DashboardScreen(
         if (resumed) unseen.onResume(System.currentTimeMillis())?.let { playEnd(it, haptic = false, buzzError = false) }
     }
 
+    // NOVA: recap on wrist raise. When the screen goes off (resumed=false)
+    // while a run is in progress, remember the last step the user saw.
+    // On the next wake (resumed=true), if steps advanced, HomePage shows
+    // "Mientras no mirabas: N pasos más" for 2.5s before the live line.
+    val running = state.status == WrapperStatus.RUNNING
+    LaunchedEffect(resumed) {
+        if (!resumed && running) {
+            // Wrist went down: snapshot the current step.
+            recapFromStep = currentStep
+        } else if (resumed && running) {
+            // Wrist came back up: if no new steps, clear the recap slot
+            // so HomePage doesn't show a stale "0 pasos más".
+            if (recapFromStep != null && currentStep <= (recapFromStep ?: 0)) {
+                recapFromStep = null
+            }
+            // If steps advanced, leave recapFromStep set — HomePage reads it.
+        } else {
+            // Not running: clear.
+            recapFromStep = null
+        }
+    }
+    // Also clear recap after the run ends.
+    LaunchedEffect(running) { if (!running) recapFromStep = null }
+
     // KAI: Signature motif fires ONCE on cold app open (not on resume from ambient).
     // Synced with the mascot's first blink sequence (~200ms after the screen is live).
     // Uses a one-shot flag so navigation or screen-off/on never re-fires it.
@@ -339,6 +373,8 @@ fun DashboardScreen(
         // "¿Me dejas?" stays up while Claude waits on a decision.
         bubble = transientBubble ?: if (mode == HomeMode.Waiting) MascotBubble.ASK else null,
         doneTldr = doneTldr,
+        progress = state.progress,
+        recapFromStep = recapFromStep,
     )
     val homeCallbacks = HomeCallbacks(
         onAsk = { askVoice.launch(askPrompt) },
