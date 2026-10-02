@@ -60,6 +60,7 @@ import {
 import { clearPermissionPromptIf } from "./prompt-store.js";
 import { checkCommand, STOP } from "./command-guard.js";
 import { isPidAlive } from "./pid-utils.js";
+import { promptLanguage } from "./prompt-language.js";
 import { isSharedSessionStale, staleLockRemover } from "./shared-session.js";
 
 const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
@@ -68,9 +69,7 @@ const MODE = process.env["CCWEAROS_MODE"] ?? "interactive";
 // watch can render a glanceable headline. Bilingual heuristic — pick the
 // prefix language from the user's voice text so Claude doesn't switch tone.
 function buildPromptPrefix(userText: string): string {
-  const spanishStems =
-    /\b(qu[éeè]|c[óo]mo|por qu[éeè]|explica|d[íi]me|qu[éeè] es|cu[áa]l|cu[áa]ndo|d[óo]nde|resume|res[úu]meme)\b/i;
-  const isSpanish = spanishStems.test(userText);
+  const isSpanish = promptLanguage(userText) === "es";
   // Context note that goes first: tell Claude he IS running on the user's
   // macOS session with shell access, so "abre X" / "open X" / "ejecuta X"
   // must trigger the Bash tool, not a "I can't do that" refusal.
