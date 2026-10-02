@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Inicio, pager shell y rutas (lane B). Español de Colombia, tuteo. -->
+<resources>
+    <!-- Páginas -->
+    <string name="home_page_inicio">Inicio</string>
+    <string name="home_page_result">Resultado</string>
+    <string name="home_page_sessions">Sesiones</string>
+
+    <!-- Enviando -->
+    <string name="home_sent_quote">Le pedí: “%1$s”</string>
+    <string name="home_cancel">Cancelar</string>
+    <string name="home_retry">Reintentar</string>
+    <string name="home_send_failed">Tu Mac no tomó la pregunta</string>
+
+    <!-- Sin conexión -->
+    <string name="home_offline_button">Sin conexión</string>
+    <string name="home_offline_watch_explain">El reloj no tiene internet. Tu pregunta no se enviará hasta que vuelva.</string>
+    <string name="home_offline_mac_explain">Tu Mac no responde. Revisa que esté encendido y con el daemon corriendo.</string>
+
+    <!-- Trabajando -->
+    <string name="home_stale_question">¿Sigue ahí?</string>
+    <string name="home_reset_state">Reiniciar estado</string>
+    <string name="home_elapsed_cd">Lleva %1$s</string>
+    <string name="home_tool_edit">Editando</string>
+    <string name="home_tool_write">Escribiendo</string>
+    <string name="home_tool_read">Leyendo</string>
+    <string name="home_tool_run">Ejecutando</string>
+    <string name="home_tool_search">Buscando</string>
+    <string name="home_tool_fetch">Consultando</string>
+    <string name="home_tool_web">Buscando en la web</string>
+    <string name="home_tool_delegate">Delegando una tarea</string>
+    <string name="home_tool_other">Usando %1$s</string>
+    <string name="home_waiting_mac_hint">Claude espera algo en tu Mac</string>
+
+    <!-- Terminado / falló -->
+    <string name="home_last_response">Última respuesta</string>
+    <string name="home_last_response_ago">Última respuesta · %1$s</string>
+    <string name="home_fail_stopped">Detuviste la tarea</string>
+    <string name="home_fail_exit">Claude terminó con error (código %1$d)</string>
+    <string name="home_see_detail">Ver detalle</string>
+
+    <!-- Métricas -->
+    <string name="home_metrics_both">%1$s sesión · %2$s semana</string>
+    <string name="home_metrics_session">%1$s sesión</string>
+    <string name="home_metrics_week">%1$s semana</string>
+    <string name="home_metrics_tokens">%1$s tokens hoy</string>
+    <string name="home_metrics_cd">Uso: %1$s. Toca para ver el detalle</string>
+    <string name="home_metrics_title">Uso</string>
+    <string name="home_close">Cerrar</string>
+
+    <!-- Nueva conversación -->
+    <string name="home_reset_title">¿Empezar de cero?</string>
+    <string name="home_reset_body">Claude olvidará esta conversación.</string>
+    <string name="home_reset_confirm">Empezar de cero</string>
+
+    <!-- Sesiones -->
+    <string name="home_sessions_empty">No hay sesiones en tu Mac</string>
+</resources>

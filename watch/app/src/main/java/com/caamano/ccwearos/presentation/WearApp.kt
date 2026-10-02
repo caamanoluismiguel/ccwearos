@@ -1,131 +1,193 @@
 package com.caamano.ccwearos.presentation
 
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.material3.TimeText
 import com.caamano.ccwearos.R
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.caamano.ccwearos.data.WrapperStatus
+import com.caamano.ccwearos.presentation.home.HINT_WAITING_ON_MAC
+import com.caamano.ccwearos.presentation.home.Overlay
+import com.caamano.ccwearos.presentation.home.WATCH_OFFLINE_KEY
+import com.caamano.ccwearos.presentation.home.continuityTransition
+import com.caamano.ccwearos.presentation.ui.Motion
+import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 
-// Which top-level screen is showing, plus the status it was entered with.
-// AnimatedContent keys on `screen` only (see contentKey below), while
-// `status` is what DashboardScreen renders for that content.
-private enum class Screen { PERMISSION, OFFLINE, DASHBOARD }
+// ─────────────────────────────────────────────────────────────────────────────
+// Shell: the pager (DashboardScreen) is ALWAYS composed, and every other
+// state is an overlay drawn above it. Nothing tears the pager down, so its
+// page, scroll and completion collector survive IDLE ↔ RUNNING ↔ prompt.
+//
+// Overlay order (see home/HomeModel.kt routeOverlay):
+//   PermissionScreen  › BlockedScreen(blocker) › BlockedScreen(MAC_OFFLINE)
+//   › BlockedScreen(NEEDS_MAC, "Claude espera algo en tu Mac")
+//   › BlockedScreen(NEEDS_MAC) for TUI junk flagged by ResultPage.
+// BlockedScreen(WATCH_OFFLINE) is a non-blocking banner at the top.
+// Dismissals are local (VM), never written to RTDB.
+//
+// Continuity: an overlay arrives from progress 1 → 0 (blurred, stretched,
+// faded) over Motion.SLOW with EnterEasing while the pager recedes 0 → 0.6;
+// reverse on exit with ExitEasing. Only graphicsLayer changes, so the pager
+// underneath never jumps.
+// ─────────────────────────────────────────────────────────────────────────────
 
-private data class Route(val screen: Screen, val status: WrapperStatus)
-
-private fun route(status: WrapperStatus, prompt: String?): Route = Route(
-    screen = when {
-        // A status without prompt text (e.g. the cached status arriving
-        // before /permissionPrompt on wake) stays on the dashboard rather
-        // than showing an empty permission modal.
-        status == WrapperStatus.AWAITING_PERMISSION && !prompt.isNullOrBlank() -> Screen.PERMISSION
-        status == WrapperStatus.OFFLINE -> Screen.OFFLINE
-        else -> Screen.DASHBOARD
-    },
-    status = status,
-)
+/** How far the pager recedes while an overlay is fully shown. */
+private const val UNDERLAY_RECEDE = 0.6f
 
 @Composable
 fun WearApp(vm: CcwearosViewModel = viewModel()) {
     // collectAsStateWithLifecycle (not collectAsState): collection stops when
     // the activity drops below STARTED, so the WhileSubscribed(5s) flows in
     // the ViewModel actually release their Firebase listeners in background.
-    // Only routing state is collected here; each screen collects its own.
-    val status by vm.status.collectAsStateWithLifecycle()
-    val prompt by vm.permissionPrompt.collectAsStateWithLifecycle()
+    val overlay by vm.overlay.collectAsStateWithLifecycle()
+    val watchOfflineBanner by vm.watchOfflineBanner.collectAsStateWithLifecycle()
     val confirmingClaim by vm.confirmingClaim.collectAsStateWithLifecycle()
     val claimResult by vm.claimResult.collectAsStateWithLifecycle()
     val lastError by vm.lastError.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val reduced = rememberReducedMotion()
+
+    // `shown` is what is composed in the overlay layer; it lags `overlay`
+    // by one exit animation so a leaving screen animates out before the
+    // next one comes in. `reveal` 0 = hidden, 1 = fully shown.
+    var shown by remember { mutableStateOf<Overlay>(Overlay.None) }
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(overlay) {
+        val target = overlay
+        if (target.key != shown.key) {
+            if (shown != Overlay.None) {
+                if (reduced) reveal.snapTo(0f) else reveal.animateTo(0f, tween(Motion.MEDIUM, easing = Motion.ExitEasing))
+            }
+            // ¿salió bien? A Mac-side blocker is a failure the wrist feels.
+            if (target is Overlay.Blocked && target.blockerKind != null) Haptics.error(context)
+        }
+        shown = target
+        if (target != Overlay.None) {
+            if (reduced) reveal.snapTo(1f) else reveal.animateTo(1f, tween(Motion.SLOW, easing = Motion.EnterEasing))
+        }
+    }
 
     // App-level scaffold: one curved TimeText shared by every page (pages pass
     // timeText = null to their ScreenScaffold and inherit this one).
     AppScaffold(timeText = { TimeText() }) {
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        AnimatedContent(
-            targetState = route(status, prompt),
-            transitionSpec = {
-                // Permission entrance is more impactful — slide up + fade.
-                // Everything else just crossfades.
-                if (targetState.screen == Screen.PERMISSION) {
-                    (slideInVertically(animationSpec = tween(260)) { it / 3 } +
-                            fadeIn(animationSpec = tween(260))) togetherWith
-                        fadeOut(animationSpec = tween(180))
-                } else {
-                    fadeIn(animationSpec = tween(220)) togetherWith
-                        fadeOut(animationSpec = tween(180))
-                }
-            },
-            // CRITICAL (Sprint 4q): collapse IDLE / RUNNING / others into one
-            // "dashboard" content key so DashboardScreen is NOT re-created on
-            // every IDLE↔RUNNING flip. Without this, the v7 task-completion
-            // SharedFlow subscriber (inside TaskCompletionHandler) gets
-            // cancelled mid-emission and the haptic + auto-nav to Page 2 are
-            // silently lost. The PagerState would also reset to initialPage=0
-            // on every transition, breaking user navigation. PermissionScreen
-            // and OfflineScreen still get their own keys so the AnimatedContent
-            // crossfade still fires when entering/leaving those screens.
-            contentKey = { it.screen },
-            label = "screen",
-        ) { r ->
-            when (r.screen) {
-                Screen.PERMISSION -> PermissionRoute(vm)
-                Screen.OFFLINE -> OfflineScreen()
-                Screen.DASHBOARD -> DashboardRoute(vm, r.status)
-            }
-        }
-
-        // Sprint 4n — overlays drawn ABOVE the AnimatedContent screen
-        // routing, so they sit on top of any status (IDLE/RUNNING/etc).
-        // Confirmation dialog short-circuits the result banner: if the
-        // user is still confirming, an older result shouldn't compete.
-        val pendingClaim = confirmingClaim
-        val error = lastError
-        if (pendingClaim != null) {
-            ConfirmClaimDialog(
-                sessionId = pendingClaim.first,
-                cwd = pendingClaim.second,
-                onConfirm = vm::confirmClaim,
-                onCancel = vm::cancelClaim,
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            val covered = shown != Overlay.None
+            DashboardRoute(
+                vm = vm,
+                modifier = Modifier
+                    .continuityTransition(
+                        progress = { UNDERLAY_RECEDE * reveal.value },
+                        direction = { 0 },
+                        reducedMotion = reduced,
+                    )
+                    // Hidden from TalkBack while an overlay covers it.
+                    .then(if (covered) Modifier.clearAndSetSemantics { } else Modifier),
             )
-        } else if (error != null) {
-            // A failed write (allow/deny, stop, prompt, claim). Reuses the
-            // claim banner: red, auto-dismisses after 4s.
-            ClaimResultBanner(ok = false, message = error, onDismiss = vm::clearError)
-        } else {
-            // Only render the banner if the result is fresh (<10s old).
-            // Stale results from a previous claim shouldn't pop back up
-            // when the user wakes the watch hours later.
-            val freshResult = claimResult?.takeIf {
-                System.currentTimeMillis() - it.ts < 10_000L
+
+            if (covered) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = reveal.value }
+                        .continuityTransition(
+                            progress = { 1f - reveal.value },
+                            direction = { 0 },
+                            reducedMotion = reduced,
+                        )
+                        .background(Color.Black)
+                        // Swallow taps/swipes so nothing reaches the pager below.
+                        .pointerInput(Unit) { detectTapGestures { } },
+                ) {
+                    when (val o = shown) {
+                        Overlay.Permission -> PermissionRoute(vm)
+                        is Overlay.Blocked -> BlockedScreen(
+                            variant = o.variant,
+                            blockerKind = o.blockerKind,
+                            hint = if (o.hint == HINT_WAITING_ON_MAC) stringResource(R.string.home_waiting_mac_hint) else o.hint,
+                            cwd = o.cwd,
+                            onPrimary = { vm.dismissOverlay(o.dismissKey) },
+                            onDismiss = { vm.dismissOverlay(o.dismissKey) },
+                        )
+                        Overlay.None -> Unit
+                    }
+                }
             }
-            freshResult?.let { result ->
-                ClaimResultBanner(
-                    ok = result.ok,
-                    message = if (result.ok) {
-                        stringResource(R.string.claim_ok)
-                    } else {
-                        result.reason ?: stringResource(R.string.claim_failed)
-                    },
-                    onDismiss = vm::dismissClaimResult,
+
+            // Non-blocking: the pager stays usable under it (Ask shows "Sin
+            // conexión" and explains on tap).
+            AnimatedVisibility(
+                visible = watchOfflineBanner && !covered,
+                modifier = Modifier.align(Alignment.TopCenter),
+                enter = fadeIn(Motion.enter(Motion.MEDIUM)) + slideInVertically(Motion.enter(Motion.MEDIUM)) { -it / 2 },
+                exit = fadeOut(Motion.exit(Motion.FAST)) + slideOutVertically(Motion.exit(Motion.FAST)) { -it / 2 },
+            ) {
+                BlockedScreen(
+                    variant = BlockedVariant.WATCH_OFFLINE,
+                    onPrimary = { vm.dismissOverlay(WATCH_OFFLINE_KEY) },
+                    onDismiss = { vm.dismissOverlay(WATCH_OFFLINE_KEY) },
                 )
             }
+
+            // Sprint 4n — dialogs / banners above everything.
+            // Confirmation dialog short-circuits the result banner: if the
+            // user is still confirming, an older result shouldn't compete.
+            val pendingClaim = confirmingClaim
+            val error = lastError
+            if (pendingClaim != null) {
+                ConfirmClaimDialog(
+                    sessionId = pendingClaim.first,
+                    cwd = pendingClaim.second,
+                    onConfirm = vm::confirmClaim,
+                    onCancel = vm::cancelClaim,
+                )
+            } else if (error != null) {
+                // A failed write (allow/deny, stop, prompt, claim). Reuses the
+                // claim banner: red, auto-dismisses after 4s.
+                ClaimResultBanner(ok = false, message = error, onDismiss = vm::clearError)
+            } else {
+                // Only render the banner if the result is fresh (<10s old).
+                // Stale results from a previous claim shouldn't pop back up
+                // when the user wakes the watch hours later.
+                val freshResult = claimResult?.takeIf {
+                    System.currentTimeMillis() - it.ts < 10_000L
+                }
+                freshResult?.let { result ->
+                    ClaimResultBanner(
+                        ok = result.ok,
+                        message = if (result.ok) {
+                            stringResource(R.string.claim_ok)
+                        } else {
+                            result.reason ?: stringResource(R.string.claim_failed)
+                        },
+                        onDismiss = vm::dismissClaimResult,
+                    )
+                }
+            }
         }
-    }
     }
 }
 
@@ -143,41 +205,65 @@ private fun PermissionRoute(vm: CcwearosViewModel) {
     )
 }
 
-// Dashboard-only flows are collected here, so their WhileSubscribed
-// listeners pause while the permission or offline screen is showing.
 @Composable
-private fun DashboardRoute(vm: CcwearosViewModel, status: WrapperStatus) {
-    val metrics by vm.metrics.collectAsStateWithLifecycle()
+private fun DashboardRoute(vm: CcwearosViewModel, modifier: Modifier) {
+    val status by vm.status.collectAsStateWithLifecycle()
+    val connected by vm.connected.collectAsStateWithLifecycle()
+    val send by vm.sendState.collectAsStateWithLifecycle()
+    val sharedSession by vm.sharedSession.collectAsStateWithLifecycle()
+    val conversationActive by vm.conversationActive.collectAsStateWithLifecycle()
+    val lastRun by vm.lastRun.collectAsStateWithLifecycle()
+    val runStartedAt by vm.runStartedAt.collectAsStateWithLifecycle()
+    val blocker by vm.blocker.collectAsStateWithLifecycle()
     val activity by vm.activity.collectAsStateWithLifecycle()
     val task by vm.task.collectAsStateWithLifecycle()
-    val response by vm.response.collectAsStateWithLifecycle()
-    val claudeStatus by vm.claudeStatus.collectAsStateWithLifecycle()
-    val taskKind by vm.taskKind.collectAsStateWithLifecycle()
-    val headline by vm.headline.collectAsStateWithLifecycle()
     val toolEvents by vm.toolEvents.collectAsStateWithLifecycle()
+    val claudeStatus by vm.claudeStatus.collectAsStateWithLifecycle()
+    val metrics by vm.metrics.collectAsStateWithLifecycle()
+    val headline by vm.headline.collectAsStateWithLifecycle()
+    val response by vm.response.collectAsStateWithLifecycle()
+    val taskKind by vm.taskKind.collectAsStateWithLifecycle()
+    val outcome by vm.outcome.collectAsStateWithLifecycle()
     val followups by vm.followups.collectAsStateWithLifecycle()
-    val sentInSession by vm.sentInSession.collectAsStateWithLifecycle()
-    val sharedSession by vm.sharedSession.collectAsStateWithLifecycle()
     val recentSessions by vm.recentSessions.collectAsStateWithLifecycle()
+
+    val actions = remember(vm) {
+        DashboardActions(
+            onAsk = vm::sendPrompt,
+            onAskWithReset = vm::askWithReset,
+            onCancelSend = vm::cancelSend,
+            onRetry = vm::retrySend,
+            onStop = vm::stop,
+            onForceReset = vm::forceReset,
+            onClaim = vm::requestClaimConfirmation,
+            onClearLastRun = vm::clearLastRun,
+            onBlockedContent = vm::reportBlockedContent,
+        )
+    }
     DashboardScreen(
-        status = status,
-        metrics = metrics,
-        activity = activity,
-        task = task,
-        response = response,
-        claudeStatus = claudeStatus,
-        taskKind = taskKind,
-        headline = headline,
-        toolEvents = toolEvents,
-        followups = followups,
-        sentInSession = sentInSession,
-        sharedSession = sharedSession,
-        recentSessions = recentSessions,
-        onAsk = vm::sendPrompt,
-        onAskWithReset = vm::askWithReset,
-        onStop = vm::stop,
-        onForceReset = vm::forceReset,
-        onClaim = vm::requestClaimConfirmation,
-        taskCompleted = vm.taskCompleted,
+        state = DashboardState(
+            status = status,
+            connected = connected,
+            send = send,
+            sharedSession = sharedSession,
+            conversationActive = conversationActive,
+            lastRun = lastRun,
+            runStartedAt = runStartedAt,
+            blocker = blocker,
+            activity = activity,
+            task = task,
+            toolEvents = toolEvents,
+            claudeStatus = claudeStatus,
+            metrics = metrics,
+            headline = headline,
+            response = response,
+            taskKind = taskKind,
+            outcome = outcome,
+            followups = followups,
+            recentSessions = recentSessions,
+        ),
+        actions = actions,
+        events = vm.events,
+        modifier = modifier,
     )
 }
