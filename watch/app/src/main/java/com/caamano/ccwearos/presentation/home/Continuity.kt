@@ -101,6 +101,14 @@ private fun GraphicsLayerScope.applyContinuity(
         renderEffect = null
         return
     }
+    if (p >= 1f - SETTLED) {
+        // A full page away: off-screen for good. Nothing may peek in at the
+        // bezel, and no RenderEffect is kept for an invisible layer.
+        alpha = 0f
+        translationX = 0f
+        renderEffect = null
+        return
+    }
     if (reducedMotion) {
         alpha = 1f - p
         scaleX = 1f
@@ -109,7 +117,10 @@ private fun GraphicsLayerScope.applyContinuity(
         renderEffect = null
         return
     }
-    alpha = 1f - FADE * p
+    // Fade with the motion, and fully out over the last quarter so the
+    // neighbouring page is invisible by the time it settles one page away.
+    val tailFade = ((p - 0.75f) / 0.25f).coerceIn(0f, 1f)
+    alpha = (1f - FADE * p) * (1f - tailFade * tailFade * (3f - 2f * tailFade))
     // Stretch along the motion, anchored on the side the content travels toward.
     transformOrigin = TransformOrigin(
         pivotFractionX = when {
@@ -121,7 +132,9 @@ private fun GraphicsLayerScope.applyContinuity(
     )
     scaleX = 1f + STRETCH_X * p
     scaleY = 1f - SQUASH_Y * p
-    translationX = if (followFinger) -dir * p * size.width * FINGER_LAG else 0f
+    // Lag peaks mid-swipe and returns to zero at both ends, so content never
+    // rests partly on screen (a linear lag left 15% of the neighbour visible).
+    translationX = if (followFinger) -dir * 4f * p * (1f - p) * size.width * FINGER_LAG else 0f
     renderEffect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         val r = MAX_BLUR.toPx() * p
         BlurEffect(r, r, TileMode.Decal)
