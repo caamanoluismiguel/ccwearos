@@ -7,7 +7,6 @@ import com.caamano.ccwearos.data.WrapperStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -113,34 +112,6 @@ class CcwearosViewModelTest {
         assertEquals(listOf(CommandText.STOP to null), repo.commands)
     }
 
-    // (c) completion fires once per response across a transient IDLE gap
-    @Test
-    fun `task completion fires once across the transient idle gap`() = runTest(dispatcher) {
-        var fired = 0
-        val job = launch { vm.taskCompleted.collect { fired++ } }
-
-        repo.status.value = WrapperStatus.RUNNING
-        repo.response.value = null
-        repo.status.value = WrapperStatus.IDLE // transient gap: IDLE, no response yet
-        assertEquals(0, fired)
-        repo.response.value = "listo"
-        assertEquals(1, fired)
-
-        // Re-emissions of the same state must not re-fire.
-        repo.status.value = WrapperStatus.IDLE
-        repo.response.value = "listo"
-        assertEquals(1, fired)
-
-        // Next run: wrapper clears stale state, streams while RUNNING, then IDLE.
-        repo.status.value = WrapperStatus.RUNNING
-        repo.response.value = null
-        repo.response.value = "otra respuesta"
-        assertEquals(1, fired)
-        repo.status.value = WrapperStatus.IDLE
-        assertEquals(2, fired)
-        job.cancel()
-    }
-
     // Stale hook lock: hidden so the dashboard shows the ask button again.
     @Test
     fun `fresh hook session is exposed`() {
@@ -176,34 +147,4 @@ class CcwearosViewModelTest {
         repo.sharedSession.value = meta
         assertEquals(meta, vm.sharedSession.value)
     }
-}
-
-class CompletionDetectorTest {
-    @Test
-    fun `fires once per response and survives the idle gap`() {
-        val d = CompletionDetector()
-        assertFalse(d.onUpdate(WrapperStatus.IDLE, "vieja")) // cold start, never working
-        assertFalse(d.onUpdate(WrapperStatus.RUNNING, "vieja"))
-        assertFalse(d.onUpdate(WrapperStatus.IDLE, null)) // transient gap
-        assertFalse(d.onUpdate(WrapperStatus.IDLE, ""))
-        assertTrue(d.onUpdate(WrapperStatus.IDLE, "nueva"))
-        assertFalse(d.onUpdate(WrapperStatus.IDLE, "nueva"))
-    }
-
-    @Test
-    fun `permission wait counts as working`() {
-        val d = CompletionDetector()
-        d.onUpdate(WrapperStatus.AWAITING_PERMISSION, null)
-        assertTrue(d.onUpdate(WrapperStatus.IDLE, "hecho"))
-    }
-
-    @Test
-    fun `same response text after a new run does not re-fire`() {
-        val d = CompletionDetector()
-        d.onUpdate(WrapperStatus.RUNNING, null)
-        assertTrue(d.onUpdate(WrapperStatus.IDLE, "ok"))
-        d.onUpdate(WrapperStatus.RUNNING, "ok")
-        assertFalse(d.onUpdate(WrapperStatus.IDLE, "ok"))
-    }
-
 }

@@ -4,19 +4,34 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.caamano.ccwearos.data.AnswerGate
+import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.CcwearosRepository
 import com.caamano.ccwearos.data.ClaimResult
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.CommandText
 import com.caamano.ccwearos.data.Metrics
 import com.caamano.ccwearos.data.RecentSession
+import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.SharedSessionStaleness
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WatchRepository
 import com.caamano.ccwearos.data.WrapperStatus
+import com.caamano.ccwearos.presentation.home.AWAITING_KEY
+import com.caamano.ccwearos.presentation.home.HomeEvent
+import com.caamano.ccwearos.presentation.home.LastRun
+import com.caamano.ccwearos.presentation.home.MAC_OFFLINE_KEY
+import com.caamano.ccwearos.presentation.home.OutcomeCompletionDetector
+import com.caamano.ccwearos.presentation.home.Overlay
+import com.caamano.ccwearos.presentation.home.RoutingInput
+import com.caamano.ccwearos.presentation.home.SendState
+import com.caamano.ccwearos.presentation.home.WATCH_OFFLINE_KEY
+import com.caamano.ccwearos.presentation.home.blockedContentKey
+import com.caamano.ccwearos.presentation.home.routeOverlay
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,9 +42,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
 
 // User-visible error copy (Spanish, tuteo).
@@ -39,9 +57,20 @@ internal object ErrorCopy {
     const val ANSWER_FAILED = "No se pudo enviar tu respuesta. Intenta de nuevo."
     const val STOP_FAILED = "No se pudo detener la tarea. Intenta de nuevo."
     const val RESET_FAILED = "No se pudo reiniciar la pantalla. Intenta de nuevo."
-    const val PROMPT_FAILED = "No se pudo enviar tu mensaje. Intenta de nuevo."
     const val CLAIM_FAILED = "No se pudo abrir la sesión. Intenta de nuevo."
 }
+
+/** Emits true only after [this] has been true for [ms]; false immediately. */
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun Flow<Boolean>.holdTrue(ms: Long): Flow<Boolean> =
+    distinctUntilChanged().transformLatest { v ->
+        if (v) {
+            delay(ms)
+            emit(true)
+        } else {
+            emit(false)
+        }
+    }
 
 /** Emits once a minute, forever. Drives time-based re-evaluation in the VM. */
 internal fun minuteTicks(): Flow<Unit> = flow {
@@ -115,8 +144,7 @@ class CcwearosViewModel(
     val task: StateFlow<String?> = repo.task
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    // Eagerly (not WhileSubscribed): the completion watcher in init collects
-    // it continuously anyway, so WhileSubscribed never actually paused it.
+    // Eagerly: overlay routing checks it for TUI junk flagged by ResultPage.
     val response: StateFlow<String?> = repo.response
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
@@ -150,41 +178,128 @@ class CcwearosViewModel(
     val confirmingClaim: StateFlow<Pair<String, String>?> =
         _confirmingClaim.asStateFlow()
 
-    // Per-app-session flag: did THIS app launch / ViewModel instance send a
-    // regular prompt yet? Resets on app cold start (process death recreates
-    // the ViewModel) so opening the watch after a while feels "fresh" even
-    // though /response still has the previous run's content in RTDB.
-    //
-    //   • sendPrompt() sets it true — "you're now in a thread you started"
-    //   • askWithReset() leaves it false — "you explicitly asked to start over"
-    //
-    // The CommandPage button uses it to decide between "ask claude" (fresh)
-    // and "continuar" (mid-session). Wrapper-side behaviour is unchanged: the
-    // daemon always auto-continues via `claude --continue` unless the prompt
-    // text contains a RESET_PHRASES match.
-    private val _sentInSession = MutableStateFlow(false)
-    val sentInSession: StateFlow<Boolean> = _sentInSession.asStateFlow()
+    // ─── Home shell (Inicio + overlay routing) ───────────────────────────────
 
-    // v7 — Task completion event. Fires ONCE per "wasWorking → IDLE + response"
-    // transition. UI collects this and triggers haptic + auto-nav to Page 2.
-    //
-    // CRITICAL: this state lives in the ViewModel (not a Composable's
-    // `remember`) because WearApp.kt routes through AnimatedContent keyed by
-    // `status`. Every IDLE↔RUNNING transition re-creates DashboardScreen and
-    // wipes any composable-scoped state — so the "I was just RUNNING" memory
-    // would never survive a real completion. ViewModel scope outlives screen
-    // routing, so the transition watcher stays continuous.
-    private val _taskCompleted = MutableSharedFlow<Unit>(
-        replay = 0,
-        extraBufferCapacity = 1,
-    )
-    val taskCompleted: SharedFlow<Unit> = _taskCompleted.asSharedFlow()
+    /** Mac-only problem (trust/login/crash/timeout). Eager: drives routing. */
+    val blocker: StateFlow<Blocker?> = repo.blocker
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Real exit status of the last run. Eager: drives completion. */
+    val outcome: StateFlow<RunOutcome?> = repo.outcome
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * RTDB /conversationActive: "Seguir" vs "Preguntar". Replaces the old
+     * in-memory sentInSession guess, which reset on process death while the
+     * daemon kept continuing the thread.
+     */
+    val conversationActive: StateFlow<Boolean> = repo.conversationActive
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private val _send = MutableStateFlow<SendState>(SendState.None)
+
+    /** Spoken text between "sent" and "the Mac picked it up" (or failed to). */
+    val sendState: StateFlow<SendState> = _send.asStateFlow()
+    private var sendTimeoutJob: Job? = null
+
+    private val _lastRun = MutableStateFlow<LastRun?>(null)
+
+    /** How the last run ended; a failure keeps a one-line reason on Inicio. */
+    val lastRun: StateFlow<LastRun?> = _lastRun.asStateFlow()
+
+    private val _runStartedAt = MutableStateFlow<Long?>(null)
+
+    /** Wall time the current run was first seen working; null when idle. */
+    val runStartedAt: StateFlow<Long?> = _runStartedAt.asStateFlow()
+    private var stopRequested = false
+
+    // One-shot moments (haptics, auto-slide). Lives in the VM so it survives
+    // any recomposition; the pager shell collects it.
+    private val _events = MutableSharedFlow<HomeEvent>(extraBufferCapacity = 8)
+    val events: SharedFlow<HomeEvent> = _events.asSharedFlow()
+
+    // Local-only dismissals (never written to RTDB), keyed on blocker ts or
+    // on an episode key that is dropped when the episode ends.
+    private val _dismissed = MutableStateFlow<Set<String>>(emptySet())
+    private val _blockedContent = MutableStateFlow<String?>(null)
+
+    // Debounced conditions, so a cold-start default or a socket blip never
+    // flashes a full-screen state.
+    private val macOfflineStable: Flow<Boolean> =
+        status.map { it == WrapperStatus.OFFLINE }.holdTrue(MAC_OFFLINE_DEBOUNCE_MS)
+
+    private val awaitingWithoutPromptStable: Flow<Boolean> =
+        combine(status, permissionPrompt) { s, p ->
+            s == WrapperStatus.AWAITING_PERMISSION && p.isNullOrBlank()
+        }.holdTrue(AWAITING_DEBOUNCE_MS)
+
+    private val watchOfflineStable: Flow<Boolean> =
+        connected.map { !it }.holdTrue(WATCH_OFFLINE_DEBOUNCE_MS)
+
+    /** What sits above the pager. See [routeOverlay] for the priority. */
+    val overlay: StateFlow<Overlay> = combine(
+        combine(status, permissionPrompt, blocker) { s, p, b -> Triple(s, p, b) },
+        combine(macOfflineStable, awaitingWithoutPromptStable) { m, a -> m to a },
+        combine(_blockedContent, response) { key, r -> key?.takeIf { r != null && it == blockedContentKey(r) } },
+        _dismissed,
+    ) { (s, p, b), (macOff, awaiting), junk, dismissed ->
+        routeOverlay(
+            RoutingInput(
+                status = s,
+                permissionPrompt = p,
+                blocker = b,
+                macOfflineStable = macOff,
+                awaitingWithoutPromptStable = awaiting,
+                blockedContentKey = junk,
+                dismissed = dismissed,
+            ),
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, Overlay.None)
+
+    /** Non-blocking "reloj sin conexión" banner (after 5s offline, until dismissed). */
+    val watchOfflineBanner: StateFlow<Boolean> =
+        combine(watchOfflineStable, _dismissed) { off, d -> off && WATCH_OFFLINE_KEY !in d }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     init {
+        // Pickup, run clock and completion share one collector so they see
+        // every (status, outcome) pair in the same order.
         viewModelScope.launch {
-            val detector = CompletionDetector()
-            combine(status, response) { s, r -> s to r }
-                .collect { (s, r) -> if (detector.onUpdate(s, r)) _taskCompleted.emit(Unit) }
+            val detector = OutcomeCompletionDetector()
+            combine(status, outcome) { s, o -> s to o }.collect { (s, o) ->
+                val working = s == WrapperStatus.RUNNING || s == WrapperStatus.AWAITING_PERMISSION
+                val pending = _send.value
+                if (pending is SendState.Sending && (working || (o != null && o != pending.outcomeAtSend))) {
+                    detector.arm(pending.outcomeAtSend)
+                    sendTimeoutJob?.cancel()
+                    _send.value = SendState.None
+                    _events.tryEmit(HomeEvent.PickedUp)
+                }
+                if (working) {
+                    if (_runStartedAt.value == null) {
+                        _runStartedAt.value = clock()
+                        stopRequested = false
+                    }
+                } else {
+                    _runStartedAt.value = null
+                }
+                detector.onUpdate(s, o)?.let { done ->
+                    _lastRun.value = LastRun(done.ok, done.exitCode, stoppedByUser = stopRequested)
+                    stopRequested = false
+                    _events.tryEmit(HomeEvent.Finished(done.ok))
+                }
+            }
+        }
+        // Episode ends → forget its dismissal, so the next episode shows again.
+        viewModelScope.launch {
+            combine(status, connected) { s, c -> s to c }.collect { (s, c) ->
+                val ended = buildSet {
+                    if (s != WrapperStatus.OFFLINE) add(MAC_OFFLINE_KEY)
+                    if (s != WrapperStatus.AWAITING_PERMISSION) add(AWAITING_KEY)
+                    if (c) add(WATCH_OFFLINE_KEY)
+                }
+                if (_dismissed.value.any { it in ended }) _dismissed.value = _dismissed.value - ended
+            }
         }
     }
 
@@ -230,37 +345,102 @@ class CcwearosViewModel(
     // ETX (^C / SIGINT) specially: it calls runner.kill() instead of
     // forwarding to the pty so Claude exits cleanly. Audit log captures it.
     // No promptId: stop isn't an answer to a prompt.
-    fun stop() = launchAction(ErrorCopy.STOP_FAILED) { repo.sendCommand(CommandText.STOP, null) }
+    fun stop() {
+        stopRequested = true
+        launchAction(ErrorCopy.STOP_FAILED) { repo.sendCommand(CommandText.STOP, null) }
+    }
 
-    // Long-press of the stop button: force-reset stale UI state directly
-    // from the watch when the wrapper appears dead. SIGINT via /command
-    // goes nowhere if no wrapper is listening, leaving status=RUNNING
-    // forever. This writes IDLE + null directly to RTDB so the watch gets
-    // out of phantom state regardless of wrapper liveness.
-    fun forceReset() = launchAction(ErrorCopy.RESET_FAILED) { repo.forceResetUi() }
+    // Long-press of the stop button, or "Reiniciar estado" after 3 min with
+    // no progress: force-reset stale UI state directly from the watch when
+    // the wrapper appears dead. SIGINT via /command goes nowhere if no
+    // wrapper is listening, leaving status=RUNNING forever. This writes IDLE
+    // + null directly to RTDB so the watch gets out of phantom state.
+    fun forceReset() {
+        cancelSend()
+        launchAction(ErrorCopy.RESET_FAILED) { repo.forceResetUi() }
+    }
 
     // Voice / text input from the watch. Daemon picks it up and runs
-    // `claude -p <text>`, streaming the answer back to /response.
+    // `claude -p <text>` (continuing the thread while /conversationActive).
     fun sendPrompt(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
-        _sentInSession.value = true
-        launchAction(ErrorCopy.PROMPT_FAILED) { repo.sendPrompt(trimmed) }
+        send(display = trimmed, wire = trimmed)
     }
 
     // Reset the conversation: prepend a phrase the wrapper's RESET_PHRASES
     // detects ("nueva conversación") so the next run does NOT use --continue.
-    // Wrapper-side logic lives in wrapper/src/index.ts (RESET_PHRASES + the
-    // isResetPrompt check before computing shouldContinue).
-    //
-    // Note: does NOT set _sentInSession=true. The user explicitly asked to
-    // start over, so after the reset run completes the Page 0 button should
-    // still read "ask claude" — until they tap it again via sendPrompt().
+    // The UI confirms "¿Empezar de cero?" before calling this.
     fun askWithReset(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
-        _sentInSession.value = false
-        launchAction(ErrorCopy.PROMPT_FAILED) { repo.sendPrompt("nueva conversación, $trimmed") }
+        send(display = trimmed, wire = "nueva conversación, $trimmed")
+    }
+
+    /** Re-sends the exact text that was not picked up. */
+    fun retrySend() {
+        val failed = _send.value as? SendState.Failed ?: return
+        _send.value = SendState.None
+        send(display = failed.text, wire = failed.wire)
+    }
+
+    /**
+     * Local only: stops waiting. If the Mac picks the prompt up later anyway,
+     * Inicio shows the run with Detener, which is the honest state.
+     */
+    fun cancelSend() {
+        sendTimeoutJob?.cancel()
+        _send.value = SendState.None
+    }
+
+    /** "Ver detalle" acknowledges the failure line. */
+    fun clearLastRun() {
+        _lastRun.value = null
+    }
+
+    /** Local dismissal of a BlockedScreen / banner. Never written to RTDB. */
+    fun dismissOverlay(key: String) {
+        _dismissed.value = _dismissed.value + key
+    }
+
+    /** ResultPage saw TUI junk in the current response. Idempotent. */
+    fun reportBlockedContent() {
+        val r = response.value ?: return
+        _blockedContent.value = blockedContentKey(r)
+    }
+
+    private fun send(display: String, wire: String) {
+        if (display.isEmpty()) return
+        // No silent queueing: an offline write would replay minutes later.
+        if (!connected.value) {
+            _lastError.value = ErrorCopy.OFFLINE
+            return
+        }
+        if (_send.value is SendState.Sending) return
+        _lastRun.value = null
+        val pending = SendState.Sending(display, wire, outcome.value)
+        _send.value = pending
+        _events.tryEmit(HomeEvent.Sent)
+        sendTimeoutJob?.cancel()
+        sendTimeoutJob = viewModelScope.launch {
+            delay(PICKUP_TIMEOUT_MS)
+            failSend(pending)
+        }
+        viewModelScope.launch {
+            try {
+                repo.sendPrompt(wire)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "prompt write failed: ${e.message}")
+                failSend(pending)
+            }
+        }
+    }
+
+    private fun failSend(pending: SendState.Sending) {
+        if (_send.value !== pending) return
+        sendTimeoutJob?.cancel()
+        _send.value = SendState.Failed(pending.text, pending.wire)
+        _events.tryEmit(HomeEvent.SendFailed)
     }
 
     // Sprint 4n — tap-to-claim actions.
@@ -301,42 +481,13 @@ class CcwearosViewModel(
         }
     }
 
-    private companion object {
-        const val TAG = "ccwearos-vm"
-    }
-}
+    internal companion object {
+        private const val TAG = "ccwearos-vm"
 
-/**
- * Fires once per "was working → IDLE with a new response" transition.
- * Pure state machine so it can be unit-tested without Firebase.
- */
-internal class CompletionDetector {
-    private var previousStatus: WrapperStatus? = null
-    private var lastFiredResponse: String? = null
-
-    /** Returns true when this update completes a run. */
-    fun onUpdate(currentStatus: WrapperStatus, currentResponse: String?): Boolean {
-        val wasWorking = previousStatus == WrapperStatus.RUNNING ||
-            previousStatus == WrapperStatus.AWAITING_PERMISSION
-
-        // Preserve "was working" memory across the transient
-        // (IDLE + null response) gap the wrapper produces between
-        // clearing stale state and writing the new response.
-        val inTransientIdleGap = wasWorking &&
-            currentStatus == WrapperStatus.IDLE &&
-            currentResponse.isNullOrBlank()
-        if (!inTransientIdleGap) {
-            previousStatus = currentStatus
-        }
-
-        val completed = wasWorking &&
-            currentStatus == WrapperStatus.IDLE &&
-            !currentResponse.isNullOrBlank() &&
-            currentResponse != lastFiredResponse
-        if (completed) {
-            lastFiredResponse = currentResponse
-            previousStatus = currentStatus
-        }
-        return completed
+        /** No pickup after this → "Tu Mac no tomó la pregunta". */
+        const val PICKUP_TIMEOUT_MS = 15_000L
+        const val WATCH_OFFLINE_DEBOUNCE_MS = 5_000L
+        const val MAC_OFFLINE_DEBOUNCE_MS = 1_500L
+        const val AWAITING_DEBOUNCE_MS = 2_000L
     }
 }

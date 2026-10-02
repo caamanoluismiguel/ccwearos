@@ -45,8 +45,21 @@ class FakeWatchRepository : WatchRepository {
         commands += text to promptId
     }
 
-    override suspend fun sendPrompt(text: String) = Unit
+    val prompts = mutableListOf<String>()
+    var failNextPrompt = false
+    var resets = 0
+
+    override suspend fun sendPrompt(text: String) {
+        if (failNextPrompt) {
+            failNextPrompt = false
+            throw IllegalStateException("write failed")
+        }
+        prompts += text
+    }
+
     override suspend fun claimSession(sessionId: String, cwd: String) = Unit
     override suspend fun clearClaimResult() = Unit
-    override suspend fun forceResetUi() = Unit
+    override suspend fun forceResetUi() {
+        resets++
+    }
 }
