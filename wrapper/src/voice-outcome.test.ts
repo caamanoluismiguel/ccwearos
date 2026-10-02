@@ -181,6 +181,18 @@ describe("voiceRunOutcome (/outcome contract)", () => {
     expect(
       voiceRunOutcome({ ...base, blocked: null, exitCode: null }).exitCode,
     ).toBe(-1);
+    // No `stopped` key at all unless the user stopped the run.
+    expect(voiceRunOutcome({ ...base, blocked: null, exitCode: 1 })).not.toHaveProperty(
+      "stopped",
+    );
+  });
+
+  it("user stop: ok:false + stopped:true, whatever the exit code", () => {
+    for (const exitCode of [130, 143, 0, null]) {
+      expect(
+        voiceRunOutcome({ ...base, blocked: null, exitCode, stopped: true }),
+      ).toEqual({ ok: false, exitCode: exitCode ?? -1, stopped: true });
+    }
   });
 });
 
@@ -278,6 +290,23 @@ describe("clearVoiceRunEnd / publishVoiceRunEnd", () => {
     expect(replaced).toBe(false);
     expect(normal).toBe(true);
     expect(calls).toEqual([["outcome", { ok: true, exitCode: 0, ts: 5 }]]);
+  });
+
+  it("stopped run: no blocker, normal path, outcome carries stopped:true", async () => {
+    const { s, calls } = sinks();
+    let normal = false;
+    await publishVoiceRunEnd(
+      { blocked: null, exitCode: 130, response: "", cwd: "/tmp/v", home: HOME, stopped: true },
+      s,
+      async () => {
+        normal = true;
+      },
+      9,
+    );
+    expect(normal).toBe(true);
+    expect(calls).toEqual([
+      ["outcome", { ok: false, exitCode: 130, stopped: true, ts: 9 }],
+    ]);
   });
 
   it("crash and timeout publish their blockers", async () => {

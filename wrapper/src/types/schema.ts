@@ -109,8 +109,12 @@ export interface Blocker {
 }
 
 export interface RunOutcome {
-  ok: boolean;
+  ok: boolean; // false for a user stop too — check `stopped` first
   exitCode: number;
+  // Present (true) only when the run ended because the user tapped Detener
+  // (STOP, "\x03"). Not an error: the watch shows a soft "detenido" tick
+  // instead of ✗. Absent otherwise (Kotlin: Boolean? / default false).
+  stopped?: boolean;
   ts: number; // unix epoch ms
 }
 

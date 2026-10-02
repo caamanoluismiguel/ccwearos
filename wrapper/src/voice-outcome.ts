@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import type { BlockingDialog } from "./parser.js";
 import { SHARED_SESSION_BLOCKER_HINT } from "./shared-session.js";
 import { shSingleQuote } from "./sh-escape.js";
-import type { BlockerKind, TaskKind } from "./types/schema.js";
+import type { BlockerKind, RunOutcome, TaskKind } from "./types/schema.js";
 
 export interface VoiceOutcome {
   headline: string;
@@ -158,12 +158,13 @@ export function voiceBlocker(f: VoiceRunFacts): VoiceBlocker | null {
   return null;
 }
 
-// /outcome for this run (minus ts). ok only for a clean exit with no blocker.
-// RunOutcome.exitCode is a number: a missing code (spawn failure) is -1.
-export function voiceRunOutcome(
-  f: VoiceRunFacts,
-): { ok: boolean; exitCode: number } {
+// /outcome for this run (minus ts). ok only for a clean exit with no blocker
+// and no user stop. RunOutcome.exitCode is a number: a missing code (spawn
+// failure) is -1. A user stop adds `stopped: true` (ok stays false) so the
+// watch can show a soft tick instead of an error.
+export function voiceRunOutcome(f: VoiceRunFacts): Omit<RunOutcome, "ts"> {
   const exitCode = f.exitCode ?? -1;
+  if (f.stopped) return { ok: false, exitCode, stopped: true };
   return { ok: exitCode === 0 && voiceBlocker(f) === null, exitCode };
 }
 
@@ -184,9 +185,7 @@ export function nextHasPriorSession(a: {
 // fakes in tests).
 export interface VoiceRunSinks {
   setBlocker: (b: (VoiceBlocker & { ts: number }) | null) => Promise<void>;
-  setOutcome: (
-    o: { ok: boolean; exitCode: number; ts: number } | null,
-  ) => Promise<void>;
+  setOutcome: (o: RunOutcome | null) => Promise<void>;
   setResponse: (r: string | null) => Promise<void>;
   setTaskKind: (k: TaskKind | null) => Promise<void>;
   setHeadline: (h: string | null) => Promise<void>;
