@@ -37,6 +37,7 @@ import type { SharedSessionMeta } from "./types/schema.js";
 import type { ToolEvent } from "./types/schema.js";
 import { startClaude } from "./claude-runner.js";
 import { runClaudeForVoice, type VoiceRunner } from "./claude-voice.js";
+import { finalizeVoiceOutcome } from "./voice-outcome.js";
 import { handleClaimRequest, spawnAsync } from "./claim-handler.js";
 import { resolveSessionCwd } from "./claim-cwd.js";
 import {
@@ -198,6 +199,9 @@ async function runInteractive(): Promise<void> {
 async function runDaemon(): Promise<void> {
   initFirebase();
   console.log("[ccwearos] Daemon online. DB:", config.firebaseDbUrl);
+  // Resolve (and validate / create) the voice cwd up front so a bad
+  // CCWEAROS_VOICE_CWD warns at startup, not on the first voice prompt.
+  console.log("[ccwearos] Voice runs use cwd:", config.voiceCwd);
   await clearStaleState("IDLE");
   // Server-side cleanup if the daemon dies abruptly (LaunchAgent SIGKILL,
   // OOM, Mac power loss). UI surfaces are reset; daemon does NOT claim
@@ -221,6 +225,9 @@ async function runDaemon(): Promise<void> {
   // Active runner for the current voice task. Permission responses from the
   // watch (via /command) get routed into runner.send() while it's alive.
   let activeRunner: VoiceRunner | null = null;
+  // Set when the watch's Stop killed the current run (reset per prompt), so a
+  // user-cancelled run isn't reported as "Claude terminó con un error".
+  let voiceStopRequested = false;
   // One-time id of the voice run's permission prompt currently on the watch.
   const activePrompt = new ActivePrompt();
   // Currently-shared session (from `cc` / scripts/share.ts), if any. While
@@ -402,6 +409,7 @@ async function runDaemon(): Promise<void> {
             decision: "deny",
             source: "watch",
           });
+          voiceStopRequested = true; // not an error — see finalizeVoiceOutcome
           runner.kill();
           await setPermissionPrompt(null);
           await setActivity(null);
@@ -492,6 +500,7 @@ async function runDaemon(): Promise<void> {
       return;
     }
     busy = true;
+    voiceStopRequested = false;
     // Per-run accumulators — closed over by callbacks below, reset on each
     // new prompt so taskKind classification is correct on every voice tap.
     let observedTools: ToolEvent[] = [];
@@ -555,7 +564,27 @@ async function runDaemon(): Promise<void> {
       const result = await activeRunner.done;
       activeRunner = null;
 
-      if (result.exitCode === 0) hasPriorSession = true;
+      if (result.exitCode === 0 && !result.blocked) hasPriorSession = true;
+
+      // Blocked on a trust/login dialog, or exited with an error and nothing
+      // readable: publish a clean explanation, never the raw TUI text.
+      const special = finalizeVoiceOutcome({
+        blocked: result.blocked,
+        exitCode: result.exitCode,
+        response: lastResponseSeen,
+        cwd: config.voiceCwd,
+        stopped: voiceStopRequested,
+      });
+      if (special) {
+        await setResponse(special.response);
+        await setTaskKind(special.taskKind);
+        await setHeadline(special.headline);
+        await setFollowups(special.followups);
+        console.log(
+          `[ccwearos] Voice run done. exit=${result.exitCode} bytes=${result.rawBytes} blocked=${result.blocked?.kind ?? "no"} headline=${JSON.stringify(special.headline)} continue-next=${hasPriorSession}`,
+        );
+        return;
+      }
 
       // Classify the run and surface either a TL;DR headline (info) or leave
       // the tool chips alone (action). Race-safe: only set after done.

@@ -102,6 +102,8 @@ export function runClaudeOneshot(
     if (opts.continueSession) args.push("--continue");
 
     const child = spawn(config.claudeCliCommand, args, {
+      // Same voice cwd as claude-voice.ts (never the wrapper repo).
+      cwd: config.voiceCwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
     });

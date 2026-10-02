@@ -10,22 +10,39 @@ const ESC = String.fromCharCode(0x1b);
 // \x1b[<u (xterm DECSET / mode-toggle variants Claude emits at exit) parse.
 const ANSI_RE = new RegExp(`${ESC}\\[[<=>?]?[0-9;]*[ -\\/]*[@-~]`, "g");
 const OSC_RE = new RegExp(`${ESC}\\][^${ESC}\\x07]*(?:${ESC}\\\\|\\x07)`, "g");
-// Bare 2-char ESC sequences: ESC 7 / ESC 8 (save/restore cursor), ESC =, etc.
-// These don't have a [ — they slip past CSI/OSC strippers and leak into out.
-const SHORT_ESC_RE = new RegExp(`${ESC}[78=>]`, "g");
+// Charset designators: ESC ( B, ESC ) 0, ESC % G … (3 chars). Claude Code
+// emits `ESC(B` + SI (\x0f) when it tears the TUI down; left alone they leak
+// into the response as "(B".
+const CHARSET_ESC_RE = new RegExp(`${ESC}[()*+\\-./%#][\\x20-\\x7e]`, "g");
+// Any other 2-char ESC sequence: ESC 7 / ESC 8 (save/restore cursor), ESC =,
+// ESC M, ESC c … — plus a lone ESC. Runs after CSI/OSC/charset stripping.
+const SHORT_ESC_RE = new RegExp(`${ESC}[\\x20-\\x7e]?`, "g");
+// C0 controls except \t \n \r (callers split lines on \r and \n). SI/SO,
+// BEL, backspace and friends are never response text.
+const C0_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 // Cursor-forward N columns — Claude Code's TUI uses this to space words
 // instead of literal spaces. If we strip it raw the spaces vanish and the
-// response collapses to "relojdelsistema". Cap N at 16 so a runaway escape
-// doesn't blow up a line; that's far more than any real word gap.
-const CUF_RE = new RegExp(`${ESC}\\[(\\d+)C`, "g");
+// response collapses to "relojdelsistema". An omitted N means 1 (`ESC[C`) —
+// that form used to fall through to ANSI_RE and lose the space. Cap N at 16
+// so a runaway escape doesn't blow up a line.
+const CUF_RE = new RegExp(`${ESC}\\[(\\d*)C`, "g");
 
 function clean(chunk: string): string {
   return chunk
-    .replace(CUF_RE, (_, n: string) => " ".repeat(Math.min(Number(n) || 0, 16)))
+    .replace(CUF_RE, (_, n: string) =>
+      " ".repeat(Math.min(n === "" ? 1 : Number(n) || 0, 16)),
+    )
     .replace(OSC_RE, "")
     .replace(ANSI_RE, "")
-    .replace(SHORT_ESC_RE, "");
+    .replace(CHARSET_ESC_RE, "")
+    .replace(SHORT_ESC_RE, "")
+    .replace(C0_RE, "");
 }
+
+// Public alias for callers outside the parser (and tests): terminal output →
+// plain text, cursor-forward restored as spaces, every escape and stray C0
+// control removed. \r and \n are kept as line separators.
+export const cleanTerminalText = clean;
 
 // Per-chunk increments, e.g. Claude Code 2.1.x streaming:
 //   "↓ 279 tokens"     "103 tokens · thinking)"     "1,240 input tokens"
@@ -162,7 +179,7 @@ interface ScreenLine {
 // One escape sequence or one visible character at a time. SGR is captured so
 // we can tell Claude's dimmed description from the (default-colour) target.
 const TOKEN_RE = new RegExp(
-  `${ESC}\\[([0-9;]*)m|${ESC}\\[[<=>?]?[0-9;]*[ -\\/]*[@-~]|${ESC}\\][^${ESC}\\x07]*(?:${ESC}\\\\|\\x07)|${ESC}[78=>]|([^${ESC}])`,
+  `${ESC}\\[([0-9;]*)m|${ESC}\\[[<=>?]?[0-9;]*[ -\\/]*[@-~]|${ESC}\\][^${ESC}\\x07]*(?:${ESC}\\\\|\\x07)|${ESC}[()*+\\-./%#][\\x20-\\x7e]|${ESC}[\\x20-\\x7e]?|([^${ESC}])`,
   "g",
 );
 
@@ -400,6 +417,11 @@ export function extractPermissionPrompt(chunk: string): string | null {
   const box = extractPermissionBox(lines);
   if (box !== null) return box;
 
+  // The workspace-trust dialog is not a tool permission: answering it from
+  // the wrist would trust a whole folder. Its "Yes, I trust this folder"
+  // option must not reach the loose legacy matchers below.
+  if (isTrustDialog(lines)) return null;
+
   for (const re of PERMISSION_PATTERNS) {
     const line = lines.find((l) => re.test(l.text));
     const trimmed = line?.text.trim();
@@ -508,6 +530,18 @@ const NOISE_PATTERNS: RegExp[] = [
   /·\s*out\s+\d+/i, // "· out 53" output-token counter
   /^[\d\s]+·\s*out\s+\d+/, // "8 4 3 · out 53"
   /^[\d\s.]+$/, // pure digits + spaces (counter remnants)
+  // ─── Round 4: dialog chrome + prompt echo (2026-10-01 trust-dialog leak) ──
+  /^[\s─━│┃║╭╮╰╯┌┐└┘├┤┬┴┼╴╵╶╷]+$/, // box borders, incl. vertical-only rows
+  /Enter\s*to\s*confirm/i,
+  /Esc\s*to\s*(?:cancel|exit|interrupt)/i,
+  // Select-dialog options ("2. No, exit", "1. Yes, I trust this folder",
+  // "1. Yes, and don't ask again"). Bare prose like "1. Yes, you can" stays.
+  /^\d+\.\s+(?:Yes|No)(?:,\s*(?:and\b|exit\b|I\s*trust\b|allow\b|don't\s+ask\b|tell\s+Claude\b).*)?$/i,
+  /^(?:Yes|No),\s*(?:and\b|exit\b|I\s*trust\b|allow\b|don't\s+ask\b|tell\s+Claude\b)/i,
+  // Echoed prompt prefix (buildPromptPrefix in index.ts) + the end marker,
+  // when the marker slice missed (prompt never submitted, run crashed).
+  /^(?:>\s*)?(?:Contexto:\s*estás\s*corriendo|Context:\s*you\s*are\s*running)/i,
+  /__CCWEAROS_PROMPT_END__/,
 ];
 
 // ─── Marker-based response slicing ────────────────────────────────────────────
@@ -552,6 +586,138 @@ export class PermissionPromptTracker {
   }
 }
 
+// ─── Blocking dialogs ────────────────────────────────────────────────────────
+// Claude Code TUI dialogs that are NOT tool permission prompts and must never
+// be answered remotely: workspace trust ("Quick safety check … Yes, I trust
+// this folder"), login/auth failures ("Invalid API key · Please run /login",
+// "OAuth token has expired"), and any other "Enter to confirm · Esc to cancel"
+// select box. A voice run that hits one can't make progress on its own.
+//
+// Matching is whitespace-insensitive (squash) so it still works when the TUI's
+// cursor-forward spacing was lost somewhere upstream ("Yes,Itrustthisfolder").
+
+export type BlockingDialogKind = "trust" | "auth" | "other";
+
+export interface BlockingDialog {
+  kind: BlockingDialogKind;
+  // trust: the folder path when visible ("" otherwise); auth: the error line;
+  // other: the dialog's title line.
+  detail: string;
+}
+
+const squash = (s: string): string => s.toLowerCase().replace(/\s+/g, "");
+const TRUST_MARKERS = [
+  "doyoutrustthefilesinthisfolder",
+  "quicksafetycheck",
+  "itrustthisfolder",
+];
+// Select-dialog chrome. Required next to a trust marker so a re-rendered
+// conversation (`--continue`) that merely MENTIONS the dialog doesn't count.
+const DIALOG_CHROME = ["entertoconfirm", "esctocancel", "esctoexit"];
+const AUTH_PREFIXES = ["invalidapikey", "pleaserun/login"];
+const AUTH_ANYWHERE = ["oauthtokenhasexpired", "pleaserun/login"];
+const LEADING_MARKS_RE = /^[\s⎿⏺●>│┃║]+/;
+
+function isTrustDialog(lines: ScreenLine[]): boolean {
+  const sq = lines.map((l) => squash(l.text));
+  return (
+    sq.some((l) => TRUST_MARKERS.some((m) => l.includes(m))) &&
+    sq.some((l) => DIALOG_CHROME.some((m) => l.includes(m)))
+  );
+}
+
+function trustFolder(lines: ScreenLine[]): string {
+  const i = lines.findIndex((l) => /accessingworkspace:?/.test(squash(l.text)));
+  if (i >= 0) {
+    // Path is either on the same line ("Accessing workspace: /x") or below.
+    const same = (lines[i]?.text ?? "").replace(/.*?workspace:?/i, "").trim();
+    if (same.startsWith("/") || same.startsWith("~")) return same;
+    const next = lines
+      .slice(i + 1, i + 4)
+      .map((l) => l.text.replace(BOX_DRAWING_RE, " ").trim())
+      .find((t) => t.length > 0);
+    if (next && (next.startsWith("/") || next.startsWith("~"))) return next;
+  }
+  return "";
+}
+
+function authLine(lines: ScreenLine[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const text = (lines[i]?.text ?? "").replace(LEADING_MARKS_RE, "").trim();
+    const sq = squash(text);
+    if (
+      AUTH_PREFIXES.some((p) => sq.startsWith(p)) ||
+      (sq.startsWith("apierror") && AUTH_ANYWHERE.some((p) => sq.includes(p))) ||
+      AUTH_ANYWHERE.some((p) => sq.includes(p) && sq.length <= p.length + 40)
+    ) {
+      return text.replace(BOX_DRAWING_RE, " ").trim().slice(0, 200);
+    }
+  }
+  return null;
+}
+
+function otherDialogTitle(lines: ScreenLine[]): string | null {
+  const confirm = findLast(
+    lines,
+    /enter\s*to\s*confirm/i,
+    lines.length - 1,
+    0,
+  );
+  if (confirm < 0) return null;
+  const hasCancel = lines
+    .slice(Math.max(0, confirm - 1), confirm + 2)
+    .some((l) => /esc\s*to\s*(?:cancel|exit)/i.test(l.text));
+  if (!hasCancel) return null;
+  // Title = first content row under the box top (or within 12 rows up).
+  const rule = findLast(lines, BOX_RULE_RE, confirm - 1, confirm - 12);
+  const from = rule >= 0 ? rule + 1 : Math.max(0, confirm - 12);
+  for (let i = from; i < confirm; i++) {
+    const t = (lines[i]?.text ?? "").replace(BOX_DRAWING_RE, " ").trim();
+    if (t.length === 0 || /^❯|^\d+\.\s/.test(t)) continue;
+    return t.slice(0, 200);
+  }
+  return "";
+}
+
+// Returns the blocking dialog visible in `buffer` (raw pty output — pass a
+// rolling window, see BlockingDialogTracker), or null. Precedence: trust >
+// auth > other. A regular tool-permission box is never reported here.
+export function extractBlockingDialog(buffer: string): BlockingDialog | null {
+  const lines = toScreenLines(buffer);
+  if (isTrustDialog(lines)) return { kind: "trust", detail: trustFolder(lines) };
+  const auth = authLine(lines);
+  if (auth !== null) return { kind: "auth", detail: auth };
+  const title = otherDialogTitle(lines);
+  if (title !== null && extractPermissionPrompt(buffer) === null) {
+    return { kind: "other", detail: title };
+  }
+  return null;
+}
+
+// Same rolling-window approach as PermissionPromptTracker: dialogs arrive
+// split across pty chunks. Emits each distinct dialog once.
+export class BlockingDialogTracker {
+  private buf = "";
+  private last: string | null = null;
+
+  constructor(private readonly maxBuffer: number = 16_384) {}
+
+  feed(chunk: string): BlockingDialog | null {
+    this.buf = (this.buf + chunk).slice(-this.maxBuffer);
+    const d = extractBlockingDialog(this.buf);
+    if (!d) return null;
+    const key = `${d.kind}\u0000${d.detail}`;
+    if (key === this.last) return null;
+    this.last = key;
+    return d;
+  }
+
+  reset(): void {
+    this.buf = "";
+    this.last = null;
+  }
+}
+
 export const PROMPT_END_MARKER = "__CCWEAROS_PROMPT_END__";
 
 export function extractResponseAfterMarker(
@@ -579,7 +745,8 @@ function flattenTableRow(line: string): string {
     .split("│")
     .map((c) => c.trim())
     .filter((c) => c.length > 0);
-  if (cells.length < 2) return line;
+  // One cell = a dialog/box row ("│ text │"): keep the text, drop borders.
+  if (cells.length < 2) return cells[0] ?? line;
   return cells.join(" · ");
 }
 

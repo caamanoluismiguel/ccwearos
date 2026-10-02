@@ -14,6 +14,8 @@ import { config } from "./config.js";
 import { createMetricsStore } from "./metrics-store.js";
 import { basename } from "node:path";
 import {
+  BlockingDialogTracker,
+  type BlockingDialog,
   extractActivity,
   extractClaudeStatus,
   extractCurrentTask,
@@ -69,10 +71,19 @@ function synthesizeActivityFromTool(ev: ToolEvent): string {
   }
 }
 
+export interface VoiceRunResult {
+  exitCode: number | null;
+  rawBytes: number;
+  // Set when the run was killed because Claude Code showed a dialog that
+  // must not be answered from the watch (trust / auth / other). The caller
+  // publishes a clean explanation instead of the raw TUI text.
+  blocked: BlockingDialog | null;
+}
+
 export interface VoiceRunner {
   send: (input: string) => void;
   kill: () => void;
-  done: Promise<{ exitCode: number | null; rawBytes: number }>;
+  done: Promise<VoiceRunResult>;
 }
 
 // Cold-start Claude needs ~5s before its input field is ready to accept a
@@ -93,10 +104,13 @@ const RESPONSE_BUFFER_MAX = 16 * 1024;
 export function runClaudeForVoice(
   prompt: string,
   cb: VoiceCallbacks,
-  opts: { continueSession?: boolean; userEcho?: string } = {},
+  opts: { continueSession?: boolean; userEcho?: string; cwd?: string } = {},
 ): VoiceRunner {
   const continueArg = opts.continueSession ? " --continue" : "";
   const cmd = `${config.claudeCliCommand}${continueArg}`;
+  // Never the wrapper repo (see resolveVoiceCwd in config.ts). `--continue`
+  // continuity is per-cwd, so this folder also scopes the voice thread.
+  const cwd = opts.cwd ?? config.voiceCwd;
 
   let pty: IPty;
   try {
@@ -104,18 +118,18 @@ export function runClaudeForVoice(
       name: "xterm-256color",
       cols: 120,
       rows: 30,
-      cwd: process.cwd(),
+      cwd,
       env: { ...process.env } as Record<string, string>,
     });
   } catch (err) {
     console.error(
-      `[voice] Failed to spawn '${config.claudeCliCommand}':`,
+      `[voice] Failed to spawn '${config.claudeCliCommand}' in ${cwd}:`,
       (err as Error).message,
     );
     return {
       send: () => {},
       kill: () => {},
-      done: Promise.resolve({ exitCode: null, rawBytes: 0 }),
+      done: Promise.resolve({ exitCode: null, rawBytes: 0, blocked: null }),
     };
   }
 
@@ -124,6 +138,8 @@ export function runClaudeForVoice(
   let responseBuffer = "";
   let lastResponseEmitted = "";
   const promptTracker = new PermissionPromptTracker();
+  const dialogTracker = new BlockingDialogTracker();
+  let blocked: BlockingDialog | null = null;
   let lastActivity: string | null = null;
   let lastTask: string | null = null;
   const accumulatedStatus: ClaudeStatus = {
@@ -165,9 +181,12 @@ export function runClaudeForVoice(
   };
 
   const scheduleResponseFlush = (): void => {
-    if (responseTimer) return;
+    // Before the prompt is typed the buffer is pure startup chrome (welcome
+    // banner, dialogs) — nothing worth showing on the watch.
+    if (responseTimer || blocked || !promptSent) return;
     responseTimer = setTimeout(() => {
       responseTimer = null;
+      if (blocked) return;
       const extracted = extractResponseLines(
         responseBuffer,
         opts.userEcho ? { userEcho: opts.userEcho } : {},
@@ -195,8 +214,10 @@ export function runClaudeForVoice(
   // Two-phase write: type the text first, wait for the TUI to flush, then
   // send a bare \r to submit. Bundling text+\r in one write made the TUI
   // treat \r as an in-box newline and the prompt sat unsubmitted.
-  setTimeout(() => {
-    if (promptSent) return;
+  // NEVER type into a blocking dialog: the trust dialog's highlighted option
+  // could be "Yes, I trust this folder", and our submit \r would pick it.
+  const warmupTimer = setTimeout(() => {
+    if (promptSent || blocked) return;
     try {
       pty.write(prompt);
       promptSent = true;
@@ -205,6 +226,7 @@ export function runClaudeForVoice(
       /* ignore */
     }
     setTimeout(() => {
+      if (blocked) return;
       try {
         pty.write("\r");
       } catch {
@@ -234,9 +256,39 @@ export function runClaudeForVoice(
     }
   }, 2000);
 
+  // Trust / login / unknown confirm dialog: a security decision that belongs
+  // at the Mac, not on the wrist. Don't answer it — stop the run and let the
+  // caller publish an explanation (see voice-outcome.ts).
+  const abortOnDialog = (d: BlockingDialog): void => {
+    blocked = d;
+    clearTimeout(warmupTimer);
+    clearInterval(idleCheck);
+    if (responseTimer) {
+      clearTimeout(responseTimer);
+      responseTimer = null;
+    }
+    console.warn(
+      `[voice] Claude Code is showing a blocking ${d.kind} dialog in ${cwd}` +
+        (d.detail ? ` (${d.detail})` : "") +
+        " — not answering it from the watch; killing the run.",
+    );
+    try {
+      pty.kill();
+    } catch {
+      /* already gone */
+    }
+  };
+
   pty.onData((data: string) => {
     lastDataTime = Date.now();
     totalBytes += data.length;
+    if (blocked) return;
+
+    const dialog = dialogTracker.feed(data);
+    if (dialog) {
+      abortOnDialog(dialog);
+      return;
+    }
 
     // Token counts (cumulative preferred, falls back to incrementals).
     const cumulative = extractSessionCumulative(data);
@@ -322,14 +374,13 @@ export function runClaudeForVoice(
     scheduleResponseFlush();
   });
 
-  let resolveDone: (r: { exitCode: number | null; rawBytes: number }) => void;
-  const done = new Promise<{ exitCode: number | null; rawBytes: number }>(
-    (r) => {
-      resolveDone = r;
-    },
-  );
+  let resolveDone: (r: VoiceRunResult) => void;
+  const done = new Promise<VoiceRunResult>((r) => {
+    resolveDone = r;
+  });
 
   pty.onExit(({ exitCode }) => {
+    clearTimeout(warmupTimer);
     clearInterval(idleCheck);
     if (metricsTimer) clearTimeout(metricsTimer);
     if (responseTimer) clearTimeout(responseTimer);
@@ -337,22 +388,26 @@ export function runClaudeForVoice(
       clearTimeout(toolEventsTimer);
       flushToolEvents();
     }
-    // Final flush.
-    const finalResponse = extractResponseLines(
-      responseBuffer,
-      opts.userEcho ? { userEcho: opts.userEcho } : {},
-    );
-    if (finalResponse && finalResponse !== lastResponseEmitted) {
-      cb.onResponse(finalResponse);
+    // Final flush — skipped for a blocked run (the buffer is dialog chrome)
+    // and when the prompt never went in (nothing but startup chrome).
+    if (!blocked && promptSent) {
+      const finalResponse = extractResponseLines(
+        responseBuffer,
+        opts.userEcho ? { userEcho: opts.userEcho } : {},
+      );
+      if (finalResponse && finalResponse !== lastResponseEmitted) {
+        cb.onResponse(finalResponse);
+      }
     }
     cb.onActivity(null);
-    resolveDone({ exitCode, rawBytes: totalBytes });
+    resolveDone({ exitCode, rawBytes: totalBytes, blocked });
   });
 
   return {
     send: (input) => {
       lastDataTime = Date.now();
       promptTracker.reset(); // user answered — next prompt is fresh
+      dialogTracker.reset(); // the answered box must not mask a later dialog
       try {
         pty.write(input);
       } catch {
