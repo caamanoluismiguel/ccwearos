@@ -74,7 +74,9 @@ fun rememberVoiceInput(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, VOICE_LANGUAGE)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, VOICE_LANGUAGE)
-            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
+            // No EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE: a watch without the
+            // es-CO model would then return nothing at all. Preferring es-CO
+            // and falling back to the device language beats silence.
             putExtra(RecognizerIntent.EXTRA_PROMPT, prompt)
         }
         try {

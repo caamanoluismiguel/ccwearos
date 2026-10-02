@@ -25,6 +25,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material3.AppScaffold
@@ -32,8 +34,10 @@ import androidx.wear.compose.material3.TimeText
 import com.caamano.ccwearos.R
 import com.caamano.ccwearos.presentation.home.HINT_WAITING_ON_MAC
 import com.caamano.ccwearos.presentation.home.Overlay
-import com.caamano.ccwearos.presentation.home.WATCH_OFFLINE_KEY
+import com.caamano.ccwearos.notifications.DeepLinks
 import com.caamano.ccwearos.presentation.home.continuityTransition
+import com.caamano.ccwearos.presentation.home.underlayHidden
+import com.caamano.ccwearos.presentation.home.underlayProgress
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 
@@ -46,17 +50,21 @@ import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 //   PermissionScreen  › BlockedScreen(blocker) › BlockedScreen(MAC_OFFLINE)
 //   › BlockedScreen(NEEDS_MAC, "Claude espera algo en tu Mac")
 //   › BlockedScreen(NEEDS_MAC) for TUI junk flagged by ResultPage.
-// BlockedScreen(WATCH_OFFLINE) is a non-blocking banner at the top.
-// Dismissals are local (VM), never written to RTDB.
+// WATCH_OFFLINE is a compact pill under the TimeText (WatchOfflineBanner),
+// not an overlay: it covers nothing and takes no input.
+// Dismissals are local (VM, blocker ts persisted), never written to RTDB.
+//
+// Every full-screen overlay swallows input and is its own TalkBack traversal
+// group while the pager below is cleared from semantics. Haptics: a blocker's
+// error buzz comes from the VM (HomeEvent.Blocked, deduped); this shell only
+// ticks for the non-error NEEDS_MAC screens. BlockedScreen never buzzes.
 //
 // Continuity: an overlay arrives from progress 1 → 0 (blurred, stretched,
 // faded) over Motion.SLOW with EnterEasing while the pager recedes 0 → 0.6;
-// reverse on exit with ExitEasing. Only graphicsLayer changes, so the pager
-// underneath never jumps.
+// reverse on exit with ExitEasing. Once the opaque overlay is fully in, the
+// pager stops drawing (no blur RenderEffect, alpha 0) but stays composed, so
+// its state survives. Only graphicsLayer changes, so nothing jumps.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** How far the pager recedes while an overlay is fully shown. */
-private const val UNDERLAY_RECEDE = 0.6f
 
 @Composable
 fun WearApp(vm: CcwearosViewModel = viewModel()) {
@@ -82,8 +90,12 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
             if (shown != Overlay.None) {
                 if (reduced) reveal.snapTo(0f) else reveal.animateTo(0f, tween(Motion.MEDIUM, easing = Motion.ExitEasing))
             }
-            // ¿salió bien? A Mac-side blocker is a failure the wrist feels.
-            if (target is Overlay.Blocked && target.blockerKind != null) Haptics.error(context)
+            // Non-error arrivals only; a blocker's error buzz is the VM's.
+            if (target is Overlay.Blocked && target.blockerTs == null &&
+                blockedCopy(target.variant, target.blockerKind, target.hint, target.cwd).haptic == BlockedHaptic.TICK
+            ) {
+                Haptics.tick(context)
+            }
         }
         shown = target
         if (target != Overlay.None) {
@@ -99,8 +111,10 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
             DashboardRoute(
                 vm = vm,
                 modifier = Modifier
+                    // Fully covered: draw nothing (and no blur) but stay composed.
+                    .graphicsLayer { alpha = if (underlayHidden(reveal.value)) 0f else 1f }
                     .continuityTransition(
-                        progress = { UNDERLAY_RECEDE * reveal.value },
+                        progress = { underlayProgress(reveal.value) },
                         direction = { 0 },
                         reducedMotion = reduced,
                     )
@@ -120,7 +134,9 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                         )
                         .background(Color.Black)
                         // Swallow taps/swipes so nothing reaches the pager below.
-                        .pointerInput(Unit) { detectTapGestures { } },
+                        .pointerInput(Unit) { detectTapGestures { } }
+                        // TalkBack stays inside the overlay.
+                        .semantics { isTraversalGroup = true },
                 ) {
                     when (val o = shown) {
                         Overlay.Permission -> PermissionRoute(vm)
@@ -129,7 +145,13 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                             blockerKind = o.blockerKind,
                             hint = if (o.hint == HINT_WAITING_ON_MAC) stringResource(R.string.home_waiting_mac_hint) else o.hint,
                             cwd = o.cwd,
-                            onPrimary = { vm.dismissOverlay(o.dismissKey) },
+                            onPrimary = {
+                                vm.dismissOverlay(o.dismissKey)
+                                // "Ver sugerencias": the chips live on Resultado.
+                                if (o.variant == BlockedVariant.NO_DICTATION) {
+                                    DeepLinks.pending.value = DeepLinks.ACTION_RESULT
+                                }
+                            },
                             onDismiss = { vm.dismissOverlay(o.dismissKey) },
                         )
                         Overlay.None -> Unit
@@ -137,19 +159,16 @@ fun WearApp(vm: CcwearosViewModel = viewModel()) {
                 }
             }
 
-            // Non-blocking: the pager stays usable under it (Ask shows "Sin
-            // conexión" and explains on tap).
+            // Non-blocking pill: the pager stays readable and usable under it;
+            // network actions are refused by the VM and Inicio shows "Sin
+            // conexión" (explains on tap).
             AnimatedVisibility(
                 visible = watchOfflineBanner && !covered,
                 modifier = Modifier.align(Alignment.TopCenter),
                 enter = fadeIn(Motion.enter(Motion.MEDIUM)) + slideInVertically(Motion.enter(Motion.MEDIUM)) { -it / 2 },
                 exit = fadeOut(Motion.exit(Motion.FAST)) + slideOutVertically(Motion.exit(Motion.FAST)) { -it / 2 },
             ) {
-                BlockedScreen(
-                    variant = BlockedVariant.WATCH_OFFLINE,
-                    onPrimary = { vm.dismissOverlay(WATCH_OFFLINE_KEY) },
-                    onDismiss = { vm.dismissOverlay(WATCH_OFFLINE_KEY) },
-                )
+                WatchOfflineBanner()
             }
 
             // Sprint 4n — dialogs / banners above everything.
@@ -230,7 +249,7 @@ private fun DashboardRoute(vm: CcwearosViewModel, modifier: Modifier) {
     val actions = remember(vm) {
         DashboardActions(
             onAsk = vm::sendPrompt,
-            onAskWithReset = vm::askWithReset,
+            onContinue = vm::continueConversation,
             onCancelSend = vm::cancelSend,
             onRetry = vm::retrySend,
             onStop = vm::stop,

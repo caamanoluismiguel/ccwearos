@@ -10,6 +10,7 @@ import com.caamano.ccwearos.data.ClaimResult
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.CommandText
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
@@ -19,14 +20,20 @@ import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.data.WatchRepository
 import com.caamano.ccwearos.data.WrapperStatus
 import com.caamano.ccwearos.presentation.home.AWAITING_KEY
+import com.caamano.ccwearos.presentation.home.BlockerDismissalStore
+import com.caamano.ccwearos.presentation.home.BlockerDismissals
+import com.caamano.ccwearos.presentation.home.ErrorBuzzDedupe
 import com.caamano.ccwearos.presentation.home.HomeEvent
 import com.caamano.ccwearos.presentation.home.LastRun
 import com.caamano.ccwearos.presentation.home.MAC_OFFLINE_KEY
+import com.caamano.ccwearos.presentation.home.NO_DICTATION_KEY
 import com.caamano.ccwearos.presentation.home.OutcomeCompletionDetector
 import com.caamano.ccwearos.presentation.home.Overlay
 import com.caamano.ccwearos.presentation.home.RoutingInput
 import com.caamano.ccwearos.presentation.home.SendState
 import com.caamano.ccwearos.presentation.home.WATCH_OFFLINE_KEY
+import com.caamano.ccwearos.presentation.home.addDismissal
+import com.caamano.ccwearos.presentation.home.blockerDismissKey
 import com.caamano.ccwearos.presentation.home.blockedContentKey
 import com.caamano.ccwearos.presentation.home.routeOverlay
 import kotlinx.coroutines.CancellationException
@@ -87,7 +94,11 @@ class CcwearosViewModel(
     // Injected so tests don't depend on real time or an endless ticker.
     private val clock: () -> Long = System::currentTimeMillis,
     staleTicks: Flow<Unit> = minuteTicks(),
+    // Dismissed blocker ts values survive app restarts (SharedPreferences).
+    private val dismissalStore: BlockerDismissalStore = BlockerDismissals.store,
 ) : ViewModel() {
+
+    private val ticks: Flow<Unit> = staleTicks.onStart { emit(Unit) }
 
     // ROUTING-CRITICAL flows use SharingStarted.Eagerly: the listener stays
     // alive even when no UI is collecting (i.e., screen off / ambient). Cost
@@ -113,7 +124,7 @@ class CcwearosViewModel(
     // the ask button comes back even if the daemon never cleared it. The tick
     // re-checks age while the RTDB value itself doesn't change.
     val sharedSession: StateFlow<SharedSessionMeta?> =
-        combine(repo.sharedSession, staleTicks.onStart { emit(Unit) }) { meta, _ ->
+        combine(repo.sharedSession, ticks) { meta, _ ->
             SharedSessionStaleness.visible(meta, clock())
         }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -221,7 +232,9 @@ class CcwearosViewModel(
     // Local-only dismissals (never written to RTDB), keyed on blocker ts or
     // on an episode key that is dropped when the episode ends.
     private val _dismissed = MutableStateFlow<Set<String>>(emptySet())
+    private val _dismissedBlockers = MutableStateFlow(dismissalStore.load())
     private val _blockedContent = MutableStateFlow<String?>(null)
+    private val _noDictation = MutableStateFlow(false)
 
     // Debounced conditions, so a cold-start default or a socket blip never
     // flashes a full-screen state.
@@ -240,9 +253,11 @@ class CcwearosViewModel(
     val overlay: StateFlow<Overlay> = combine(
         combine(status, permissionPrompt, blocker) { s, p, b -> Triple(s, p, b) },
         combine(macOfflineStable, awaitingWithoutPromptStable) { m, a -> m to a },
-        combine(_blockedContent, response) { key, r -> key?.takeIf { r != null && it == blockedContentKey(r) } },
-        _dismissed,
-    ) { (s, p, b), (macOff, awaiting), junk, dismissed ->
+        combine(_blockedContent, response, _noDictation) { key, r, noDict ->
+            key?.takeIf { r != null && it == blockedContentKey(r) } to noDict
+        },
+        combine(_dismissed, _dismissedBlockers, ticks) { d, db, _ -> Triple(d, db.toSet(), clock()) },
+    ) { (s, p, b), (macOff, awaiting), (junk, noDictation), (dismissed, dismissedBlockers, now) ->
         routeOverlay(
             RoutingInput(
                 status = s,
@@ -252,9 +267,15 @@ class CcwearosViewModel(
                 awaitingWithoutPromptStable = awaiting,
                 blockedContentKey = junk,
                 dismissed = dismissed,
+                dismissedBlockers = dismissedBlockers,
+                nowMs = now,
+                noDictation = noDictation,
             ),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, Overlay.None)
+
+    // One error haptic per blocked run; see ErrorBuzzDedupe.
+    private val errorBuzz = ErrorBuzzDedupe()
 
     /** Non-blocking "reloj sin conexión" banner (after 5s offline, until dismissed). */
     val watchOfflineBanner: StateFlow<Boolean> =
@@ -284,10 +305,23 @@ class CcwearosViewModel(
                     _runStartedAt.value = null
                 }
                 detector.onUpdate(s, o)?.let { done ->
-                    _lastRun.value = LastRun(done.ok, done.exitCode, stoppedByUser = stopRequested)
+                    val stopped = !done.ok && (stopRequested || done.stopped)
+                    _lastRun.value = LastRun(done.ok, done.exitCode, stoppedByUser = stopped)
                     stopRequested = false
-                    _events.tryEmit(HomeEvent.Finished(done.ok))
+                    // buzzError only matters for a real failure (default true on success).
+                    val buzz = done.ok || (
+                        !stopped &&
+                            errorBuzz.onFailedOutcome(done.ts, blockerPresent = blocker.value != null, nowMs = clock())
+                        )
+                    _events.tryEmit(HomeEvent.Finished(done.ok, stopped = stopped, buzzError = buzz))
                 }
+            }
+        }
+        // A new Mac-side blocker on screen: its single error haptic.
+        viewModelScope.launch {
+            overlay.collect { o ->
+                val ts = (o as? Overlay.Blocked)?.blockerTs ?: return@collect
+                if (errorBuzz.onBlocker(ts, clock())) _events.tryEmit(HomeEvent.Blocked)
             }
         }
         // Episode ends → forget its dismissal, so the next episode shows again.
@@ -346,6 +380,11 @@ class CcwearosViewModel(
     // forwarding to the pty so Claude exits cleanly. Audit log captures it.
     // No promptId: stop isn't an answer to a prompt.
     fun stop() {
+        // No silent queueing: an offline ^C would replay onto a later run.
+        if (!connected.value) {
+            _lastError.value = ErrorCopy.OFFLINE
+            return
+        }
         stopRequested = true
         launchAction(ErrorCopy.STOP_FAILED) { repo.sendCommand(CommandText.STOP, null) }
     }
@@ -357,29 +396,27 @@ class CcwearosViewModel(
     // + null directly to RTDB so the watch gets out of phantom state.
     fun forceReset() {
         cancelSend()
+        if (!connected.value) {
+            _lastError.value = ErrorCopy.OFFLINE
+            return
+        }
         launchAction(ErrorCopy.RESET_FAILED) { repo.forceResetUi() }
     }
 
-    // Voice / text input from the watch. Daemon picks it up and runs
-    // `claude -p <text>` (continuing the thread while /conversationActive).
-    fun sendPrompt(text: String) {
-        val trimmed = text.trim()
-        send(display = trimmed, wire = trimmed)
-    }
+    // Voice input from the watch; the daemon runs `claude -p <text>`.
+    // Inicio's "Preguntar" (and the tile) always start a NEW conversation:
+    // most of the time you want a fresh question, not the last thread.
+    fun sendPrompt(text: String) = send(text.trim(), PromptMode.NEW)
 
-    // Reset the conversation: prepend a phrase the wrapper's RESET_PHRASES
-    // detects ("nueva conversación") so the next run does NOT use --continue.
-    // The UI confirms "¿Empezar de cero?" before calling this.
-    fun askWithReset(text: String) {
-        val trimmed = text.trim()
-        send(display = trimmed, wire = "nueva conversación, $trimmed")
-    }
+    // Resultado's "Seguir esta conversación" and the follow-up chips continue
+    // the current thread (/prompt.mode = "continue" → `--continue`).
+    fun continueConversation(text: String) = send(text.trim(), PromptMode.CONTINUE)
 
-    /** Re-sends the exact text that was not picked up. */
+    /** Re-sends the exact text, in the same mode, that was not picked up. */
     fun retrySend() {
         val failed = _send.value as? SendState.Failed ?: return
         _send.value = SendState.None
-        send(display = failed.text, wire = failed.wire)
+        send(failed.text, failed.mode)
     }
 
     /**
@@ -396,9 +433,27 @@ class CcwearosViewModel(
         _lastRun.value = null
     }
 
-    /** Local dismissal of a BlockedScreen / banner. Never written to RTDB. */
+    /**
+     * Local dismissal of a BlockedScreen / banner. Never written to RTDB. A
+     * Mac-side blocker's ts is also persisted, so it never shows again.
+     */
     fun dismissOverlay(key: String) {
+        if (key == NO_DICTATION_KEY) {
+            _noDictation.value = false
+            return
+        }
         _dismissed.value = _dismissed.value + key
+        val b = blocker.value
+        if (b != null && key == blockerDismissKey(b)) {
+            val next = addDismissal(_dismissedBlockers.value, b.ts)
+            _dismissedBlockers.value = next
+            dismissalStore.save(next)
+        }
+    }
+
+    /** Preguntar found no speech recognizer: show BlockedScreen(NO_DICTATION). */
+    fun reportNoDictation() {
+        _noDictation.value = true
     }
 
     /** ResultPage saw TUI junk in the current response. Idempotent. */
@@ -407,7 +462,7 @@ class CcwearosViewModel(
         _blockedContent.value = blockedContentKey(r)
     }
 
-    private fun send(display: String, wire: String) {
+    private fun send(display: String, mode: PromptMode) {
         if (display.isEmpty()) return
         // No silent queueing: an offline write would replay minutes later.
         if (!connected.value) {
@@ -416,7 +471,7 @@ class CcwearosViewModel(
         }
         if (_send.value is SendState.Sending) return
         _lastRun.value = null
-        val pending = SendState.Sending(display, wire, outcome.value)
+        val pending = SendState.Sending(display, mode, outcome.value)
         _send.value = pending
         _events.tryEmit(HomeEvent.Sent)
         sendTimeoutJob?.cancel()
@@ -426,7 +481,7 @@ class CcwearosViewModel(
         }
         viewModelScope.launch {
             try {
-                repo.sendPrompt(wire)
+                repo.sendPrompt(display, mode)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -439,7 +494,7 @@ class CcwearosViewModel(
     private fun failSend(pending: SendState.Sending) {
         if (_send.value !== pending) return
         sendTimeoutJob?.cancel()
-        _send.value = SendState.Failed(pending.text, pending.wire)
+        _send.value = SendState.Failed(pending.text, pending.mode)
         _events.tryEmit(HomeEvent.SendFailed)
     }
 

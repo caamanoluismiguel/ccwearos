@@ -4,6 +4,7 @@ import com.caamano.ccwearos.data.Blocker
 import com.caamano.ccwearos.data.ClaimResult
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.SharedSessionMeta
@@ -46,15 +47,17 @@ class FakeWatchRepository : WatchRepository {
     }
 
     val prompts = mutableListOf<String>()
+    val promptModes = mutableListOf<PromptMode>()
     var failNextPrompt = false
     var resets = 0
 
-    override suspend fun sendPrompt(text: String) {
+    override suspend fun sendPrompt(text: String, mode: PromptMode) {
         if (failNextPrompt) {
             failNextPrompt = false
             throw IllegalStateException("write failed")
         }
         prompts += text
+        promptModes += mode
     }
 
     override suspend fun claimSession(sessionId: String, cwd: String) = Unit

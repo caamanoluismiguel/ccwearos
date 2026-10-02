@@ -37,10 +37,21 @@ interface WatchRepository {
 
     /** Writes /command. `promptId` is included only when non-null (allow/deny). */
     suspend fun sendCommand(text: String, promptId: String?)
-    suspend fun sendPrompt(text: String)
+    /** Writes /prompt {text, mode, issuedAt}; [mode] picks a new thread or the current one. */
+    suspend fun sendPrompt(text: String, mode: PromptMode)
     suspend fun claimSession(sessionId: String, cwd: String)
     suspend fun clearClaimResult()
     suspend fun forceResetUi()
+}
+
+/**
+ * /prompt.mode: whether the daemon starts a NEW conversation or CONTINUEs
+ * the current one (`--continue`). Replaces the old "nueva conversación, "
+ * text prefix. Absent on the wire = the wrapper's legacy reset-phrase rule.
+ */
+enum class PromptMode(val wire: String) {
+    NEW("new"),
+    CONTINUE("continue"),
 }
 
 // Byte sequences the wrapper's command allowlist accepts (wrapper/src/command-guard.ts).

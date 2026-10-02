@@ -2,31 +2,31 @@ package com.caamano.ccwearos.presentation
 
 import androidx.annotation.StringRes
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
@@ -34,16 +34,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
 import androidx.wear.compose.foundation.rotary.rotaryScrollable
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
+import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.OutlinedButton
 import androidx.wear.compose.material3.ScreenScaffold
@@ -53,9 +58,13 @@ import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.BlockerKind
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
 import com.caamano.ccwearos.presentation.theme.CcPalette
+import com.caamano.ccwearos.presentation.theme.CcRadius
+import com.caamano.ccwearos.presentation.theme.CcStroke
 import com.caamano.ccwearos.presentation.ui.MascotState
 import com.caamano.ccwearos.presentation.ui.Motion
+import com.caamano.ccwearos.presentation.ui.PixelIcons
 import com.caamano.ccwearos.presentation.ui.PixelMascot
+import com.caamano.ccwearos.presentation.ui.pressFeedback
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -95,8 +104,48 @@ fun BlockedScreen(
         onPrimary = onPrimary,
         secondaryLabel = if (onDismiss != null) stringResource(R.string.blocked_close) else null,
         onSecondary = onDismiss,
-        haptic = copy.haptic,
+        // No haptic here: the shell owns it (one error per blocked run, see
+        // ErrorBuzzDedupe; the copy's TICK is played by WearApp on arrival).
     )
+}
+
+/**
+ * Compact, non-blocking "reloj sin conexión" pill under the TimeText. It is
+ * NOT an overlay: it covers only itself and takes no input, so the pager
+ * stays readable and every action that needs the network is disabled (the
+ * VM refuses them offline and Inicio shows "Sin conexión").
+ */
+@Composable
+fun WatchOfflineBanner(modifier: Modifier = Modifier) {
+    val label = stringResource(R.string.state_offline)
+    Row(
+        modifier = modifier
+            .padding(top = 30.dp)
+            .clip(CcRadius.pillShape)
+            .background(CcPalette.Surface)
+            .border(BorderStroke(CcStroke.hairline, CcPalette.Outline), CcRadius.pillShape)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .clearAndSetSemantics {
+                contentDescription = label
+                liveRegion = LiveRegionMode.Polite
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            imageVector = PixelIcons.Signal,
+            contentDescription = null,
+            tint = CcPalette.TextSecondary,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            text = label,
+            color = CcPalette.TextPrimary,
+            fontSize = 12.sp,
+            lineHeight = 14.sp,
+            maxLines = 1,
+        )
+    }
 }
 
 // ─── Copy (pure, unit tested) ───────────────────────────────────────────────
@@ -196,6 +245,8 @@ internal fun BlockedLayout(
     val inPreview = LocalInspectionMode.current
     val reduced = rememberReducedMotion()
 
+    // Only the sign-in error (MainActivity) passes a haptic now; BlockedScreen
+    // overlays leave it to the shell.
     LaunchedEffect(title) {
         if (inPreview) return@LaunchedEffect
         when (haptic) {
@@ -232,11 +283,13 @@ internal fun BlockedLayout(
     val focusRequester = remember { FocusRequester() }
     val side = (LocalConfiguration.current.screenWidthDp * 0.12f).dp
 
-    // Opaque so lane B can also draw this as an overlay above the pager.
+    // Opaque so it can also be drawn as an overlay above the pager; the
+    // overlay host (WearApp) swallows input and hides the pager from TalkBack.
     Box(
         Modifier
             .fillMaxSize()
-            .background(CcPalette.Black),
+            .background(CcPalette.Black)
+            .semantics { isTraversalGroup = true },
     ) {
         ScreenScaffold(scrollState = scrollState) { padding ->
             BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -316,14 +369,9 @@ private fun Modifier.fadeUp(progress: Animatable<Float, *>): Modifier = graphics
 
 @Composable
 private fun PrimaryAction(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
     val source = remember { MutableInteractionSource() }
-    val scale by animatePressScale(source)
     Button(
-        onClick = {
-            Haptics.tick(context)
-            onClick()
-        },
+        onClick = onClick,
         interactionSource = source,
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
@@ -332,10 +380,7 @@ private fun PrimaryAction(label: String, onClick: () -> Unit, modifier: Modifier
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
+            .pressFeedback(source),
     ) {
         Text(
             text = label,
@@ -349,23 +394,15 @@ private fun PrimaryAction(label: String, onClick: () -> Unit, modifier: Modifier
 
 @Composable
 private fun SecondaryAction(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
     val source = remember { MutableInteractionSource() }
-    val scale by animatePressScale(source)
     OutlinedButton(
-        onClick = {
-            Haptics.tick(context)
-            onClick()
-        },
+        onClick = onClick,
         interactionSource = source,
         border = BorderStroke(1.dp, CcPalette.Outline),
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
+            .pressFeedback(source),
     ) {
         Text(
             text = label,
@@ -378,21 +415,6 @@ private fun SecondaryAction(label: String, onClick: () -> Unit, modifier: Modifi
     }
 }
 
-/**
- * Press response from the feedback contract (Motion.kt, step 1): a pressed
- * control eases to [Motion.PRESSED_SCALE]. Read the value inside a
- * graphicsLayer block so only the layer redraws.
- */
-@Composable
-internal fun animatePressScale(source: InteractionSource): State<Float> {
-    val pressed by source.collectIsPressedAsState()
-    return animateFloatAsState(
-        targetValue = if (pressed) Motion.PRESSED_SCALE else 1f,
-        animationSpec = Motion.standard(Motion.FAST),
-        label = "pressScale",
-    )
-}
-
 // ─── Previews ───────────────────────────────────────────────────────────────
 
 @WearPreviewLargeRound
@@ -403,8 +425,12 @@ private fun PreviewBlockedMacOffline() {
 
 @WearPreviewLargeRound
 @Composable
-private fun PreviewBlockedWatchOffline() {
-    CCWEAROSTheme { BlockedScreen(variant = BlockedVariant.WATCH_OFFLINE, onPrimary = {}) }
+private fun PreviewWatchOfflineBanner() {
+    CCWEAROSTheme {
+        Box(Modifier.fillMaxSize().background(CcPalette.Black), contentAlignment = Alignment.TopCenter) {
+            WatchOfflineBanner()
+        }
+    }
 }
 
 @WearPreviewLargeRound

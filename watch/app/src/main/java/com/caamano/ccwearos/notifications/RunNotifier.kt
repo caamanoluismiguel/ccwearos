@@ -22,13 +22,18 @@ import com.caamano.ccwearos.presentation.Haptics
  * foreground service only while the app is not visible (the app shows both
  * itself). Opening the app cancels them.
  *
- *  • Done: low importance and silent. ok → "Listo: <headline>" and tap opens
- *    the Resultado page; not ok → "Algo falló" and tap opens the app.
+ *  • Done: its own high-importance channel so it actually reaches the wrist
+ *    with the screen off; the buzz is Haptics.done (failure: Haptics.error),
+ *    not the system pattern. ok → "¡Listo!" + the TL;DR's first line; not ok
+ *    → "No se pudo" + reason. Tap opens Resultado. A run the user stopped
+ *    posts nothing. One alert per outcome ts (OutcomeGate + [doneAlertedTs]).
  *  • Blocked: the blocker hint's first line; one Haptics.error per blocker
  *    (keyed by its ts), cancelled as soon as the wrapper clears /blocker.
  */
 object RunNotifier {
-    const val CHANNEL_RESULTS = "ccwearos_resultados"
+    /** Old silent channel, deleted on startup (importance can't be raised in place). */
+    private const val CHANNEL_RESULTS_LEGACY = "ccwearos_resultados"
+    const val CHANNEL_DONE = "ccwearos_terminado"
     const val CHANNEL_MAC = "ccwearos_mac"
     const val DONE_ID = 3
     const val BLOCKED_ID = 4
@@ -38,15 +43,22 @@ object RunNotifier {
     private const val REQ_BLOCKED = 21
 
     private var blockedPostedTs: Long? = null
+    private var doneAlertedTs: Long? = null
     private var blockedBuzzedTs: Long? = null
 
     internal fun createChannels(context: Context, nm: NotificationManager) {
+        nm.deleteNotificationChannel(CHANNEL_RESULTS_LEGACY)
         nm.createNotificationChannel(
             NotificationChannel(
-                CHANNEL_RESULTS,
+                CHANNEL_DONE,
                 context.getString(R.string.notif_channel_results),
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = context.getString(R.string.notif_channel_results_desc) },
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = context.getString(R.string.notif_channel_results_desc)
+                // Haptics.done / Haptics.error play instead (our own patterns).
+                enableVibration(false)
+                setSound(null, null)
+            },
         )
         nm.createNotificationChannel(
             NotificationChannel(
@@ -62,33 +74,39 @@ object RunNotifier {
         )
     }
 
-    /** A run just finished (see [OutcomeGate]). No-op while the app is visible. */
+    /**
+     * A run just finished (see [OutcomeGate]). No-op while the app is visible
+     * (the in-app moment covers it, and replays on wake if it was missed).
+     */
+    @Synchronized
     fun runFinished(context: Context, outcome: RunOutcome, headline: String?, appVisible: Boolean) {
-        if (appVisible) return
-        val text = when {
-            !outcome.ok -> context.getString(R.string.notif_done_failed)
-            else -> NotificationText.firstLine(headline)
-                ?.let { context.getString(R.string.notif_done_ok_headline, it) }
-                ?: context.getString(R.string.notif_done_ok)
+        val copy = NotificationText.doneCopy(outcome, headline, appVisible, doneAlertedTs) ?: return
+        val title = context.getString(if (copy.ok) R.string.notif_done_ok_title else R.string.notif_done_failed_title)
+        val text = copy.line ?: if (copy.ok) {
+            context.getString(R.string.notif_done_ok_fallback)
+        } else {
+            context.getString(R.string.notif_done_failed_fallback, outcome.exitCode.toInt())
         }
         val tap = PendingIntent.getActivity(
             context,
             REQ_DONE,
-            DeepLinks.intent(context, if (outcome.ok) DeepLinks.ACTION_RESULT else null),
+            DeepLinks.intent(context, DeepLinks.ACTION_RESULT),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_RESULTS)
+        val notification = NotificationCompat.Builder(context, CHANNEL_DONE)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(context.getString(R.string.notif_done_title))
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setAutoCancel(true)
             .setContentIntent(tap)
             .build()
-        notify(context, DONE_ID, notification)
+        if (!notify(context, DONE_ID, notification)) return
+        doneAlertedTs = outcome.ts
+        runCatching { if (copy.ok) Haptics.done(context) else Haptics.error(context) }
     }
 
     /** Mirrors /blocker: posts while present and the app is hidden, cancels otherwise. */

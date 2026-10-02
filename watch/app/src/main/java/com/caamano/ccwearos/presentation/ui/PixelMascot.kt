@@ -44,7 +44,8 @@ import kotlin.random.Random
  *  - Sending: leans forward, signal arcs pulse outward above the head, 3 beats.
  *  - Running: 4-frame walk (one step per 300ms) with pixel dust behind.
  *  - Waiting: 2px hop loop, amber "!" above the head, eyes on you (catchlight).
- *  - Done:    one hop, ✓ eyes for 1.2s, then settles back into Idle motion.
+ *  - Done:    two hops with pixel confetti popping around it, ✓ eyes, then
+ *             settles back into Idle motion.
  *  - Error:   X eyes, one damped shake (3 oscillations, 8dp max).
  *  - Blocked: calm. Looks up at a small laptop with a "?", glances back at you.
  *  - Offline: grey, still, eyes closed, a "z" drifts up every few seconds.
@@ -131,9 +132,11 @@ fun PixelMascot(
 private fun MascotSprite(state: MascotState, color: Color?, animate: Boolean) {
     var frame by remember(state) { mutableStateOf(MascotFrame.resting(state, animate)) }
     val shake = remember(state) { Animatable(0f) }
+    // Screen off / app hidden: the loop is cancelled, not left ticking.
+    val resumed = rememberIsResumed()
 
-    LaunchedEffect(state, animate) {
-        if (!animate) return@LaunchedEffect
+    LaunchedEffect(state, animate, resumed) {
+        if (!animate || !resumed) return@LaunchedEffect
         runMascotLoop(state, update = { frame = it(frame) }, shake = shake)
     }
 
@@ -228,11 +231,14 @@ private suspend fun runMascotLoop(
         }
 
         MascotState.Done -> {
-            update { it.copy(lift = -1) }; delay(60)
-            update { it.copy(lift = -3) }; delay(180)
-            update { it.copy(lift = -1) }; delay(60)
+            // Big hop, confetti bursts outward, then a smaller second hop.
+            update { it.copy(lift = -1, confetti = 0) }; delay(60)
+            update { it.copy(lift = -3, confetti = 1) }; delay(180)
+            update { it.copy(lift = -1, confetti = 2) }; delay(60)
+            update { it.copy(lift = 0) }; delay(140)
+            update { it.copy(lift = -2, confetti = -1) }; delay(120)
             update { it.copy(lift = 0) }
-            delay(DONE_CELEBRATE_MS - 300)
+            delay(DONE_CELEBRATE_MS - 560)
             update { it.copy(celebrating = false) }
             launchBreath(); launchBlinks()
         }
@@ -268,6 +274,13 @@ private suspend fun runMascotLoop(
 
 internal const val DONE_CELEBRATE_MS = 1_200L
 
+/** Confetti positions per burst phase, inside the 16×18 grid (headroom + sides). */
+private val CONFETTI: List<List<Pair<Int, Int>>> = listOf(
+    listOf(1 to 6, 14 to 6, 3 to 3, 12 to 3),
+    listOf(0 to 4, 15 to 4, 2 to 1, 13 to 1, 7 to 0),
+    listOf(0 to 1, 15 to 1, 4 to 0, 11 to 0, 1 to 9, 14 to 9),
+)
+
 // ─── Pure sprite model (unit-tested in MascotSpriteTest) ────────────────────
 
 internal object MascotGrid {
@@ -294,6 +307,7 @@ internal data class MascotPixel(val x: Int, val y: Int, val w: Int, val h: Int, 
  * @param beat Sending signal arc index 0..2, -1 none.
  * @param dust Running dust puff phase 0..3, -1 none.
  * @param zzz Offline "z" phase 0..2, -1 none.
+ * @param confetti Done confetti burst phase 0..2 (outward), -1 none.
  * @param allSignal reduced-motion Sending: draw every arc at once.
  */
 internal data class MascotFrame(
@@ -308,6 +322,7 @@ internal data class MascotFrame(
     val dust: Int = -1,
     val zzz: Int = -1,
     val allSignal: Boolean = false,
+    val confetti: Int = -1,
 ) {
     companion object {
         /** First frame of a state; when [animate] is false it's the static readable pose. */
@@ -316,6 +331,8 @@ internal data class MascotFrame(
             MascotState.Running -> MascotFrame(gaze = 1, dust = if (animate) -1 else 0)
             MascotState.Blocked -> MascotFrame(gaze = 1)
             MascotState.Offline -> MascotFrame(zzz = if (animate) -1 else 1)
+            // Still frame keeps one confetti ring so "done" reads without motion.
+            MascotState.Done -> MascotFrame(confetti = if (animate) -1 else 1)
             else -> MascotFrame()
         }
     }
@@ -426,6 +443,11 @@ internal fun mascotPixels(state: MascotState, f: MascotFrame): List<MascotPixel>
             fixed(11, 2, w = 4, h = 3, ink = Ink.Muted)
             fixed(12, 3, w = 2, ink = Ink.Eye) // dark screen face
             fixed(10, 5, w = 6, ink = Ink.Muted)
+        }
+        MascotState.Done -> if (f.confetti >= 0) {
+            // Solid pixels, alternating coral and white, flying outward per phase.
+            val ring = CONFETTI[f.confetti.coerceIn(0, CONFETTI.size - 1)]
+            ring.forEachIndexed { i, (x, y) -> fixed(x, y, ink = if (i % 2 == 0) Ink.Accent else Ink.Glint) }
         }
         MascotState.Offline -> if (f.zzz >= 0) {
             val zx = 11 + f.zzz

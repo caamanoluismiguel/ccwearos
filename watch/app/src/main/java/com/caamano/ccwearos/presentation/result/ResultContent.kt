@@ -125,3 +125,113 @@ const val TOOL_PREVIEW_COUNT = 5
 
 /** Collapsed body budget in characters. */
 const val BODY_BUDGET_CHARS = 600
+
+// ─── Minimal first screenful ─────────────────────────────────────────────────
+
+/** Bullets shown on the first screenful, before "Ver detalle". */
+const val SUMMARY_BULLETS = 3
+
+/** Follow-up chips on Resultado: at most this many, each label this short. */
+const val MAX_CHIPS = 2
+const val CHIP_LABEL_MAX = 24
+
+/**
+ * What Resultado shows before "Ver detalle": the TL;DR (or, without one, the
+ * first paragraph) and at most [SUMMARY_BULLETS] top-level list items, only
+ * when the answer has a list. [hasDetail]: "Ver detalle" has something more.
+ */
+data class FirstScreen(val tldr: String?, val bullets: List<String>, val hasDetail: Boolean)
+
+fun firstScreenful(prepared: ResultText, blocks: List<Block>, toolCount: Int): FirstScreen {
+    val tldr = prepared.tldr
+        ?: blocks.firstNotNullOfOrNull { (it as? Block.Paragraph)?.spans?.plainText()?.trim()?.ifBlank { null } }
+    val bullets = blocks
+        .filterIsInstance<Block.ListItem>()
+        .filter { it.level == 0 }
+        .map { it.spans.plainText().trim() }
+        .filter { it.isNotEmpty() }
+        .take(SUMMARY_BULLETS)
+    return FirstScreen(tldr = tldr, bullets = bullets, hasDetail = blocks.isNotEmpty() || toolCount > 0)
+}
+
+/** Claude's chips: at most [MAX_CHIPS], label ellipsized to [CHIP_LABEL_MAX], full text sent. */
+fun chipLabels(followups: List<String>): List<Pair<String, String>> =
+    followups
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .take(MAX_CHIPS)
+        .map { full -> ellipsize(full, CHIP_LABEL_MAX) to full }
+
+internal fun ellipsize(text: String, max: Int): String =
+    if (text.length <= max) text else text.take(max - 1).trimEnd() + "…"
+
+/** Response turned into what Resultado (and Inicio's done line) render. */
+data class PreparedResult(val blocked: Boolean, val text: ResultText, val blocks: List<Block>)
+
+/**
+ * One pipeline for the raw RTDB strings: sanitizer (TUI junk → blocked),
+ * then [cleanAnswer] (chrome lines, doubled answers), then TL;DR split and
+ * markdown blocks.
+ */
+fun prepareResult(headline: String?, response: String?): PreparedResult {
+    val sanitized = ResponseSanitizer.sanitize(response)
+    if (sanitized is SanitizeResult.Blocked) return PreparedResult(true, ResultText(null, ""), emptyList())
+    val clean = cleanAnswer((sanitized as SanitizeResult.Clean).text)
+    val safeHeadline = (ResponseSanitizer.sanitize(headline) as? SanitizeResult.Clean)
+        ?.text?.let(::cleanAnswer)?.ifBlank { null }
+    val text = prepareResultText(clean, safeHeadline)
+    return PreparedResult(false, text, MarkdownBlocks.parse(text.body))
+}
+
+/** The TL;DR Inicio shows under "¡Listo!"; null when there is none (or junk). */
+fun resultTldr(headline: String?, response: String?): String? {
+    val p = prepareResult(headline, response)
+    if (p.blocked) return null
+    return firstScreenful(p.text, p.blocks, toolCount = 0).tldr
+}
+
+// ─── Defense in depth: TUI chrome the sanitizer let through ─────────────────
+
+private val RULE_LINE = Regex("^[▔▁─━═\\-_\\s]{3,}$")
+private val SPINNER_START = Regex("^[✻✽✶✳✢]")
+private val CHROME_PHRASES = listOf(
+    "churned for",
+    "don't show again",
+    "dont show again",
+    "teach auto mode",
+    "esc to interrupt",
+    "shift+tab to cycle",
+    "auto-accept edits",
+)
+
+/** A line that is Claude Code TUI chrome, never part of an answer. */
+fun isTuiChrome(line: String): Boolean {
+    val t = line.trim()
+    if (t.isEmpty()) return false
+    if (SPINNER_START.containsMatchIn(t)) return true
+    if (t.length >= 3 && RULE_LINE.matches(t)) return true
+    val lower = t.lowercase().replace('’', '\'')
+    return CHROME_PHRASES.any { it in lower }
+}
+
+/**
+ * Drops TUI chrome lines and, when the text is the same answer twice in a
+ * row (a scrape that caught a redraw), keeps one copy. Runs on text the
+ * sanitizer already called Clean.
+ */
+fun cleanAnswer(text: String): String {
+    val kept = text.lines().filterNot(::isTuiChrome)
+    return dedupeRepeatedHalf(kept).joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
+}
+
+/** If the non-blank lines are A followed by A again, returns the first A. */
+internal fun dedupeRepeatedHalf(lines: List<String>): List<String> {
+    val idx = lines.indices.filter { lines[it].isNotBlank() }
+    val n = idx.size
+    if (n < 2 || n % 2 != 0) return lines
+    val half = n / 2
+    for (k in 0 until half) {
+        if (lines[idx[k]].trim() != lines[idx[k + half]].trim()) return lines
+    }
+    return lines.subList(0, idx[half - 1] + 1)
+}

@@ -1,6 +1,7 @@
 package com.caamano.ccwearos.presentation.home
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.snap
@@ -8,7 +9,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,24 +25,27 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
@@ -47,36 +54,47 @@ import androidx.wear.tooling.preview.devices.WearDevices
 import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.ClaudeStatus
 import com.caamano.ccwearos.data.Metrics
+import com.caamano.ccwearos.data.PromptMode
 import com.caamano.ccwearos.data.SharedSessionMeta
 import com.caamano.ccwearos.data.ToolEvent
 import com.caamano.ccwearos.presentation.Haptics
 import com.caamano.ccwearos.presentation.MonoFamily
 import com.caamano.ccwearos.presentation.shortNum
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
+import com.caamano.ccwearos.presentation.theme.CcPalette
 import com.caamano.ccwearos.presentation.theme.StatusColors
 import com.caamano.ccwearos.presentation.ui.MascotState
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.PixelIcons
 import com.caamano.ccwearos.presentation.ui.PixelMascot
-import com.caamano.ccwearos.presentation.ui.StatusDot
+import com.caamano.ccwearos.presentation.ui.ProgressHalo
+import com.caamano.ccwearos.presentation.ui.SpeechBubble
 import com.caamano.ccwearos.presentation.ui.labelRes
-import com.caamano.ccwearos.presentation.ui.pixelIcon
+import com.caamano.ccwearos.presentation.ui.rememberIsResumed
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
-import com.caamano.ccwearos.presentation.ui.statusColor
+import com.caamano.ccwearos.presentation.ui.shake
 import kotlinx.coroutines.delay
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INICIO — the instrument. Pixel mascot (living state), the state in one
-// word, a detail line, ONE primary action, and a small metrics row.
+// INICIO — the instrument, minimal on purpose: only what you need, and a
+// button only when you have to step in.
 //
-// Feedback contract (ui/Motion.kt) per mode:
-//  ¿qué hice?        every tap: press scale + Haptics.tick (HomeButton/HomeLink)
-//  ¿qué está pasando? Sending quotes the spoken text; Running shows the live
-//                     tool line + a ticking mm:ss; the mascot always animates
-//  ¿qué puedo hacer?  one primary per mode (Preguntar/Seguir, Reintentar);
-//                     Cancelar / Detener are outlined
-//  ¿salió bien?       Done hop + ring + auto-slide to Resultado, or Error eyes
-//                     + one-line reason + Ver detalle (driven by DashboardScreen)
+//  Idle      mascot, "Listo", last-response link, Preguntar (always a NEW
+//            conversation; continuing lives on Resultado), usage.
+//  Sending   mascot, "Enviando…", what you said (≤2 lines) and a meta line
+//            "Pregunta nueva" / "Siguiendo la conversación". Cancelar shows
+//            up only after 5s.
+//  Running   mascot inside a ProgressHalo, ONE plain line from the latest
+//            tool ("Editando parser.ts"), a small timer. No buttons: tap (or
+//            long-press) the screen to reveal Detener for 4s. After 3 quiet
+//            minutes "¿Sigue ahí?" + Detener + Reiniciar estado.
+//  Done      the mascot celebrates (hop + confetti) and says "¡Listo!" in a
+//            bubble, the TL;DR in ≤2 lines, then the shell slides to
+//            Resultado.
+//  Failed    "No se pudo" + one-line reason; Reintentar only when there is
+//            something to retry (the Mac never took the prompt).
+//
+// Type scale: title 18sp semibold, body 14sp, meta 12sp #9A9A9A, 12dp gaps.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Everything Inicio renders. Built by DashboardScreen from VM state. */
@@ -84,15 +102,18 @@ data class HomeUi(
     val mode: HomeMode,
     val mascot: MascotState,
     val toolEvents: List<ToolEvent> = emptyList(),
-    val activity: String? = null,
-    val task: String? = null,
     val runStartedAt: Long? = null,
     val claudeStatus: ClaudeStatus? = null,
     val metrics: Metrics = Metrics(),
     val hasLastResponse: Boolean = false,
     /** Mac epoch ms of the last outcome; null when unknown. */
     val lastResponseAt: Long? = null,
-    val voiceUnavailable: Boolean = false,
+    /** Bumped by the shell on a failure: the mascot shakes once (Modifier.shake). */
+    val errorShake: Int = 0,
+    /** What the mascot says right now; null = no bubble. */
+    val bubble: MascotBubble? = null,
+    /** TL;DR shown under "¡Listo!" while the done moment plays. */
+    val doneTldr: String? = null,
 )
 
 /** Inicio callbacks. Haptics.tick is fired by the controls themselves. */
@@ -103,9 +124,21 @@ data class HomeCallbacks(
     val onStop: () -> Unit = {},
     val onForceReset: () -> Unit = {},
     val onOpenResult: () -> Unit = {},
-    val onSeeDetail: () -> Unit = {},
     val onOpenMetrics: () -> Unit = {},
 )
+
+/** Inicio type scale (owner rule: one weight hierarchy, scannable). */
+private object HomeType {
+    val title = 18.sp
+    val titleLine = 22.sp
+    val body = 14.sp
+    val bodyLine = 18.sp
+    val meta = 12.sp
+    val metaLine = 16.sp
+}
+
+private const val STOP_REVEAL_MS = 4_000L
+private const val CANCEL_DELAY_MS = 5_000L
 
 @Composable
 fun HomePage(
@@ -115,42 +148,59 @@ fun HomePage(
 ) {
     // Progress clock for "¿Sigue ahí?": resets whenever the run shows life.
     var lastProgressAt by remember { mutableLongStateOf(nowMs()) }
-    LaunchedEffect(ui.activity, ui.toolEvents, ui.task, ui.runStartedAt) {
+    LaunchedEffect(ui.toolEvents, ui.runStartedAt) {
         lastProgressAt = nowMs()
     }
-    val now by tickingNow(enabled = ui.mode is HomeMode.Running, nowMs = nowMs)
-    val stale = ui.mode is HomeMode.Running && isRunStale(now, lastProgressAt)
+    val running = ui.mode is HomeMode.Running
+    val now by tickingNow(enabled = running, nowMs = nowMs)
+    val stale = running && isRunStale(now, lastProgressAt)
+
+    // Detener is hidden while working; a tap reveals it for a few seconds.
+    var stopReveal by remember { mutableIntStateOf(0) }
+    var stopVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(stopReveal) {
+        if (stopReveal > 0) {
+            stopVisible = true
+            delay(STOP_REVEAL_MS)
+            stopVisible = false
+        }
+    }
+    LaunchedEffect(running) { if (!running) stopVisible = false }
+
+    val revealLabel = stringResource(R.string.home_reveal_stop)
+    val tapToReveal = if (running && !stale) {
+        Modifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClickLabel = revealLabel,
+            onClick = { stopReveal++ },
+            onLongClick = { stopReveal++ },
+        )
+    } else {
+        Modifier
+    }
 
     ScreenScaffold { _ ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = roundInset()),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(14.dp))
-            PixelMascot(state = ui.mascot, size = 32.dp)
-            Spacer(Modifier.height(4.dp))
-            StateWord(ui.mascot)
-            Spacer(Modifier.height(2.dp))
-            DetailSlot(ui = ui, now = now, stale = stale, callbacks = callbacks)
-            Spacer(Modifier.height(6.dp))
-            ActionSlot(mode = ui.mode, stale = stale, callbacks = callbacks)
-            if (ui.voiceUnavailable) {
-                Text(
-                    text = stringResource(R.string.voice_unavailable),
-                    color = StatusColors.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center,
-                )
+        Box(Modifier.fillMaxSize().then(tapToReveal), contentAlignment = Alignment.Center) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = roundInset()),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                MascotStage(ui)
+                Spacer(Modifier.height(6.dp))
+                StateWord(ui)
+                Spacer(Modifier.height(4.dp))
+                DetailSlot(ui = ui, now = now, stale = stale, callbacks = callbacks)
+                Spacer(Modifier.height(12.dp))
+                ActionSlot(mode = ui.mode, stale = stale, stopVisible = stopVisible, callbacks = callbacks)
+                val mode = ui.mode
+                val plainIdle = mode is HomeMode.Idle && mode.failure == null &&
+                    mode.offline == null && ui.mascot != MascotState.Done
+                if (plainIdle) MetricsRow(ui.claudeStatus, ui.metrics, onClick = callbacks.onOpenMetrics)
             }
-            val showMetrics = !stale && ui.mode !is HomeMode.SendFailed && ui.mode !is HomeMode.Shared
-            if (showMetrics) {
-                MetricsRow(ui.claudeStatus, ui.metrics, onClick = callbacks.onOpenMetrics)
-            }
-            // Clears the pager's page indicator.
-            Spacer(Modifier.height(14.dp))
         }
     }
 }
@@ -162,9 +212,11 @@ internal fun roundInset() = (LocalConfiguration.current.screenWidthDp * 0.12f).d
 /** Wall clock that ticks once a second while [enabled]; frozen otherwise. */
 @Composable
 private fun tickingNow(enabled: Boolean, nowMs: () -> Long) = remember { mutableLongStateOf(nowMs()) }.also { state ->
-    LaunchedEffect(enabled) {
+    // Gated on RESUMED: no 1 Hz wake-ups with the screen off.
+    val resumed = rememberIsResumed()
+    LaunchedEffect(enabled, resumed) {
         state.longValue = nowMs()
-        while (enabled) {
+        while (enabled && resumed) {
             delay(1_000)
             state.longValue = nowMs()
         }
@@ -177,34 +229,55 @@ private fun crossfade(reduced: Boolean): ContentTransform = if (reduced) {
     fadeIn(Motion.enter(Motion.MEDIUM)) togetherWith fadeOut(Motion.exit(Motion.FAST))
 }
 
+// ─── Mascot + bubble ─────────────────────────────────────────────────────────
+
 @Composable
-private fun StateWord(state: MascotState) {
-    val reduced = rememberReducedMotion()
-    AnimatedContent(
-        targetState = state,
-        transitionSpec = { crossfade(reduced) },
-        contentKey = { it.labelRes() },
-        label = "state-word",
-    ) { s ->
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-        ) {
-            StatusDot(color = s.statusColor(), description = null)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = stringResource(s.labelRes()),
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-            )
+private fun MascotStage(ui: HomeUi) {
+    val bubbleText = when (ui.bubble) {
+        MascotBubble.DONE -> stringResource(R.string.bubble_done)
+        MascotBubble.FAILED -> stringResource(R.string.bubble_failed)
+        MascotBubble.STOPPED -> stringResource(R.string.bubble_stopped)
+        MascotBubble.ASK -> stringResource(R.string.bubble_ask)
+        null -> null
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        // Reserved slot so the bubble never pushes the layout around.
+        Box(Modifier.height(24.dp), contentAlignment = Alignment.BottomCenter) {
+            SpeechBubble(bubbleText)
         }
+        // ¿qué está pasando?: a calm halo laps the mascot while it works.
+        Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+            ProgressHalo(active = ui.mode is HomeMode.Running, modifier = Modifier.fillMaxSize(), strokeWidth = 2.dp)
+            PixelMascot(state = ui.mascot, size = 34.dp, modifier = Modifier.shake(ui.errorShake))
+        }
+    }
+}
+
+@Composable
+private fun StateWord(ui: HomeUi) {
+    val reduced = rememberReducedMotion()
+    val stopped = (ui.mode as? HomeMode.Idle)?.failure?.stoppedByUser == true
+    val res = if (stopped) R.string.state_stopped else ui.mascot.labelRes()
+    AnimatedContent(
+        targetState = res,
+        transitionSpec = { crossfade(reduced) },
+        label = "state-word",
+    ) { r ->
+        Text(
+            text = stringResource(r),
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = HomeType.title,
+            lineHeight = HomeType.titleLine,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        )
     }
 }
 
 // ─── Detail line ─────────────────────────────────────────────────────────────
 
-private enum class DetailKind { NONE, LAST, FAILURE, SENDING, SEND_FAILED, RUNNING, STALE, SHARED }
+private enum class DetailKind { NONE, LAST, DONE, FAILURE, SENDING, SEND_FAILED, RUNNING, STALE, SHARED }
 
 @Composable
 private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCallbacks) {
@@ -212,6 +285,7 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
     val mode = ui.mode
     val kind = when (mode) {
         is HomeMode.Idle -> when {
+            ui.mascot == MascotState.Done && ui.doneTldr != null -> DetailKind.DONE
             mode.failure != null -> DetailKind.FAILURE
             ui.hasLastResponse -> DetailKind.LAST
             else -> DetailKind.NONE
@@ -233,36 +307,28 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
                 DetailKind.LAST -> HomeLink(
                     text = lastResponseLabel(ui.lastResponseAt, now),
                     onClick = callbacks.onOpenResult,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = CcPalette.TextSecondary,
                 )
+                DetailKind.DONE -> BodyText(ui.doneTldr.orEmpty(), maxLines = 2)
                 DetailKind.FAILURE -> {
                     val failure = (mode as? HomeMode.Idle)?.failure
-                    Text(
+                    MetaText(
                         text = failureReason(failure),
-                        color = StatusColors.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        color = if (failure?.stoppedByUser == true) CcPalette.TextSecondary else StatusColors.error,
                     )
-                    HomeLink(text = stringResource(R.string.home_see_detail), onClick = callbacks.onSeeDetail)
                 }
-                DetailKind.SENDING -> QuoteLine((mode as? HomeMode.Sending)?.text.orEmpty())
-                DetailKind.SEND_FAILED -> Text(
-                    text = stringResource(R.string.home_send_failed),
-                    color = StatusColors.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                )
+                DetailKind.SENDING -> {
+                    val sending = mode as? HomeMode.Sending
+                    BodyText(stringResource(R.string.home_sent_quote, sending?.text.orEmpty()), maxLines = 2)
+                    MetaText(
+                        stringResource(
+                            if (sending?.mode == PromptMode.CONTINUE) R.string.home_sending_continue else R.string.home_sending_new,
+                        ),
+                    )
+                }
+                DetailKind.SEND_FAILED -> BodyText(stringResource(R.string.home_send_failed), color = StatusColors.error, maxLines = 2)
                 DetailKind.RUNNING -> RunningLine(ui, now)
-                DetailKind.STALE -> Text(
-                    text = stringResource(R.string.home_stale_question),
-                    color = StatusColors.waiting,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
+                DetailKind.STALE -> BodyText(stringResource(R.string.home_stale_question), color = StatusColors.waiting)
                 DetailKind.SHARED -> (mode as? HomeMode.Shared)?.let { SharedSessionBlock(it.meta) }
             }
         }
@@ -270,13 +336,27 @@ private fun DetailSlot(ui: HomeUi, now: Long, stale: Boolean, callbacks: HomeCal
 }
 
 @Composable
-private fun QuoteLine(text: String) {
+private fun BodyText(text: String, color: Color = MaterialTheme.colorScheme.onSurface, maxLines: Int = 1) {
     Text(
-        text = stringResource(R.string.home_sent_quote, text),
-        color = MaterialTheme.colorScheme.onSurface,
-        style = MaterialTheme.typography.bodySmall,
+        text = text,
+        color = color,
+        fontSize = HomeType.body,
+        lineHeight = HomeType.bodyLine,
         textAlign = TextAlign.Center,
-        maxLines = 2,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun MetaText(text: String, color: Color = CcPalette.TextSecondary) {
+    Text(
+        text = text,
+        color = color,
+        fontSize = HomeType.meta,
+        lineHeight = HomeType.metaLine,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )
 }
@@ -284,67 +364,25 @@ private fun QuoteLine(text: String) {
 @Composable
 private fun RunningLine(ui: HomeUi, now: Long) {
     val reduced = rememberReducedMotion()
-    val line = liveLine(ui.toolEvents, ui.activity)
-    val text = when (line) {
-        is LiveLine.Tool -> toolLineText(line)
-        is LiveLine.Activity -> line.text
-        LiveLine.None -> ui.task?.takeIf { it.isNotBlank() }
-    }
-    val icon = ui.toolEvents.lastOrNull()?.takeIf { line is LiveLine.Tool }?.pixelIcon()
+    val line = workingLine(ui.toolEvents)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         AnimatedContent(
-            targetState = text to icon,
+            targetState = line,
             transitionSpec = { crossfade(reduced) },
             label = "live-line",
-        ) { (t, i) ->
-            if (t != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (i != null) {
-                        Icon(
-                            imageVector = i,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(12.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Text(
-                        text = t,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
+        ) { t -> BodyText(t) }
         ui.runStartedAt?.let { started ->
             val elapsed = formatElapsed(now - started)
             val cd = stringResource(R.string.home_elapsed_cd, elapsed)
             Text(
                 text = elapsed,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.labelMedium,
+                color = CcPalette.TextSecondary,
+                fontSize = HomeType.meta,
+                lineHeight = HomeType.metaLine,
                 modifier = Modifier.semantics { contentDescription = cd },
             )
         }
     }
-}
-
-@Composable
-private fun toolLineText(line: LiveLine.Tool): String {
-    val verb = when (line.verb) {
-        ToolVerb.EDIT -> stringResource(R.string.home_tool_edit)
-        ToolVerb.WRITE -> stringResource(R.string.home_tool_write)
-        ToolVerb.READ -> stringResource(R.string.home_tool_read)
-        ToolVerb.RUN -> stringResource(R.string.home_tool_run)
-        ToolVerb.SEARCH -> stringResource(R.string.home_tool_search)
-        ToolVerb.FETCH -> stringResource(R.string.home_tool_fetch)
-        ToolVerb.WEB -> return stringResource(R.string.home_tool_web)
-        ToolVerb.DELEGATE -> return stringResource(R.string.home_tool_delegate)
-        ToolVerb.OTHER -> return stringResource(R.string.home_tool_other, line.toolName)
-    }
-    return if (line.target != null) "$verb ${line.target}" else verb
 }
 
 @Composable
@@ -368,25 +406,38 @@ private fun lastResponseLabel(at: Long?, now: Long): String {
     return stringResource(R.string.home_last_response_ago, ago)
 }
 
-// ─── Primary action ──────────────────────────────────────────────────────────
+// ─── Actions: only when you have to step in ──────────────────────────────────
 
-private enum class ActionKind { ASK, CONTINUE, OFFLINE_WATCH, OFFLINE_MAC, CANCEL, RETRY, STOP, STOP_STALE, NONE }
+private enum class ActionKind { ASK, OFFLINE_WATCH, OFFLINE_MAC, CANCEL, RETRY, STOP, STOP_STALE, NONE }
 
 @Composable
-private fun ActionSlot(mode: HomeMode, stale: Boolean, callbacks: HomeCallbacks) {
+private fun ActionSlot(mode: HomeMode, stale: Boolean, stopVisible: Boolean, callbacks: HomeCallbacks) {
     val reduced = rememberReducedMotion()
+    // Cancelar only after a few seconds: most prompts are picked up at once.
+    val sending = mode is HomeMode.Sending
+    var cancelReady by remember { mutableStateOf(false) }
+    LaunchedEffect(sending) {
+        cancelReady = false
+        if (sending) {
+            delay(CANCEL_DELAY_MS)
+            cancelReady = true
+        }
+    }
     val kind = when (mode) {
         is HomeMode.Idle -> when (mode.offline) {
             OfflineReason.WATCH -> ActionKind.OFFLINE_WATCH
             OfflineReason.MAC -> ActionKind.OFFLINE_MAC
-            null -> if (mode.conversationActive) ActionKind.CONTINUE else ActionKind.ASK
+            null -> ActionKind.ASK
         }
-        is HomeMode.Sending -> ActionKind.CANCEL
+        is HomeMode.Sending -> if (cancelReady) ActionKind.CANCEL else ActionKind.NONE
         is HomeMode.SendFailed -> ActionKind.RETRY
-        HomeMode.Running -> if (stale) ActionKind.STOP_STALE else ActionKind.STOP
+        HomeMode.Running -> when {
+            stale -> ActionKind.STOP_STALE
+            stopVisible -> ActionKind.STOP
+            else -> ActionKind.NONE
+        }
         HomeMode.Waiting, is HomeMode.Shared -> ActionKind.NONE
     }
-    // The button morphs its label in place: scale-in + fade on the new label.
     AnimatedContent(
         targetState = kind,
         transitionSpec = {
@@ -410,18 +461,13 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, callbacks: HomeCallbacks)
                     icon = PixelIcons.Mic,
                     onClick = callbacks.onAsk,
                 )
-                ActionKind.CONTINUE -> HomeButton(
-                    label = stringResource(R.string.action_continue),
-                    style = HomeButtonStyle.PRIMARY,
-                    icon = PixelIcons.Mic,
-                    onClick = callbacks.onAsk,
-                )
                 ActionKind.OFFLINE_WATCH -> OfflineButton(R.string.home_offline_watch_explain)
                 ActionKind.OFFLINE_MAC -> OfflineButton(R.string.home_offline_mac_explain)
                 ActionKind.CANCEL -> HomeButton(
                     label = stringResource(R.string.home_cancel),
                     style = HomeButtonStyle.OUTLINED,
                     onClick = callbacks.onCancelSend,
+                    height = 40.dp,
                 )
                 ActionKind.RETRY -> {
                     HomeButton(
@@ -429,14 +475,11 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, callbacks: HomeCallbacks)
                         style = HomeButtonStyle.PRIMARY,
                         icon = PixelIcons.Refresh,
                         onClick = callbacks.onRetry,
-                        height = 44.dp,
                     )
-                    Spacer(Modifier.height(4.dp))
-                    HomeButton(
-                        label = stringResource(R.string.home_cancel),
-                        style = HomeButtonStyle.OUTLINED,
+                    HomeLink(
+                        text = stringResource(R.string.home_cancel),
                         onClick = callbacks.onCancelSend,
-                        height = 36.dp,
+                        color = CcPalette.TextSecondary,
                     )
                 }
                 ActionKind.STOP, ActionKind.STOP_STALE -> {
@@ -449,7 +492,7 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, callbacks: HomeCallbacks)
                         // "Reiniciar estado" below after 3 min of silence.
                         onLongClick = callbacks.onForceReset,
                         onLongClickLabel = stringResource(R.string.home_reset_state),
-                        height = if (k == ActionKind.STOP_STALE) 44.dp else 48.dp,
+                        height = 44.dp,
                     )
                     if (k == ActionKind.STOP_STALE) {
                         Spacer(Modifier.height(4.dp))
@@ -462,7 +505,7 @@ private fun ActionSlot(mode: HomeMode, stale: Boolean, callbacks: HomeCallbacks)
                         )
                     }
                 }
-                ActionKind.NONE -> Spacer(Modifier.height(8.dp))
+                ActionKind.NONE -> Spacer(Modifier.height(4.dp))
             }
         }
     }
@@ -491,11 +534,12 @@ private fun OfflineButton(explainRes: Int) {
                 explaining = true
             },
         )
-        if (explaining) {
+        AnimatedVisibility(visible = explaining) {
             Text(
                 text = stringResource(explainRes),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
+                color = CcPalette.TextSecondary,
+                fontSize = HomeType.meta,
+                lineHeight = HomeType.metaLine,
                 textAlign = TextAlign.Center,
                 maxLines = 3,
                 modifier = Modifier
@@ -532,24 +576,20 @@ private fun SharedSessionBlock(meta: SharedSessionMeta) {
             Text(
                 text = stringResource(header),
                 color = StatusColors.waiting,
-                style = MaterialTheme.typography.bodyMedium,
+                fontSize = HomeType.body,
+                lineHeight = HomeType.bodyLine,
                 fontWeight = FontWeight.Medium,
             )
         }
         Text(
             text = meta.cwd.substringAfterLast("/").ifBlank { meta.cwd },
             color = MaterialTheme.colorScheme.onSurface,
-            style = MaterialTheme.typography.bodySmall,
+            fontSize = HomeType.meta,
             fontFamily = MonoFamily,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Text(
-            text = stringResource(hint),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center,
-        )
+        MetaText(stringResource(hint))
     }
 }
 
@@ -570,7 +610,7 @@ private fun MetricsRow(claudeStatus: ClaudeStatus?, metrics: Metrics, onClick: (
     HomeLink(
         text = text,
         onClick = onClick,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = CcPalette.TextSecondary,
         modifier = Modifier.semantics { contentDescription = cd },
     )
 }
@@ -580,7 +620,7 @@ internal fun formatPct(v: Double): String {
     return "$rounded%"
 }
 
-// ─── PREVIEWS ────────────────────────────────────────────────────────────────
+// ─── PREVIEWS: the minimal states ────────────────────────────────────────────
 
 private val previewStatus = ClaudeStatus(sessionPct = 24.0, weeklyPct = 81.0)
 
@@ -596,7 +636,7 @@ private fun idle(conversationActive: Boolean = false, failure: LastRun? = null, 
 @Composable
 private fun PreviewIdle() = PreviewHome(HomeUi(idle(), MascotState.Idle, claudeStatus = previewStatus))
 
-@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Seguir + última respuesta")
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · última respuesta")
 @Composable
 private fun PreviewIdleContinue() = PreviewHome(
     HomeUi(
@@ -611,7 +651,7 @@ private fun PreviewIdleContinue() = PreviewHome(
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Enviando")
 @Composable
 private fun PreviewSending() = PreviewHome(
-    HomeUi(HomeMode.Sending("arregla el test del parser"), MascotState.Sending, claudeStatus = previewStatus),
+    HomeUi(HomeMode.Sending("arregla el test del parser y corre todo", PromptMode.CONTINUE), MascotState.Sending),
 )
 
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · No la tomó")
@@ -620,16 +660,14 @@ private fun PreviewSendFailed() = PreviewHome(
     HomeUi(HomeMode.SendFailed("arregla el test del parser"), MascotState.Error),
 )
 
-@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Trabajando")
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Trabajando (sin botones)")
 @Composable
 private fun PreviewRunning() = PreviewHome(
     HomeUi(
         HomeMode.Running,
         MascotState.Running,
         toolEvents = listOf(ToolEvent("Edit", "wrapper/src/parser.ts")),
-        activity = "Crunching…",
         runStartedAt = System.currentTimeMillis() - 247_000,
-        claudeStatus = previewStatus,
     ),
 )
 
@@ -648,20 +686,32 @@ private fun PreviewRunningStale() {
     }
 }
 
-@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Esperando permiso")
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · ¿Me dejas?")
 @Composable
-private fun PreviewWaiting() = PreviewHome(HomeUi(HomeMode.Waiting, MascotState.Waiting))
+private fun PreviewWaiting() = PreviewHome(HomeUi(HomeMode.Waiting, MascotState.Waiting, bubble = MascotBubble.ASK))
 
-@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Terminado")
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · ¡Listo!")
 @Composable
 private fun PreviewDone() = PreviewHome(
-    HomeUi(idle(conversationActive = true), MascotState.Done, claudeStatus = previewStatus, hasLastResponse = true),
+    HomeUi(
+        idle(conversationActive = true),
+        MascotState.Done,
+        hasLastResponse = true,
+        bubble = MascotBubble.DONE,
+        doneTldr = "Los 42 tests pasan y el parser ya ignora el spinner.",
+    ),
 )
 
-@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Falló")
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · No se pudo")
 @Composable
 private fun PreviewFailed() = PreviewHome(
-    HomeUi(idle(failure = LastRun(ok = false, exitCode = 1, stoppedByUser = false)), MascotState.Error),
+    HomeUi(idle(failure = LastRun(ok = false, exitCode = 1, stoppedByUser = false)), MascotState.Error, bubble = MascotBubble.FAILED),
+)
+
+@Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Detenido")
+@Composable
+private fun PreviewStopped() = PreviewHome(
+    HomeUi(idle(failure = LastRun(ok = false, exitCode = 130, stoppedByUser = true)), MascotState.Idle, bubble = MascotBubble.STOPPED),
 )
 
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Inicio · Sin conexión")

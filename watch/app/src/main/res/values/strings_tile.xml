@@ -26,7 +26,7 @@
     <string name="tile_permission_fallback">Claude pide permiso</string>
     <string name="tile_blocked_title">Necesita tu Mac</string>
     <string name="tile_blocked_fallback">Revisa tu Mac para seguir</string>
-    <string name="tile_done_ok">Listo ✓</string>
+    <string name="tile_done_ok">¡Listo! ✓</string>
     <string name="tile_done_failed">Falló ✗</string>
     <string name="tile_done_ok_fallback">Claude terminó</string>
     <string name="tile_done_failed_fallback">Algo falló en tu Mac</string>

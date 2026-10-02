@@ -2,13 +2,11 @@ package com.caamano.ccwearos.presentation.result
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -76,7 +73,6 @@ import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.RunOutcome
 import com.caamano.ccwearos.data.TaskKind
 import com.caamano.ccwearos.data.ToolEvent
-import com.caamano.ccwearos.presentation.Haptics
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
 import com.caamano.ccwearos.presentation.theme.CcPalette
 import com.caamano.ccwearos.presentation.theme.StatusColors
@@ -85,12 +81,17 @@ import com.caamano.ccwearos.presentation.ui.MonoLabel
 import com.caamano.ccwearos.presentation.ui.Motion
 import com.caamano.ccwearos.presentation.ui.PixelIcons
 import com.caamano.ccwearos.presentation.ui.pixelIcon
+import com.caamano.ccwearos.presentation.ui.pressFeedback
 import com.caamano.ccwearos.presentation.ui.rememberReducedMotion
 import kotlinx.coroutines.delay
 
-// CONTRACT (owned by lane A; lane B calls it). Keep this signature.
-// The always-present "Resultado" page: TL;DR card, status line, markdown
-// blocks, tool trail, follow-up chips, Hablar / Nueva conversación.
+// CONTRACT: the always-present "Resultado" page, minimal on purpose.
+// First screenful = the TL;DR card (✓/✗ glyph + ≤3 lines) and at most 3
+// short bullets when the answer has a list; Claude's chips (≤2, ≤24 chars).
+// Everything else (full body, code, tables, tool trail) sits behind ONE
+// "Ver detalle" row. Continuing the thread lives here: "Seguir esta
+// conversación" (dictation, mode CONTINUE) when a thread is active, and the
+// chips (also CONTINUE). Inicio's Preguntar always starts a new one.
 // `onBlockedContent` fires when the response looks like TUI junk, so the
 // shell can show the BlockedScreen instead of rendering it.
 @Composable
@@ -103,16 +104,12 @@ fun ResultPage(
     followups: List<String>,
     conversationActive: Boolean,
     onFollowup: (String) -> Unit,
-    onSpeak: () -> Unit,
-    onNewConversation: () -> Unit,
+    onContinue: () -> Unit,
     onBlockedContent: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val sanitized = remember(response) { ResponseSanitizer.sanitize(response) }
-    val blocked = sanitized is SanitizeResult.Blocked
-    val safeHeadline = remember(headline) {
-        (ResponseSanitizer.sanitize(headline) as? SanitizeResult.Clean)?.text?.ifBlank { null }
-    }
+    val prepared = remember(headline, response) { prepareResult(headline, response) }
+    val blocked = prepared.blocked
 
     // Fire once per response that turns out to be junk.
     val latestOnBlocked by rememberUpdatedState(onBlockedContent)
@@ -120,18 +117,16 @@ fun ResultPage(
         if (blocked) latestOnBlocked()
     }
 
-    val cleanText = (sanitized as? SanitizeResult.Clean)?.text.orEmpty()
-    val prepared = remember(cleanText, safeHeadline) { prepareResultText(cleanText, safeHeadline) }
-    val blocks = remember(prepared.body) { MarkdownBlocks.parse(prepared.body) }
+    val first = remember(prepared, toolEvents.size) { firstScreenful(prepared.text, prepared.blocks, toolEvents.size) }
+    val chips = remember(followups) { chipLabels(followups) }
     val status = resultStatus(outcome, taskKind)
-    val isEmpty = !blocked && prepared.tldr == null && blocks.isEmpty() &&
+    val isEmpty = !blocked && first.tldr == null && prepared.blocks.isEmpty() &&
         toolEvents.isEmpty() && outcome == null
 
     val key = responseKey(headline, response)
     val revealActive = rememberRevealActive(key, enabled = !isEmpty && !blocked)
 
-    var tldrExpanded by rememberSaveable(key) { mutableStateOf(false) }
-    var bodyExpanded by rememberSaveable(key) { mutableStateOf(false) }
+    var detailOpen by rememberSaveable(key) { mutableStateOf(false) }
     var toolsExpanded by rememberSaveable(key) { mutableStateOf(false) }
     val expandedCode = remember(key) { mutableStateMapOf<Int, Boolean>() }
 
@@ -147,52 +142,75 @@ fun ResultPage(
         TransformingLazyColumn(
             state = listState,
             contentPadding = contentPadding,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(BLOCK_GAP),
             modifier = Modifier.fillMaxSize(),
         ) {
             var order = 0
             when {
                 isEmpty -> item(key = "empty") { EmptyCard() }
 
-                blocked -> Unit // The shell shows BlockedScreen; only actions below.
+                blocked -> Unit // The shell shows BlockedScreen.
 
                 else -> {
-                    prepared.tldr?.let { tldr ->
+                    val oSummary = order++
+                    item(key = "summary") {
+                        Reveal(revealActive, oSummary) { SummaryCard(first.tldr, status, outcome) }
+                    }
+                    if (first.bullets.isNotEmpty()) {
                         val o = order++
-                        item(key = "tldr") {
+                        item(key = "bullets") {
+                            Reveal(revealActive, o) { Bullets(first.bullets) }
+                        }
+                    }
+                    if (conversationActive) {
+                        val o = order++
+                        item(key = "continue") {
                             Reveal(revealActive, o) {
-                                TldrCard(
-                                    text = tldr,
-                                    expanded = tldrExpanded,
-                                    onToggle = { tldrExpanded = !tldrExpanded },
+                                FeedbackButton(
+                                    text = stringResource(R.string.result_continue_conversation),
+                                    icon = PixelIcons.Mic,
+                                    style = ButtonStyle.OUTLINED,
+                                    onClick = onContinue,
+                                    transformation = SurfaceTransformation(spec),
+                                    modifier = Modifier.transformedHeight(this, spec),
                                 )
                             }
                         }
                     }
-                    if (status != ResultStatus.NONE) {
-                        val o = order++
-                        item(key = "status") {
-                            Reveal(revealActive, o) { StatusLine(status, outcome) }
+                    chips.forEachIndexed { i, (label, full) ->
+                        val oi = order++
+                        item(key = "chip-$i") {
+                            Reveal(revealActive, oi) {
+                                FeedbackButton(
+                                    text = label,
+                                    style = ButtonStyle.CHIP,
+                                    onClick = { onFollowup(full) },
+                                    transformation = SurfaceTransformation(spec),
+                                    modifier = Modifier.transformedHeight(this, spec),
+                                )
+                            }
                         }
                     }
-                    if (blocks.isNotEmpty()) {
+                    if (first.hasDetail) {
                         val o = order++
-                        item(key = "body") {
+                        item(key = "detail-toggle") {
                             Reveal(revealActive, o) {
+                                DetailRow(open = detailOpen, onToggle = { detailOpen = !detailOpen })
+                            }
+                        }
+                    }
+                    if (detailOpen) {
+                        if (prepared.blocks.isNotEmpty()) {
+                            item(key = "body") {
                                 BodyBlocks(
-                                    blocks = blocks,
-                                    expanded = bodyExpanded,
-                                    onExpand = { bodyExpanded = true },
+                                    blocks = prepared.blocks,
                                     isCodeExpanded = { expandedCode[it] == true },
                                     onExpandCode = { expandedCode[it] = true },
                                 )
                             }
                         }
-                    }
-                    if (toolEvents.isNotEmpty()) {
-                        val o = order++
-                        item(key = "tools") {
-                            Reveal(revealActive, o) {
+                        if (toolEvents.isNotEmpty()) {
+                            item(key = "tools") {
                                 ToolTrail(
                                     events = toolEvents,
                                     expanded = toolsExpanded,
@@ -201,70 +219,22 @@ fun ResultPage(
                             }
                         }
                     }
-                    if (followups.isNotEmpty()) {
-                        val o = order++
-                        item(key = "followups-title") {
-                            Reveal(revealActive, o) {
-                                MonoLabel(
-                                    text = stringResource(R.string.result_followups_title),
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 6.dp)
-                                        .semantics { heading() },
-                                )
-                            }
-                        }
-                        followups.forEachIndexed { i, suggestion ->
-                            val oi = order++
-                            item(key = "followup-$i") {
-                                Reveal(revealActive, oi) {
-                                    FeedbackButton(
-                                        text = suggestion,
-                                        style = ButtonStyle.CHIP,
-                                        onClick = { onFollowup(suggestion) },
-                                        transformation = SurfaceTransformation(spec),
-                                        modifier = Modifier.transformedHeight(this, spec),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!isEmpty) {
-                val oSpeak = order++
-                item(key = "speak") {
-                    Reveal(revealActive, oSpeak) {
-                        FeedbackButton(
-                            text = stringResource(if (conversationActive) R.string.result_continue else R.string.result_speak),
-                            icon = PixelIcons.Mic,
-                            style = ButtonStyle.PRIMARY,
-                            onClick = onSpeak,
-                            transformation = SurfaceTransformation(spec),
-                            modifier = Modifier
-                                .padding(top = 6.dp)
-                                .transformedHeight(this, spec),
-                        )
-                    }
-                }
-                val oNew = order++
-                item(key = "new") {
-                    Reveal(revealActive, oNew) {
-                        FeedbackButton(
-                            text = stringResource(R.string.result_new_conversation),
-                            icon = PixelIcons.Refresh,
-                            style = ButtonStyle.OUTLINED,
-                            onClick = onNewConversation,
-                            transformation = SurfaceTransformation(spec),
-                            modifier = Modifier.transformedHeight(this, spec),
-                        )
-                    }
                 }
             }
         }
     }
+}
+
+/** Owner rule: 12dp between blocks; one weight hierarchy. */
+private val BLOCK_GAP = 12.dp
+
+private object ResultType {
+    val title = 18.sp
+    val titleLine = 22.sp
+    val body = 14.sp
+    val bodyLine = 18.sp
+    val meta = 12.sp
+    val metaLine = 16.sp
 }
 
 // ─── Reveal ──────────────────────────────────────────────────────────────────
@@ -334,117 +304,132 @@ private fun EmptyCard() {
         Text(
             text = stringResource(R.string.result_empty_title),
             color = MaterialTheme.colorScheme.onSurface,
-            style = MaterialTheme.typography.titleSmall,
+            fontSize = ResultType.body,
+            lineHeight = ResultType.bodyLine,
+            fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(6.dp))
         Text(
             text = stringResource(R.string.result_empty_hint),
             color = CcPalette.TextSecondary,
-            style = MaterialTheme.typography.bodySmall,
+            fontSize = ResultType.meta,
+            lineHeight = ResultType.metaLine,
             textAlign = TextAlign.Center,
         )
     }
 }
 
+/**
+ * The TL;DR, large, ≤3 lines, with a small ✓ / ✗ glyph from /outcome next
+ * to it. No status chips: the glyph is enough. Without a TL;DR the glyph's
+ * word ("Hecho" / "Falló") is the title.
+ */
 @Composable
-private fun TldrCard(text: String, expanded: Boolean, onToggle: () -> Unit) {
-    val reduced = rememberReducedMotion()
-    var overflows by remember(text) { mutableStateOf(false) }
-    Column(
+private fun SummaryCard(tldr: String?, status: ResultStatus, outcome: RunOutcome?) {
+    val statusWord = when (status) {
+        ResultStatus.DONE -> stringResource(R.string.result_status_done)
+        ResultStatus.FAILED -> if (outcome != null && outcome.exitCode != 0L) {
+            stringResource(R.string.result_status_failed_code, outcome.exitCode.toInt())
+        } else {
+            stringResource(R.string.result_status_failed)
+        }
+        else -> null
+    }
+    val title = tldr ?: statusWord ?: return
+    val cd = listOfNotNull(statusWord?.takeIf { tldr != null }, title).joinToString(". ")
+    Row(
         modifier = Modifier
             .card()
-            .then(if (reduced) Modifier else Modifier.animateContentSize(Motion.standard()))
-            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = if (overflows || expanded) 0.dp else 12.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+            .clearAndSetSemantics {
+                contentDescription = cd
+                heading()
+            },
+        verticalAlignment = Alignment.Top,
     ) {
-        Text(
-            text = text,
-            color = MaterialTheme.colorScheme.onSurface,
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = if (expanded) Int.MAX_VALUE else 3,
-            overflow = TextOverflow.Ellipsis,
-            onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow },
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics { heading() },
-        )
-        if (overflows || expanded) {
-            InlineAction(
-                text = stringResource(if (expanded) R.string.result_see_less else R.string.result_see_more),
-                onClick = onToggle,
+        if (status == ResultStatus.DONE || status == ResultStatus.FAILED) {
+            Icon(
+                imageVector = if (status == ResultStatus.DONE) PixelIcons.Check else PixelIcons.Cross,
+                contentDescription = null,
+                tint = if (status == ResultStatus.DONE) StatusColors.running else StatusColors.error,
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .size(14.dp),
             )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = ResultType.title,
+            lineHeight = ResultType.titleLine,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Up to three short bullets from the answer's own list. */
+@Composable
+private fun Bullets(items: List<String>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items.forEach { text ->
+            Row(Modifier.fillMaxWidth()) {
+                Text(
+                    text = "•",
+                    color = CcPalette.Coral,
+                    fontSize = ResultType.body,
+                    lineHeight = ResultType.bodyLine,
+                    modifier = Modifier.clearAndSetSemantics { },
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = text,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = ResultType.body,
+                    lineHeight = ResultType.bodyLine,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }
 
+/** The one "Ver detalle" row; toggles the rest of the answer. */
 @Composable
-private fun StatusLine(status: ResultStatus, outcome: RunOutcome?) {
-    val (color, label) = when (status) {
-        ResultStatus.DONE -> StatusColors.running to stringResource(R.string.result_status_done)
-        ResultStatus.FAILED -> StatusColors.error to (
-            if (outcome != null && outcome.exitCode != 0L) {
-                stringResource(R.string.result_status_failed_code, outcome.exitCode.toInt())
-            } else {
-                stringResource(R.string.result_status_failed)
-            }
-            )
-        else -> CcPalette.TextSecondary to stringResource(R.string.result_status_info)
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp)
-            .clearAndSetSemantics { contentDescription = label },
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        when (status) {
-            ResultStatus.DONE, ResultStatus.FAILED -> Icon(
-                imageVector = if (status == ResultStatus.DONE) PixelIcons.Check else PixelIcons.Cross,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(14.dp),
-            )
-            else -> Text(text = "ⓘ", color = color, style = MaterialTheme.typography.bodyMedium)
-        }
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = label,
-            color = color,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-        )
-    }
+private fun DetailRow(open: Boolean, onToggle: () -> Unit) {
+    InlineAction(
+        text = stringResource(if (open) R.string.result_see_less else R.string.home_see_detail),
+        onClick = onToggle,
+        center = true,
+    )
 }
 
 @Composable
 private fun BodyBlocks(
     blocks: List<Block>,
-    expanded: Boolean,
-    onExpand: () -> Unit,
     isCodeExpanded: (Int) -> Boolean,
     onExpandCode: (Int) -> Unit,
 ) {
-    val reduced = rememberReducedMotion()
-    val collapsedCount = remember(blocks) { collapsedBlockCount(blocks, BODY_BUDGET_CHARS) }
-    val visible = if (expanded) blocks.size else collapsedCount
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (reduced) Modifier else Modifier.animateContentSize(Motion.standard()))
-            .padding(top = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(BLOCK_GAP),
     ) {
-        for (i in 0 until visible) {
+        blocks.forEachIndexed { i, block ->
             BlockView(
-                block = blocks[i],
+                block = block,
                 codeExpanded = isCodeExpanded(i),
                 onExpandCode = { onExpandCode(i) },
             )
-        }
-        if (visible < blocks.size) {
-            InlineAction(text = stringResource(R.string.result_see_all), onClick = onExpand)
         }
     }
 }
@@ -684,19 +669,6 @@ private fun ToolRow(ev: ToolEvent) {
 
 private enum class ButtonStyle { PRIMARY, OUTLINED, CHIP }
 
-/** Scale to Motion.PRESSED_SCALE while pressed (skipped with reduced motion). */
-@Composable
-private fun pressScale(interaction: MutableInteractionSource): Float {
-    val reduced = rememberReducedMotion()
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed && !reduced) Motion.PRESSED_SCALE else 1f,
-        animationSpec = Motion.standard(Motion.FAST),
-        label = "press",
-    )
-    return scale
-}
-
 @Composable
 private fun FeedbackButton(
     text: String,
@@ -706,9 +678,7 @@ private fun FeedbackButton(
     icon: ImageVector? = null,
     transformation: SurfaceTransformation? = null,
 ) {
-    val context = LocalContext.current
     val interaction = remember { MutableInteractionSource() }
-    val scale = pressScale(interaction)
     val colors = when (style) {
         ButtonStyle.PRIMARY -> ButtonDefaults.buttonColors(
             containerColor = CcPalette.Coral,
@@ -726,10 +696,7 @@ private fun FeedbackButton(
         )
     }
     Button(
-        onClick = {
-            Haptics.tick(context)
-            onClick()
-        },
+        onClick = onClick,
         colors = colors,
         border = if (style == ButtonStyle.PRIMARY) null else BorderStroke(1.dp, CcPalette.Outline),
         interactionSource = interaction,
@@ -737,10 +704,7 @@ private fun FeedbackButton(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
+            .pressFeedback(interaction),
     ) {
         if (icon != null) {
             Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(14.dp))
@@ -758,32 +722,26 @@ private fun FeedbackButton(
 
 /** A coral text action ("Ver más", "Ver todo") with a full 48dp target. */
 @Composable
-private fun InlineAction(text: String, onClick: () -> Unit) {
-    val context = LocalContext.current
+private fun InlineAction(text: String, onClick: () -> Unit, center: Boolean = false) {
     val interaction = remember { MutableInteractionSource() }
-    val scale = pressScale(interaction)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            .pressFeedback(interaction)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
-            ) {
-                Haptics.tick(context)
-                onClick()
-            },
-        contentAlignment = Alignment.CenterStart,
+                onClick = onClick,
+            ),
+        contentAlignment = if (center) Alignment.Center else Alignment.CenterStart,
     ) {
         Text(
             text = text,
             color = CcPalette.Coral,
-            style = MaterialTheme.typography.bodyMedium,
+            fontSize = ResultType.body,
+            lineHeight = ResultType.bodyLine,
             fontWeight = FontWeight.SemiBold,
         )
     }
@@ -814,7 +772,6 @@ private fun PreviewHost(
     outcome: RunOutcome? = null,
     toolEvents: List<ToolEvent> = emptyList(),
     followups: List<String> = emptyList(),
-    conversationActive: Boolean = true,
 ) {
     CCWEAROSTheme {
         ResultPage(
@@ -824,10 +781,9 @@ private fun PreviewHost(
             outcome = outcome,
             toolEvents = toolEvents,
             followups = followups,
-            conversationActive = conversationActive,
+            conversationActive = true,
             onFollowup = {},
-            onSpeak = {},
-            onNewConversation = {},
+            onContinue = {},
             onBlockedContent = {},
         )
     }
@@ -835,7 +791,7 @@ private fun PreviewHost(
 
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Resultado · vacío")
 @Composable
-private fun PreviewResultEmpty() = PreviewHost(conversationActive = false)
+private fun PreviewResultEmpty() = PreviewHost()
 
 @Preview(device = WearDevices.LARGE_ROUND, showSystemUi = true, name = "Resultado · info")
 @Composable

@@ -18,7 +18,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -41,7 +40,6 @@ import androidx.wear.tooling.preview.devices.WearDevices
 import com.caamano.ccwearos.R
 import com.caamano.ccwearos.data.RecentSession
 import com.caamano.ccwearos.data.SharedSessionMeta
-import com.caamano.ccwearos.presentation.Haptics
 import com.caamano.ccwearos.presentation.MonoFamily
 import com.caamano.ccwearos.presentation.theme.CCWEAROSTheme
 import com.caamano.ccwearos.presentation.theme.CcPalette
@@ -50,6 +48,7 @@ import com.caamano.ccwearos.presentation.ui.MonoLabel
 import com.caamano.ccwearos.presentation.ui.PixelMascot
 import com.caamano.ccwearos.presentation.ui.MascotState
 import com.caamano.ccwearos.presentation.ui.StatusDot
+import com.caamano.ccwearos.presentation.ui.pressFeedback
 
 // SESIONES — always present (fixed pager slot 2). Every Claude Code session
 // the wrapper scanner found, grouped by project, newest first. Coral = shared
@@ -158,7 +157,6 @@ private fun SessionRow(
     isShared: Boolean,
     onTap: (() -> Unit)?,
 ) {
-    val context = LocalContext.current
     val interaction = remember { MutableInteractionSource() }
     val (dotColor, stateRes) = when {
         isShared -> CcPalette.Coral to R.string.session_shared
@@ -172,14 +170,11 @@ private fun SessionRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .then(if (onTap != null) Modifier.pressScale(interaction) else Modifier)
+            .then(if (onTap != null) Modifier.pressFeedback(interaction) else Modifier)
             .clip(RoundedCornerShape(12.dp))
             .let {
                 if (onTap != null) {
-                    it.clickable(interactionSource = interaction, indication = null) {
-                        Haptics.tick(context)
-                        onTap()
-                    }
+                    it.clickable(interactionSource = interaction, indication = null, onClick = onTap)
                 } else {
                     it
                 }
